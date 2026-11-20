@@ -123,13 +123,20 @@ def check_imports() -> None:
         print(f"PASS  模块 import 冒烟：{len(files)}/{len(files)}")
 
 
-def full_test_preflight() -> tuple[bool, list[str]]:
-    """检查 full 档前提；缺项时必须在启动长套件之前 BLOCKED。"""
+def full_test_preflight() -> tuple[bool, list[str], dict]:
+    """检查 full 档全部严格前提，并返回同一轮采集的 AUTO 输入。"""
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     import gen_docs  # noqa: PLC0415
 
-    return gen_docs.environment_complete()
+    inputs = gen_docs.collect_auto_inputs()
+    missing = list(inputs.get("env_missing") or [])
+    if inputs.get("env_complete") is not True and not missing:
+        missing.append("全量门禁环境前提探测不完整")
+    missing.extend(gen_docs.strict_runtime_missing(
+        inputs.get("test_runtime_fingerprint", {})))
+    missing = list(dict.fromkeys(missing))
+    return not missing, missing, inputs
 
 
 def check_tests(level: str, env_extra: dict[str, str] | None = None) -> None:
@@ -408,6 +415,8 @@ def main(argv: list[str] | None = None) -> int:
                          "RELEASING.md/AGENTS.md 里写的 `selfcheck.py --full --strict-tests` "
                          "就靠这个开关（G2：从前只有 --full 隐式声称严格，CLI 根本不存在）")
     args = ap.parse_args(argv)
+    if args.skip_tests and (args.full or args.strict_tests):
+        ap.error("--skip-tests 不能与 --full 或 --strict-tests 同时使用；严格门禁必须运行引擎套件")
     if os.environ.get("SLCN_SELFCHECK_NESTED"):
         # 被套件/自查嵌套调用时不做任何子进程检查，只跑静态项（防递归）
         pass
@@ -425,8 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     evidence_env = {"SLCN_TEST_RESULT_MANIFEST": "", "SLCN_TEST_INPUTS_SHA256": ""}
     if args.full and not args.skip_tests and not nested:
         # Fail before the long suite when required full-test dependencies are absent.
+        inputs = None
         try:
-            complete, missing = full_test_preflight()
+            complete, missing, inputs = full_test_preflight()
         except Exception as e:  # noqa: BLE001
             complete, missing = False, [f"门禁环境预检异常（{type(e).__name__}）"]
         if not complete:
@@ -437,7 +447,6 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 import gen_docs as _gen_docs  # noqa: PLC0415
 
-                inputs = _gen_docs.collect_auto_inputs()
                 identity = _gen_docs.test_run_identity(inputs)
                 evidence_dir = tempfile.TemporaryDirectory(prefix="slcn-selfcheck-full-")
                 evidence_env = {

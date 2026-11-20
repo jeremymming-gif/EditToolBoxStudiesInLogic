@@ -243,13 +243,66 @@ _r_help = subprocess.run([sys.executable, SELF, "--help"], capture_output=True, 
 check("③b selfcheck CLI 有 --strict-tests（兑现 RELEASING.md/AGENTS.md 的写法）",
       "--strict-tests" in (_r_help.stdout or ""), (_r_help.stdout or "")[-200:])
 
+import gen_docs as G  # noqa: E402
+
+# ── ③c 严格档不能跳过套件；quick + skip-tests 保持低成本 ───────────────────
+_gate_calls = []
+_gate_names = ("check_env", "check_imports", "full_test_preflight", "check_tests",
+               "check_docs", "scan_code_health", "check_cases", "check_app_bundle",
+               "check_deep", "check_corpus")
+_saved_gates = {name: getattr(S, name) for name in _gate_names}
+for _name in _gate_names:
+    setattr(S, _name, lambda *args, _n=_name, **kwargs: _gate_calls.append(_n))
+try:
+    for _argv in (["--full", "--skip-tests"], ["--strict-tests", "--skip-tests"]):
+        _stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(_stderr):
+                S.main(list(_argv))
+            _arg_rc = None
+        except SystemExit as _e:
+            _arg_rc = _e.code
+        check(f"③c {' '.join(_argv)} 在门禁启动前以 argparse rc=2 拒绝",
+              _arg_rc == 2 and "--skip-tests 不能与 --full 或 --strict-tests" in _stderr.getvalue()
+              and not _gate_calls, _stderr.getvalue()[-250:] + str(_gate_calls))
+finally:
+    for _name, _fn in _saved_gates.items():
+        setattr(S, _name, _fn)
+
+_saved_run = S.run
+_saved_env, _saved_imports = S.check_env, S.check_imports
+_saved_health, _saved_cases, _saved_app = S.scan_code_health, S.check_cases, S.check_app_bundle
+_saved_state = (list(S.FAILS), list(S.WARNS), list(S.SKIPS))
+_nested_value = os.environ.pop("SLCN_SELFCHECK_NESTED", None)
+_runs.clear()
+_run_envs.clear()
+S.run = _fake_run(0, "失败 0 项（全部通过）")
+S.check_env = S.check_imports = lambda: None
+S.scan_code_health = S.check_cases = S.check_app_bundle = lambda: None
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        _quick_skip_rc = S.main(["--quick", "--skip-tests", "--no-cases", "--skip-app"])
+    check("③c quick + --skip-tests 仍通过低成本文档检查且不启动引擎 runner",
+          _quick_skip_rc == 0
+          and any("test_docs_consistency.py" in part and "--no-test-runs" in _runs[i]
+                  for i, cmd in enumerate(_runs) for part in cmd)
+          and not any("run_engine_tests.sh" in part for cmd in _runs for part in cmd),
+          str(_runs))
+finally:
+    S.run = _saved_run
+    S.check_env, S.check_imports = _saved_env, _saved_imports
+    S.scan_code_health, S.check_cases, S.check_app_bundle = _saved_health, _saved_cases, _saved_app
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = _saved_state
+    if _nested_value is not None:
+        os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
+
 # ── ③d full 前提预检：缺少前提时应 BLOCKED，且不启动长套件 ────────────────
 _orig_preflight = S.full_test_preflight
 _orig_run = S.run
 _orig_health, _orig_cases, _orig_app = S.scan_code_health, S.check_cases, S.check_app_bundle
 _orig_selfcheck_fails, _orig_selfcheck_skips = list(S.FAILS), list(S.SKIPS)
 _runs.clear()
-S.full_test_preflight = lambda: (False, ["xelatex"])
+S.full_test_preflight = lambda: (False, ["xelatex"], {})
 
 
 def _blocked_preflight_run(cmd, cwd=None, timeout=1800, env_extra=None):
@@ -280,6 +333,141 @@ finally:
     S.scan_code_health, S.check_cases, S.check_app_bundle = _orig_health, _orig_cases, _orig_app
     S.FAILS[:], S.SKIPS[:] = _orig_selfcheck_fails, _orig_selfcheck_skips
 
+# ── ③e full 严格运行时前提必须在长套件前检查 ───────────────────────────────
+def _full_runtime_inputs():
+    return {
+        "env_complete": True,
+        "env_missing": [],
+        "test_runtime_fingerprint": {
+            "python": {
+                "version": "3.14.1 synthetic",
+                "version_info": [3, 14, 1],
+                "dependencies": {name: "1.0" for name in G.TEST_DEPENDENCIES},
+            },
+            "xelatex": {"identity": "/synthetic/xelatex", "version": "XeTeX synthetic"},
+            "libreoffice": {"identity": "/synthetic/soffice", "version": "LibreOffice synthetic"},
+            "fonts": {"files": 1, "sha256": "a" * 64},
+        },
+    }
+
+
+_runtime_cases = []
+_missing_dependency = G.TEST_DEPENDENCIES[0]
+_runtime_cases.append(("dependency", lambda x: x["test_runtime_fingerprint"]["python"]
+                       ["dependencies"].__setitem__(_missing_dependency, None),
+                       f"Python 依赖 {_missing_dependency}"))
+_runtime_cases.append(("python-version", lambda x: x["test_runtime_fingerprint"]["python"]
+                       .__setitem__("version_info", [3, 13, 9]), "Python 需要 ≥3.14"))
+_runtime_cases.append(("xelatex-version", lambda x: x["test_runtime_fingerprint"]["xelatex"]
+                       .__setitem__("version", None), "xelatex 版本探测"))
+_runtime_cases.append(("libreoffice-version", lambda x: x["test_runtime_fingerprint"]["libreoffice"]
+                       .__setitem__("version", None), "LibreOffice 版本探测"))
+_runtime_cases.append(("fonts", lambda x: x["test_runtime_fingerprint"]["fonts"]
+                       .update({"files": 0, "sha256": ""}), "字体清单不可用"))
+
+_saved_run = S.run
+_saved_env, _saved_imports = S.check_env, S.check_imports
+_saved_health, _saved_cases, _saved_app = S.scan_code_health, S.check_cases, S.check_app_bundle
+_saved_state = (list(S.FAILS), list(S.WARNS), list(S.SKIPS))
+_nested_value = os.environ.pop("SLCN_SELFCHECK_NESTED", None)
+_runs.clear()
+_run_envs.clear()
+
+
+def _blocked_runtime_run(cmd, cwd=None, timeout=1800, env_extra=None):
+    _runs.append(list(cmd))
+    _run_envs.append(dict(env_extra) if env_extra else None)
+    if any("test_docs_consistency.py" in part for part in cmd):
+        return 0, "失败 0 项（全部通过）"
+    return 99, "unexpected long runner"
+
+
+S.run = _blocked_runtime_run
+S.check_env = S.check_imports = lambda: None
+S.scan_code_health = S.check_cases = S.check_app_bundle = lambda: None
+_orig_collect_inputs = G.collect_auto_inputs
+_collect_calls = []
+try:
+    for _case_name, _invalidate, _expected in _runtime_cases:
+        _inputs = _full_runtime_inputs()
+        _invalidate(_inputs)
+        _collect_calls.clear()
+        G.collect_auto_inputs = lambda _i=_inputs: (_collect_calls.append(_i) or _i)
+        _runs.clear()
+        _run_envs.clear()
+        S.FAILS[:], S.WARNS[:], S.SKIPS[:] = [], [], []
+        _stdout = io.StringIO()
+        with contextlib.redirect_stdout(_stdout):
+            _runtime_rc = S.main(["--full"])
+        check(f"③e {_case_name} 缺失时明确 BLOCKED、不启动 full runner，且保留低成本文档检查",
+              _runtime_rc != 0 and "BLOCKED  full 门禁未启动" in _stdout.getvalue()
+              and _expected in _stdout.getvalue()
+              and len(_collect_calls) == 1
+              and any("test_docs_consistency.py" in part and "--no-test-runs" in cmd
+                      for cmd in _runs for part in cmd)
+              and not any("run_engine_tests.sh" in part for cmd in _runs for part in cmd),
+              _stdout.getvalue()[-300:] + str(_runs))
+finally:
+    G.collect_auto_inputs = _orig_collect_inputs
+    S.run = _saved_run
+    S.check_env, S.check_imports = _saved_env, _saved_imports
+    S.scan_code_health, S.check_cases, S.check_app_bundle = _saved_health, _saved_cases, _saved_app
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = _saved_state
+    if _nested_value is not None:
+        os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
+
+# 成功路径也必须只采集一次；manifest identity 与严格文档检查复用同一份 inputs。
+_valid_inputs = _full_runtime_inputs()
+_collect_calls = []
+_identity_inputs = []
+_saved_run = S.run
+_saved_env, _saved_imports = S.check_env, S.check_imports
+_saved_health, _saved_cases, _saved_app = S.scan_code_health, S.check_cases, S.check_app_bundle
+_saved_state = (list(S.FAILS), list(S.WARNS), list(S.SKIPS))
+_nested_value = os.environ.pop("SLCN_SELFCHECK_NESTED", None)
+_runs.clear()
+_run_envs.clear()
+
+
+def _successful_full_run(cmd, cwd=None, timeout=1800, env_extra=None):
+    _runs.append(list(cmd))
+    _run_envs.append(dict(env_extra) if env_extra else None)
+    if any("run_engine_tests.sh" in part for part in cmd):
+        return 0, "汇总：1 套件，红 0"
+    if any("test_docs_consistency.py" in part for part in cmd):
+        return 0, "失败 0 项（全部通过）"
+    return 99, "unexpected command"
+
+
+_orig_identity = G.test_run_identity
+G.collect_auto_inputs = lambda: (_collect_calls.append(_valid_inputs) or _valid_inputs)
+G.test_run_identity = lambda inputs: (_identity_inputs.append(inputs) or "b" * 64)
+S.run = _successful_full_run
+S.check_env = S.check_imports = lambda: None
+S.scan_code_health = S.check_cases = S.check_app_bundle = lambda: None
+try:
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = [], [], []
+    with contextlib.redirect_stdout(io.StringIO()):
+        _full_rc = S.main(["--full", "--no-cases", "--skip-app"])
+    _runner_index = next(i for i, cmd in enumerate(_runs)
+                         if any("run_engine_tests.sh" in part for part in cmd))
+    _docs_index = next(i for i, cmd in enumerate(_runs)
+                       if any("test_docs_consistency.py" in part for part in cmd))
+    check("③e full 通过时 inputs/runtime 只采集一次，并由 runner 与严格文档检查共同复用",
+          _full_rc == 0 and len(_collect_calls) == 1 and _identity_inputs == [_valid_inputs]
+          and _run_envs[_runner_index] == _run_envs[_docs_index]
+          and _run_envs[_runner_index]["SLCN_TEST_INPUTS_SHA256"] == "b" * 64,
+          str(_run_envs))
+finally:
+    G.collect_auto_inputs = _orig_collect_inputs
+    G.test_run_identity = _orig_identity
+    S.run = _saved_run
+    S.check_env, S.check_imports = _saved_env, _saved_imports
+    S.scan_code_health, S.check_cases, S.check_app_bundle = _saved_health, _saved_cases, _saved_app
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = _saved_state
+    if _nested_value is not None:
+        os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
+
 # ── ④ O9 反例（第四十四批③a）：拆掉 test_selfcheck × App 新鲜度循环依赖 ─────
 # 判据（三反例）：
 #   (A) App 过期时，③ 用的命令（--skip-app）仍全绿；且同一过期包**不跳过**时 selfcheck 能红
@@ -288,8 +476,6 @@ finally:
 #       用假目录模拟，不需要真 build。
 #   (C) AUTO 数字不变：App 行移出后，`gen_docs --check --no-test-runs` 仍 PASS（非测试行一致）；
 #       且新算的 AUTO 块不再含「App 包内一致性」行。
-import gen_docs as G  # noqa: E402
-
 GEN_DOCS = os.path.join(_ENGINE, "tools", "gen_docs.py")
 
 
