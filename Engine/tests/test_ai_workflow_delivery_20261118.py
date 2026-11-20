@@ -136,11 +136,11 @@ An anonymous mispelling for conversion.
         return subprocess.run([sys.executable, "-B", os.path.join(_ENGINE, "convert.py"), *args],
                               capture_output=True, text=True, env=env, input=input, check=False)
 
-    def convert(self, *args):
+    def convert(self, *args, execute="typeset,text"):
         run = self.invoke(
             "--source", str(self.source), "--out", str(self.output), "--name", "Anonymous",
             "--lang", "en", "--force", "--no-bibdb-apply", "--ai-taskbook-version", "3",
-            "--ai-execute", "typeset,text", "--ai-work-dir", str(self.work), *args,
+            "--ai-execute", execute, "--ai-work-dir", str(self.work), *args,
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         state = self.state()
@@ -191,6 +191,70 @@ An anonymous mispelling for conversion.
         self.assertTrue(undone["undone"])
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "prior")
         self.assertTrue(Path(undone["undo_keep"], staged_tex.name).exists())
+
+    def test_delivery_counts_only_applied_bib_and_preserves_backfilled_entry(self):
+        old_bib = """@book{A,
+  title = {Original A},
+  year = {2000},
+}
+@book{B,
+  title = {Original B},
+  year = {2001},
+}
+@book{UNUSED,
+  title = {Untouched Original},
+  year = {2002},
+}
+"""
+        reply_bib = """@book{A,
+  title = {Revised A},
+  year = {2003},
+}
+@book{B,
+  title = {Revised B},
+  year = {2004},
+}
+"""
+        self.source.write_text(r"""\documentclass{article}
+\title{An Anonymous Example}
+\author{Alice Example}
+\begin{document}
+See \cite{A} and \cite{B}.
+\bibliographystyle{plain}
+\bibliography{reference}
+\end{document}
+""", encoding="utf-8")
+        (self.root / "reference.bib").write_text(old_bib, encoding="utf-8")
+
+        state = self.convert(execute="bib_verify")
+        imported = self.cli("import", "--stdin", "--source-kind", "complete_external",
+                            "--replace-active", input=reply_bib)
+        self.assertTrue(imported["ok"], imported)
+        preview = self.cli("preview", "--adopt", "bib_verify")
+        self.assertTrue(preview["ok"], preview)
+        decisions = {item["conflict_id"]: "reply" for item in preview["conflicts"]}
+        preview = self.cli("preview", "--adopt", "bib_verify", "--decide-json",
+                           json.dumps(decisions))
+        self.assertTrue(preview["ok"], preview)
+        statuses = {item["key"]: item["status"] for item in preview["bib"]["items"]}
+        self.assertEqual(statuses, {"A": "applied", "B": "applied", "UNUSED": "backfilled"})
+
+        result = self.cli("deliver", "--preview-id", preview["preview_id"])
+        self.assertTrue(result["delivered"], result)
+        self.assertEqual(result["n_applied"], 2, result)
+        self.assertEqual(
+            {(item["item_id"], item["action"]) for item in result["adopted"]},
+            {("A", "bib_verify"), ("B", "bib_verify")},
+        )
+        delivered_bib = (self.final / state["conversion"]["bib_name"]).read_text(encoding="utf-8")
+        from slcn.bibparse import parse_entries
+        entries, findings = parse_entries(delivered_bib)
+        self.assertFalse([item for item in findings if item.level == "problem"], findings)
+        entries_by_key = {entry.key: entry for entry in entries}
+        self.assertEqual(entries_by_key["A"].fields["title"], "Revised A")
+        self.assertEqual(entries_by_key["B"].fields["title"], "Revised B")
+        self.assertEqual(entries_by_key["UNUSED"].fields["title"], "Untouched Original")
+        self.assertEqual(entries_by_key["UNUSED"].fields["year"], "2002")
 
     def test_frozen_input_change_blocks_original_delivery(self):
         self.convert()

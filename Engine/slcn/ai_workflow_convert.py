@@ -1229,7 +1229,7 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
             text_items = preview.get("text_items") or {}
             adopted.extend(typeset.get("applied", []))
             adopted.extend({**item, "action": "text"} for item in text_items.get("applied", []))
-            bib_applied = {"applied", "backfilled"}
+            bib_applied = {"applied"}
             adopted.extend({"item_id": item["key"], "action": "bib_verify"}
                            for item in preview.get("bib_items", [])
                            if item.get("status") in bib_applied)
