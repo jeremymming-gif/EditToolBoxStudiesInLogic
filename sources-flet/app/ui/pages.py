@@ -2303,7 +2303,7 @@ class IssuePage(BasePage):
         ])
 
     def _detail_header(self, key: str, uid: int) -> ft.Control:
-        """区块头（40 高）：15px 标题 + 状态点/状态词 + 右侧 Filled 主按钮 + chevron。
+        """区块头（40 高）：标题 + 状态 + 主按钮（展开 Filled / 收起 Outlined）+ chevron。
 
         点击区只包住左侧头部与 chevron；主按钮在点击区之外——点主按钮只运行
         该功能，不触发展开/收起。批 117 去掉了 01–06 序号列（不再按编号呈现）。
@@ -2317,7 +2317,7 @@ class IssuePage(BasePage):
             on_click=lambda e, k=key: self._toggle_section(k),
             content=self._detail_head_content(key, expanded=expanded, state=state))
         self._section_heads[key] = head
-        btn = self._primary_button(key)
+        btn = self._primary_button(key, expanded=expanded)
         if key == self.selected:
             # 旧契约（`_detail_status`/`_step_run_primary`）指向当前选中区块。
             self._detail_primary = btn
@@ -2581,11 +2581,12 @@ class IssuePage(BasePage):
             return ""
         return artifact or ""
 
-    def _primary_button(self, key: str) -> ft.Control:
+    def _primary_button(self, key: str, *, expanded: bool) -> ft.Control:
         t = self.t
         label = self._primary_label(key)
-        btn = C.primary_button(label, lambda e, k=key: self._primary_action(k), t,
-                               height=t.px(28), disabled=self._primary_disabled(key))
+        button = C.primary_button if expanded else C.secondary_button
+        btn = button(label, lambda e, k=key: self._primary_action(k), t,
+                     height=t.px(28), disabled=self._primary_disabled(key))
         reason = self._primary_reason(key)
         if reason:
             btn.tooltip = reason

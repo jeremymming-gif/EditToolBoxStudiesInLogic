@@ -6,7 +6,7 @@
 2. 去掉序号列后 caption 放大可用宽、完整显示：不设 max_lines、不用省略号，
    也不以序号开头/复述标题；
 3. 同一视图同一时刻只展开一个区块，默认首块（01/03/05/06），chevron ▸/▾；
-4. 点区块头切换、点主按钮不切换；收起区块内容 visible=False，但头部状态/主按钮仍刷新；
+4. 点区块头切换、点主按钮不切换；展开主按钮 Filled、收起 Outlined，头部状态/主按钮仍刷新；
 5. 深链 4 条展开目标区块；切视图保留各视图最近展开的区块；
 6. 03 编译成功 → 04 展开、03 收起（不自动运行 04）；其他步骤完成不切换；
 7. 窄窗 54 横条 4 段都用短标题显示，同样不显示序号。
@@ -113,6 +113,8 @@ def test_accordion_default_expands_first_section_of_each_view():
     assert page._section_bodies["toc"].visible is False
     assert page._chevrons["infocheck"].value == "▾"
     assert page._chevrons["toc"].value == "▸"
+    assert isinstance(page._primary_btns["infocheck"], ft.FilledButton)
+    assert isinstance(page._primary_btns["toc"], ft.OutlinedButton)
 
 
 def test_accordion_click_header_toggles_and_keeps_one_open():
@@ -125,14 +127,20 @@ def test_accordion_click_header_toggles_and_keeps_one_open():
     assert page._section_bodies["infocheck"].visible is False, "同视图只展开一个"
     assert page._chevrons["toc"].value == "▾"
     assert page._chevrons["infocheck"].value == "▸"
+    assert isinstance(page._primary_btns["toc"], ft.FilledButton)
+    assert isinstance(page._primary_btns["infocheck"], ft.OutlinedButton)
 
     _click(page._section_heads["toc"])
     assert page.expanded_step("catalog") == "", "再点同一区块 = 全部收起"
     assert all(not body.visible for body in page._section_bodies.values())
     assert page._chevrons["toc"].value == "▸"
+    assert all(isinstance(btn, ft.OutlinedButton)
+               for btn in page._primary_btns.values())
 
     _click(page._section_heads["toc"])
     assert page.expanded_step("catalog") == "toc", "第三次点 = 重新展开"
+    assert isinstance(page._primary_btns["toc"], ft.FilledButton)
+    assert isinstance(page._primary_btns["infocheck"], ft.OutlinedButton)
 
 
 def test_accordion_primary_button_does_not_toggle():
@@ -146,6 +154,37 @@ def test_accordion_primary_button_does_not_toggle():
     _click(page._primary_btns["merge"])
     assert ran == ["compileall", "merge"]
     assert page.expanded_step("produce") == "compileall", "收起区块的按钮也不展开它"
+
+    _click(page._section_heads["merge"])
+    assert isinstance(page._primary_btns["compileall"], ft.OutlinedButton)
+    assert isinstance(page._primary_btns["merge"], ft.FilledButton)
+    assert page._step_run_btns["compileall"] is page._primary_btns["compileall"]
+    assert page._step_run_primary is page._primary_btns["compileall"]
+    _click(page._primary_btns["compileall"])
+    _click(page._primary_btns["merge"])
+    assert ran == ["compileall", "merge", "compileall", "merge"]
+    assert page.expanded_step("produce") == "merge", "重建后的按钮也只运行原区块"
+
+    _click(page._section_heads["merge"])
+    _click(page._primary_btns["compileall"])
+    _click(page._primary_btns["merge"])
+    assert ran == ["compileall", "merge", "compileall", "merge", "compileall", "merge"]
+    assert page.expanded_step("produce") == "", "全收起时按钮仍不切换展开"
+
+
+def test_single_section_button_follows_expansion(tmp_path):
+    page = _issue_page(str(tmp_path))
+    page.activate("cleantemp")
+    assert list(page._primary_btns) == ["cleantemp"]
+    assert isinstance(page._primary_btns["cleantemp"], ft.FilledButton)
+
+    _click(page._section_heads["cleantemp"])
+    assert page.expanded_step("clean") == ""
+    assert isinstance(page._primary_btns["cleantemp"], ft.OutlinedButton)
+
+    _click(page._section_heads["cleantemp"])
+    assert page.expanded_step("clean") == "cleantemp"
+    assert isinstance(page._primary_btns["cleantemp"], ft.FilledButton)
 
 
 def test_collapsed_section_head_status_and_button_still_refresh():

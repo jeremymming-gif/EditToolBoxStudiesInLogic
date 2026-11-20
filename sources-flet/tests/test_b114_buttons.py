@@ -98,11 +98,13 @@ def test_issue_header_buttons_removed_and_detail_owns_primary():
                    for ctl in _of(page._content_box, ft.FilledButton))
     assert page._stop_btn.visible is False
     detail_filled = _of(page._content_box, ft.FilledButton)
-    # 批 116 决策（I-2 E′）：「生成目录」视图含 01/02 两个区块，逐区块各一个
-    # 主按钮（01 运行检查、02 生成目录）；选中步的主按钮仍是 _step_run_primary。
+    detail_outlined = _of(page._content_box, ft.OutlinedButton)
+    # 展开的目录区块用 Filled，收起的信息检查区块用 Outlined；各保留一个动作。
     contents = [str(ctl.content) for ctl in detail_filled]
-    assert contents.count("生成目录") == 1 and contents.count("运行检查") == 1, \
-        "每个区块的详情头必须有且只有一个主按钮"
+    assert contents == ["生成目录"], "只有展开区块的主按钮使用 Filled"
+    outlined_contents = [str(ctl.content) for ctl in detail_outlined]
+    assert outlined_contents.count("运行检查") == 1 and "生成目录" not in outlined_contents, \
+        "收起区块保留唯一的 Outlined 主按钮"
     toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
     assert set(page._step_run_btns) == {"infocheck", "toc"}
