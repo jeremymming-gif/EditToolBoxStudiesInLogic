@@ -90,6 +90,10 @@ Capture the complete focused-test output and the failing assertion name. State w
 
 The candidate was pushed to public `main` so a Windows checkout can pull it. On macOS, the focused regression passed 41 assertions; Bash syntax validation and `git diff --check` also passed. The quick Engine tier passed 12 suites in 9.4 seconds, but that is not Windows timeout evidence and is not a full-gate result.
 
-Windows/Git Bash behavior has not yet been verified on a Windows host. POSIX process-group cleanup passed on macOS Bash 3.2.57. A POSIX child that deliberately detaches from its process group is not covered. In parallel mode, the existing policy serially rechecks a timed-out suite, so a hung suite may consume two timeout intervals.
+### Windows/Git Bash result (2026-11-20)
+
+The Windows operator reported a passing run on Windows 11 Pro build 26200, Git Bash 5.2.37, and Python 3.14.10. The checkout was `main` at `2a2aeafed7230752fff296508e19c9621002d52e`, a descendant of the fixed candidate; both acceptance source files matched `21ccc4dc9c128fe7a233755c91fe5090473413b5`. From the repository root, `python Engine/tests/test_b309_gate_speedup.py` reported 41 assertions passed, 0 failed, exit code 0. The report covers serial, allowlist, parallel timeout/recheck, manifest and continuation behavior, and Windows process-tree cleanup. Explicit empty manuscript/notes paths were used; section (e) skipped as expected. No real manuscript/notes data, full gate, strict AUTO, package, or release was accessed or run. The Windows checkout was clean and unchanged. Detailed logs remain on the Windows host; they were not independently read by the originating Mac lead.
+
+This is evidence for the Windows Git Bash timeout path only. It does not establish Windows GUI/package, full gate, strict AUTO, or release acceptance. POSIX child detachment remains outside coverage. In parallel mode, the existing policy serially rechecks a timed-out suite, so a hung suite may consume two timeout intervals.
 
 The originating checkout had nine unrelated pre-existing modified files at handoff. They were not included in the candidate push and must remain untouched.
