@@ -15,6 +15,7 @@ argv 语义与旧 Tk 壳 `sources-win/engine.py`（历史文件，2026-11-01 已
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -494,6 +495,7 @@ class EngineCall:
     entry: str
     argv: list[str]
     label: str = ""
+    stdin_text: str | None = None
 
     @property
     def display(self) -> str:
@@ -1129,19 +1131,27 @@ def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
     return _call("cleantemp.py", args, label)
 
 
-def cleantemp_daily_call(*, folder: str, dry_run: bool = False) -> EngineCall:
+def cleantemp_daily_call(*, folder: str, dry_run: bool = False,
+                         expect_preview: str = "",
+                         selected_paths: list[str] | None = None) -> EngineCall:
     """清理页唯一日常入口（INTERFACE-DAILY §1/§8）：`--mode daily --json`。
 
     daily 只回收（移入 `<期目录>/.toolbox-trash/<批次>/`，可撤销），
     不接受永久删除/清空回收站/全部报告等参数；不再受旧 mode / dry_run /
-    tocwork / all_reports 设置影响。`dry_run=True` 只扫描（零写入），用于点击后的
-    自动校验：空候选/预检失败都不进入真跑，也就不会建批次。
+    tocwork / all_reports 设置影响。`dry_run=True` 只扫描（零写入）；手动界面
+    让编辑确认选择后，再绑定预览身份与所选路径执行。
     旧 `cleantemp_call` 保留给旧批次撤销（`--restore`）与兼容测试。
     """
     args = ["--folder", folder, "--mode", "daily"]
     _append_flag(args, "--dry-run", dry_run)
     args.append("--json")
-    return _call("cleantemp.py", args, "扫描临时文件" if dry_run else "清理临时文件")
+    call = _call("cleantemp.py", args, "扫描临时文件" if dry_run else "清理临时文件")
+    if selected_paths is not None:
+        if dry_run or not expect_preview:
+            raise ValueError("逐项回收必须提交非空预览身份，且不能用于扫描")
+        call.argv.extend(("--expect-preview", expect_preview, "--selection-stdin"))
+        call.stdin_text = json.dumps({"selected": selected_paths}, ensure_ascii=False)
+    return call
 
 
 def dirpush_call(
@@ -1893,6 +1903,8 @@ async def run_call(
     `stdin_text` 非 None 时把文本喂给子进程标准输入并关闭（批 109 W2a：
     参考文献规范化的「粘贴交回 .bib」模式 —— ``--returned-stdin``，不落中间文件）。
     """
+    if stdin_text is None:
+        stdin_text = call.stdin_text
     env = env_for_run(api, notes)
     kwargs = {}
     if os.name == "nt":

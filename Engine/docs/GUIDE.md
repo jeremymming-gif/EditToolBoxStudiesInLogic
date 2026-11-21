@@ -49,7 +49,7 @@
 | 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） |  |
 | 生成目录 | 选检查报告 → **一键最终交付**：生成中英文目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 个固定名路径/模板来源/页数；高级开关「仅生成 tex（不落位）」默认关（旧行为）。模板继承、条目断行/栏目行与单页适配都在引擎侧 | `Engine/toc.py`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
 | 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest schema=3：文件条目带内容 sha256；`--restore` 撤销前校验版本与内容摘要、旧批次告警不可校验；`--empty-trash` 清空） | `Engine/cleantemp.py`、`Engine/slcn/clean.py` |
-| 日常清理（清理页） | **清理页的唯一入口**（`--mode daily`）：一个日常范围自动决定收哪些（编译辅助 / 编译 log / 有来源 bbl / 有同名 tex 的 out / `.toolbox-tmp/` / 根时间戳 tex / `目录结果.json` / 旧信息检查报告组），**引用闭包优先保护、无法证明可再生一律保留**；默认移入回收站，一个 `operationId` 一个可恢复批次（先落清单再搬移），`--restore` 撤销；拒绝 `--delete/--empty-trash/--trash/--all-reports`；扫描只读、预检失败零写入 | `Engine/cleantemp.py`、`Engine/slcn/clean_daily.py`；用法 §3.12 |
+| 日常清理（清理页） | **清理页的唯一入口**（`--mode daily`）：一个日常范围自动决定收哪些（编译辅助 / 编译 log / 有来源 bbl / 有同名 tex 的 out / 工作区与 Bib 时间戳备份 / 根时间戳 tex / `目录结果.json` / 旧信息检查报告组），**引用闭包优先保护、无法证明可再生一律保留**；默认移入回收站，一个 `operationId` 一个可恢复批次（先落清单再搬移），`--restore` 撤销；拒绝 `--delete/--empty-trash/--trash/--all-reports`；扫描只读、预检失败零写入 | `Engine/cleantemp.py`、`Engine/slcn/clean_daily.py`；用法 §3.12 |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `Engine/bibdb.py`，第 132 条 |
 | 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `Engine/bibdb.py`，第 132 条 |
@@ -1456,18 +1456,23 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 ### 3.12 日常清理：`cleantemp.py --mode daily`（B-3xx，2026-11-07 清理页）
 
 清理页 / CLI 只用一个入口；范围判定全在引擎（`slcn/clean_daily.py: scan_daily()`），GUI 不自己扫文件。
+清理页先只读扫描并在原位列出本期全部候选，默认空选；可逐项勾选或全选，半选状态与「已选 M / N 项」同步显示。
+确认按钮只提交所选集合，零选不可执行；每项显示类别和完整相对路径，目录候选另列内部文件/子目录数，受保护项列原因但不可勾选。
+执行绑定本次完整预览身份；换期或重新扫描会使旧选择失效。CLI 省略选择参数时仍保留整批兼容语义。
 
 ```bash
 # 只看会收什么（诊断；不写任何文件）
 python3 cleantemp.py --folder "<期目录>" --mode daily --dry-run
-# 实际回收（默认移入 <期目录>/.toolbox-trash/<目录名>-<operationId>/）
+# 显式选择执行（将路径替换为本次 dry-run entries 中的相对路径）
+printf '%s' '{"selected":["01 作者/main.aux"]}' | python3 cleantemp.py --folder "<期目录>" --mode daily --expect-preview "<previewId>" --selection-stdin --json
+# 兼容整批 CLI（移入 <期目录>/.toolbox-trash/<目录名>-<operationId>/）
 python3 cleantemp.py --folder "<期目录>" --mode daily --json
 # 撤销一个批次（GUI 的「撤销」就是这条）
 python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录名>-<operationId>>" --json
 ```
 
 - **收什么**：编译辅助（`.aux/.bcf/.blg/.run.xml/.synctex.gz/.fls/.fdb_latexmk/.toc/.lof/.lot/.nav/.snm/.vrb` 等）、
-  编译 `.log`（有 TeX banner 且同名 `.tex`）、有来源的 `.bbl`、有同名 tex 的 `.out`、`.toolbox-tmp/` 下非备份文件、
+  编译 `.log`（有 TeX banner 且同名 `.tex`）、有来源的 `.bbl`、有同名 tex 的 `.out`、可安全整体搬移的工具工作区、严格匹配的 Bib 时间戳备份、
   根时间戳 tex（`Chinese Content_/contents_YYYY-MM-DD_HH-MM-SS.tex`）、根级 `目录结果.json`、**旧**信息检查报告组。
 - **留什么**：最终 tex/pdf/图/样式/文献/设置、引用闭包（含间接）、`original/` 系原稿目录、备份/历史/待核、
   未知 `.log`、自定义 `.out`、无来源 `.bbl`、符号链接、最新一组信息检查报告、拿不准的一切（JSON `kept` 有理由）。
@@ -1484,7 +1489,10 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
   不符/缺字段 → 整批拒绝；旧 v1/v2 批次允许恢复但会明确告警「无内容摘要、无法校验是否被篡改」（`RESTORE_UNVERIFIED`）。
 - **引用保护细则**：`\input` 支持花括号/引号/无花括号三种写法；引用按真实编译 cwd（文章目录优先）解析，
   同名多来源全部保护；符号链接别名保护其目标，指向根外只保护别名、不跟随。
-- **备份优先**：`.toolbox-tmp/` 内的 `.bak/.backup/.orig` 等备份文件也按备份保留（不会因为位于 tmp 就被回收）。
+- **工作区与备份**：期目录根级 `.toolbox-tmp` 按整体回收，普通文件和备份一起搬走，可一起撤销。活动、待应用或状态不明的 `.aiw` 保留。回收已交付的 `.aiw` 后，若需使用原 AI 交付撤销能力，请先撤销清理。
+  在普通目录中，只回收 `reference.bib.YYYYMMDD-HHMMSS-ffffff.bak` 格式的工具备份，保留其他备份与 `.slcn-源指纹.json`。
+  含链接、跳过目录或源指纹的工作区保留，不进入其他期目录。
+- **确认同一份预览**：带候选的 JSON 预演会返回 `previewId`。执行时可传 `--expect-preview ID`，若候选或身份已变则零搬移，并提示重新预演。
 - **`--json`**：stdout 最后一行 JSON，保留旧字段（`ok/command/mode/dryRun/root/count/entryCount/entries/trashDir/restoreDir/failures/warnings/error`），
   新增 `operationId/status/kept`；字段语义见 `docs/ENGINE_API.md` §五。
 

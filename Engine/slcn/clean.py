@@ -458,6 +458,15 @@ def restore(
     except _ManifestProblem as exc:
         emit(str(exc))
         return 0, []
+    if (data.get("mode") == "daily" or data.get("kind") == "daily") and any(
+        item["type"] == "dir" for item in items
+    ):
+        from .clean_daily import restore_daily
+
+        result = restore_daily(root, trash_root, dry_run=dry_run, log=emit)
+        if result["error"]:
+            emit(result["error"])
+        return result["count"], [entry["path"] for entry in result["entries"]]
     for item in items:
         bad = _validate_manifest_rel(item["path"])
         if bad:

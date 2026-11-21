@@ -1,7 +1,6 @@
-"""清理临时文件：单一日常入口（INTERFACE-DAILY，T3）。
+"""清理临时文件：扫描候选、逐项回收并支持撤销。
 
-用户可见只有一个主按钮「清理临时文件」：点击后自动先 dry-run 校验（扫描），
-零候选/预检失败不进入真跑、不建批次；有候选才按 --mode daily 真跑。
+手动操作先只读扫描，再由编辑选择回收项；引擎仍负责候选判定和实际搬移。
 旧的三档（aux/delivery/workspace）、手动预演闸、tocwork 开关与「清理」危险确认词
 都已删除；旧设置只保留只读兼容（assembly.cleantemp_mode 等），不影响本入口。
 
@@ -60,7 +59,7 @@ def _clock(stamp: str) -> str:
 
 
 def _norm_entries(value, *, action: str = "move") -> list:
-    """entries 兼容 [{"path","action"}] 与旧版字符串数组；只留相对路径。"""
+    """兼容旧字符串条目，保留引擎提供的目录统计和判据说明。"""
     rows: list = []
     for item in value or []:
         if isinstance(item, dict):
@@ -70,8 +69,39 @@ def _norm_entries(value, *, action: str = "move") -> list:
             path = str(item or "").strip()
             act = action
         if path:
-            rows.append({"path": path, "action": act})
+            row = {"path": path, "action": act}
+            if isinstance(item, dict):
+                for key in ("kind", "reason", "type", "fileCount", "directoryCount"):
+                    if key in item:
+                        row[key] = item[key]
+            rows.append(row)
     return rows
+
+
+_KIND_LABEL = {
+    "ai-workspace": "AI 工作区",
+    "tmp-workspace": "临时工作区",
+    "bib-timestamp-backup": "Bib 时间戳备份",
+    "toc-result": "目录结果",
+    "timestamp-tex": "时间戳 TeX",
+    "aux": "编译辅助文件",
+    "log": "编译日志",
+    "info-report": "信息检查报告",
+}
+
+
+def _entry_text(item: dict) -> str:
+    category = _KIND_LABEL.get(str(item.get("kind") or ""), "可再生文件")
+    text = f"[{category}] {item['path']}"
+    if item.get("type") == "dir":
+        text += f"（{item.get('fileCount', 0)} 个文件，{item.get('directoryCount', 0)} 个子目录）"
+    if item.get("reason"):
+        text += f" — {item['reason']}"
+    return text
+
+
+def _entry_unit(rec: dict) -> str:
+    return " 项" if any(item.get("type") == "dir" for item in _norm_entries(rec.get("entries"))) else " 个文件"
 
 
 def _norm_kept(value) -> list:
@@ -187,6 +217,8 @@ class CleanupPanel:
     def __init__(self, page) -> None:
         self.page = page
         self._token = 0
+        self._pending_selection: asyncio.Future | None = None
+        self._selection: dict | None = None
         self._phase_token = 0       # 当前 phase 属于哪一次运行（晚到回调不误清新任务）
         self._phase = ""            # scanning / cleaning / restoring
         self._phase_root = ""
@@ -321,6 +353,10 @@ class CleanupPanel:
     def reset(self) -> None:
         """换期/重建：让晚到回调失效；不删任何已持久化结果。"""
         self._token += 1
+        selection = self._pending_selection
+        if selection is not None and not selection.done():
+            selection.get_loop().call_soon_threadsafe(self._answer_selection, selection, None)
+        self._selection = None
         self._phase = ""
         self._phase_root = ""
         self._lines = []
@@ -329,13 +365,7 @@ class CleanupPanel:
     def params(self) -> list:
         t = self.page.t
         return [
-            C.notice_bar(
-                "点「清理临时文件」= 自动校验 + 回收：aux / 编译日志 / .toolbox-tmp 中间件 / "
-                "时间戳中英 tex / 目录结果 JSON / 旧《信息检查》报告（保留最新一组）。"
-                "文件移入 <期目录>/.toolbox-trash/，可撤销、不永久删除；"
-                "最终 tex/pdf 与 目录设置.json 不动。", t, "info"),
-            C.text("范围固定：旧「三档清理 / 只预演 / 含中间件 / 全部报告」设置不再影响本入口。",
-                   t, "caption", t.palette.text_faint),
+            C.inline_note("扫描不会移动文件；确认后可撤销。", t, "info"),
         ]
 
     # ── 结果区 ──────────────────────────────────────────────────────────
@@ -358,50 +388,125 @@ class CleanupPanel:
         t = self.page.t
         root = self.root
         if not root:
-            return [C.text("先选择期目录；选好后点「清理临时文件」。", t, "caption",
+            return [C.text("选择期目录后扫描。", t, "caption",
                            t.palette.text_faint)]
         if self._phase and self._phase_root == root:
-            label = {"scanning": "正在扫描临时文件…",
-                     "cleaning": "正在清理：文件移入回收区…",
-                     "restoring": "正在撤销本次清理…"}.get(self._phase, "正在运行…")
-            hint = ("扫描阶段不写入；" if self._phase == "scanning"
-                    else "文件会移入回收区，可撤销；")
+            if self._phase == "preview" and self._selection \
+                    and _same_root(self._selection.get("root"), root):
+                return self._selection_controls(self._selection)
+            label = {"scanning": "正在扫描…",
+                     "cleaning": "正在移入回收区…",
+                     "restoring": "正在恢复…"}.get(self._phase, "正在运行…")
             return [
-                C.section_label("清理临时文件", t, note="运行中"),
+                C.section_label(label, t),
                 C.hairline(t),
-                C.inline_note(label, t, "info"),
-                C.text(hint + "点页头「停止」可中断。", t, "caption",
-                       t.palette.text_faint),
                 C.busy_bar(t, visible=True),
             ]
         rec = self.record(root)
         if not rec or rec.get("root") != root:
-            return [self._empty("尚未清理",
-                                "点「清理临时文件」自动校验并回收；扫描不动磁盘，空候选不建批次。")]
+            return [self._empty("待扫描")]
+        restore = self._restore_of(rec)
+        if str(restore.get("status") or "") in ("success", "empty"):
+            return [
+                C.section_label("撤销结果", t, note=_clock(restore.get("at") or "")),
+                C.hairline(t),
+                *self._restore_rows(rec),
+                *self._action_rows(rec),
+            ]
         rows: list = [
             C.section_label("清理结果", t,
                             note=_clock(rec.get("finishedAt") or rec.get("startedAt"))),
             C.hairline(t),
         ]
         rows += self._status_rows(rec)
+        rows += self._unselected_rows(rec)
         rows += self._kept_rows(rec)
         rows += self._failure_rows(rec)
         rows += self._restore_rows(rec)
         rows += self._action_rows(rec)
         return rows
 
-    def _empty(self, title: str, desc: str) -> ft.Control:
+    def _selection_controls(self, state: dict) -> list:
         t = self.page.t
+        entries = state["entries"]
+        selected = state["selected"]
+        root = state["root"]
+        preview_id = state["previewId"]
+        token = state["token"]
+        all_selected = len(selected) == len(entries) and bool(entries)
+        partial = bool(selected) and not all_selected
+
+        def set_all(event) -> None:
+            if token != self._token or root != self.root or self._selection is not state:
+                return
+            state["selected"] = (set() if all_selected
+                                  else {item["path"] for item in entries})
+            self._refresh_result()
+
+        rows: list = [
+            ft.Checkbox(label="全选本次候选", value=None if partial else all_selected,
+                        tristate=True, on_change=set_all),
+        ]
+
+        for item in entries:
+            path = item["path"]
+
+            def set_one(event, *, selected_path=path) -> None:
+                if token != self._token or root != self.root or self._selection is not state:
+                    return
+                current = set(state["selected"])
+                if bool(getattr(event.control, "value", False)):
+                    current.add(selected_path)
+                else:
+                    current.discard(selected_path)
+                state["selected"] = current
+                self._refresh_result()
+
+            rows.append(ft.Checkbox(label=_entry_text(item), value=path in selected,
+                                    on_change=set_one))
+        rows += [
+            C.text(f"已选 {len(selected)} / {len(entries)} 项", t, "caption",
+                   t.palette.text_muted),
+        ]
+        kept = _norm_kept(state.get("kept"))
+        if kept:
+            rows.append(C.section_label(f"受保护（{len(kept)}）", t))
+            rows += [C.text(f"{item['path']} — {item['reason'] or item['kind']}",
+                            t, "caption", t.palette.text_faint) for item in kept]
+
+        def cancel(_event=None) -> None:
+            pending = self._pending_selection
+            if pending is not None and not pending.done():
+                pending.get_loop().call_soon_threadsafe(self._answer_selection, pending, None)
+
+        def confirm(_event=None) -> None:
+            pending = self._pending_selection
+            if (pending is not None and not pending.done() and state["selected"]
+                    and token == self._token and root == self.root
+                    and self._selection is state):
+                pending.get_loop().call_soon_threadsafe(
+                    self._answer_selection, pending, sorted(state["selected"]))
+
+        rows.append(ft.Row(controls=[
+            C.text_button("取消", cancel, t),
+            ft.FilledButton(content=f"将 {len(selected)} 项移入回收区",
+                            disabled=not selected, on_click=confirm),
+        ]))
+        return [C.section_label("本期候选", t), C.hairline(t),
+                ft.Column(rows, spacing=t.sp("1"), scroll=C.scrollbar(t))]
+
+    def _empty(self, title: str, desc: str = "") -> ft.Control:
+        t = self.page.t
+        controls = [C.text(title, t, "small", t.palette.text_muted)]
+        if desc:
+            controls.append(C.text(desc, t, "caption", t.palette.text_faint,
+                                   text_align=ft.TextAlign.CENTER, max_lines=2))
         return ft.Container(
             height=t.px(72), border=ft.Border.all(1, t.palette.border),
             border_radius=t.radius("md"), alignment=ft.Alignment.CENTER,
             content=ft.Column(spacing=t.sp("half"),
                               horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                              controls=[
-                                  C.text(title, t, "small", t.palette.text_muted),
-                                  C.text(desc, t, "caption", t.palette.text_faint,
-                                         text_align=ft.TextAlign.CENTER, max_lines=2),
-                              ]),
+                              controls=controls),
         )
 
     def _status_rows(self, rec: dict) -> list:
@@ -412,40 +517,36 @@ class CleanupPanel:
         error = str(rec.get("error") or "").strip()
         rows: list = []
         if status == "success":
-            rows.append(C.inline_note(f"实际回收 {count} 个文件（移入回收区，可撤销）。",
+            rows.append(C.inline_note(f"已回收 {count}{_entry_unit(rec)}。",
                                       t, "ok"))
         elif status == "empty":
             if self._last_batch(rec)[0]:
-                rows.append(C.inline_note(
-                    "没有可清理的临时文件（未创建新批次）；上次清理批次仍可撤销。",
-                    t, "info"))
+                rows.append(C.inline_note("本次无候选；上次清理可撤销。", t, "info"))
             elif str(self._restore_of(rec).get("status") or "") == "success":
-                rows.append(C.inline_note(
-                    "没有可清理的临时文件（未创建新批次）；上次清理已撤销。", t, "info"))
+                rows.append(C.inline_note("本次无候选；上次清理已撤销。", t, "info"))
             else:
-                rows.append(C.inline_note(
-                    "没有可清理的临时文件（未创建批次，也没有撤销）。", t, "info"))
+                rows.append(C.inline_note("本次无候选。", t, "info"))
         elif status == "partial":
             rows.append(C.inline_note(
-                f"实际回收 {count} 个文件，{len(failures)} 项失败；已回收的条目仍可撤销。",
+                f"已回收 {count}{_entry_unit(rec)}；失败 {len(failures)} 项。",
                 t, "warn"))
         elif status == "preflight_failed":
             rows.append(C.inline_note(
-                f"预检未通过，未写入任何文件：{error or '见下方明细'}", t, "error"))
+                f"未移动：{error or '查看明细'}", t, "error"))
         elif status == "cancelled":
             if count > 0:
                 rows.append(C.inline_note(
-                    f"已停止，部分文件已回收：实际回收 {count} 个文件；可撤销本批次。",
+                    f"已停止；已回收 {count}{_entry_unit(rec)}。",
                     t, "warn"))
             elif str(rec.get("trashDir") or ""):
-                rows.append(C.inline_note("已停止：本批次没有成功回收的文件。", t, "warn"))
+                rows.append(C.inline_note("已停止；未回收项目。", t, "warn"))
             else:
-                note = "已停止：扫描阶段未写入，未回收任何文件。"
+                note = "扫描已停止；未移动文件。"
                 if self._last_batch(rec)[0]:
-                    note += "（上次清理批次仍可撤销）"
+                    note += "上次清理可撤销。"
                 rows.append(C.inline_note(note, t, "warn"))
         else:
-            rows.append(C.inline_note(f"清理未完成：{error or '见下方明细'}", t, "error"))
+            rows.append(C.inline_note(f"未完成：{error or '查看明细'}", t, "error"))
         trash = str(rec.get("trashDir") or "")
         if trash:
             rows.append(C.text(f"回收区：{trash}", t, "caption", t.palette.text_faint,
@@ -457,7 +558,7 @@ class CleanupPanel:
         kept = _norm_kept(rec.get("kept"))
         if not kept:
             return []
-        rows = [C.text(f"保留 {len(kept)} 项（有意不动）：", t, "caption",
+        rows = [C.text(f"受保护 {len(kept)} 项：", t, "caption",
                        t.palette.text_muted)]
         for item in kept[:3]:
             reason = item.get("reason") or "受保护"
@@ -466,6 +567,21 @@ class CleanupPanel:
                                overflow=ft.TextOverflow.ELLIPSIS))
         if len(kept) > 3:
             rows.append(C.text(f"…其余 {len(kept) - 3} 项在「查看明细」", t, "caption",
+                               t.palette.text_faint))
+        return rows
+
+    def _unselected_rows(self, rec: dict) -> list:
+        t = self.page.t
+        items = _norm_entries(rec.get("unselected"))
+        if not items:
+            return []
+        rows = [C.text(f"未选 {len(items)} 项：", t, "caption",
+                       t.palette.text_muted)]
+        rows += [C.text(f"· {_entry_text(item)}", t, "caption", t.palette.text_faint,
+                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+                 for item in items[:3]]
+        if len(items) > 3:
+            rows.append(C.text(f"…其余 {len(items) - 3} 项在「查看明细」", t, "caption",
                                t.palette.text_faint))
         return rows
 
@@ -500,7 +616,7 @@ class CleanupPanel:
         if status == "success":
             scope = "本次清理" if self._restorable(rec) else "上次清理"
             extra = f"（另有 {already} 项此前已恢复）" if already else ""
-            return [C.inline_note(f"已撤销{scope}：恢复 {count} 个文件。{extra}",
+            return [C.inline_note(f"已撤销{scope}：恢复 {count}{_entry_unit(restore)}。{extra}",
                                   t, "ok")]
         if status == "empty":
             extra = f"（另有 {already} 项此前已恢复）" if already else ""
@@ -563,7 +679,8 @@ class CleanupPanel:
     def phase_label(self) -> str:
         return {"scanning": "正在扫描…",
                 "cleaning": "正在清理…",
-                "restoring": "正在撤销…"}.get(self._phase, "清理临时文件")
+                "preview": "等待确认…",
+                "restoring": "正在撤销…"}.get(self._phase, "扫描本期")
 
     def start(self) -> None:
         app = self.page.app
@@ -584,19 +701,10 @@ class CleanupPanel:
         self._phase_started = time.time()
         self._lines = []
         self._mark_running()
-        self._expand_log()
         self._mark("cleanup_start", root=root, token=token)
         runner = getattr(getattr(self.page, "page", None), "run_task", None)
         if callable(runner):
             runner(self._execute, token, root)
-
-    def _expand_log(self) -> None:
-        fn = getattr(self.page, "_expand_log", None)
-        if callable(fn):
-            try:
-                fn()
-            except Exception:  # noqa: BLE001 —— 测试桩
-                pass
 
     def _mark_running(self) -> None:
         self.page._status["cleantemp"] = ASM.StepStatus(
@@ -605,7 +713,7 @@ class CleanupPanel:
         self._refresh_steps()
         self._refresh_result()
 
-    # ── 执行：自动扫描 →（有候选才）真跑 ───────────────────────────────
+    # ── 执行：只读扫描 → 编辑选择 → 逐项回收 ─────────────────────────
     async def _execute(self, token: int, root: str) -> None:
         started = time.time()
         scan = EB.cleantemp_daily_call(folder=root, dry_run=True)
@@ -618,7 +726,56 @@ class CleanupPanel:
         scan_status = str(scan_payload.get("status") or "")
         if not cancelled and code == 0 and scan_status != "empty" \
                 and scan_payload.get("ok") and scan_status in ("success", "partial"):
-            clean = EB.cleantemp_daily_call(folder=root, dry_run=False)
+            entries = _norm_entries(scan_payload.get("entries"))
+            preview_id = str(scan_payload.get("previewId") or "")
+            if not entries:
+                self._finish(root, scan_payload, code=code, cancelled=False,
+                             started=started, stage="scanning", lines=lines)
+                return
+            if not preview_id:
+                failed = dict(scan_payload, ok=False, status="preflight_failed",
+                              error="扫描结果缺少预览身份，本次未执行任何回收。")
+                self._finish(root, failed, code=2, cancelled=False,
+                             started=started, stage="scanning", lines=lines)
+                return
+            state = {"root": root, "token": token, "previewId": preview_id,
+                     "entries": entries, "kept": scan_payload.get("kept") or [],
+                     "selected": set()}
+            self._selection = state
+            self._phase = "preview"
+            self._sync_buttons()
+            loop = asyncio.get_running_loop()
+            pending = loop.create_future()
+            self._pending_selection = pending
+            try:
+                self._refresh_result()
+                selected = await pending
+            finally:
+                if self._pending_selection is pending:
+                    self._pending_selection = None
+            if self._stale(token, root) or not _same_root(self.root, root):
+                self._drop_phase(token)
+                return
+            if selected is None:
+                self._selection = None
+                self._drop_phase(token)
+                self.page._status.pop("cleantemp", None)
+                self._sync_buttons()
+                self._refresh_steps()
+                self._refresh_result()
+                return
+            if not selected:
+                self._selection = None
+                self._drop_phase(token)
+                self.page._status.pop("cleantemp", None)
+                self._sync_buttons()
+                self._refresh_steps()
+                self._refresh_result()
+                return
+            self._selection = None
+            clean = EB.cleantemp_daily_call(
+                folder=root, dry_run=False, expect_preview=preview_id,
+                selected_paths=selected)
             code, cancelled, payload, lines = await self._invoke(
                 clean, token=token, root=root, phase="cleaning")
             if self._stale(token, root):
@@ -632,6 +789,11 @@ class CleanupPanel:
             return
         self._finish(root, scan_payload or None, code=code, cancelled=cancelled,
                      started=started, stage="scanning", lines=lines)
+
+    @staticmethod
+    def _answer_selection(pending: asyncio.Future, selected) -> None:
+        if not pending.done():
+            pending.set_result(selected)
 
     def _stale(self, token: int, root: str) -> bool:
         return token != self._token
@@ -802,6 +964,7 @@ class CleanupPanel:
             "count": int(payload.get("count") or 0),
             "entryCount": int(payload.get("entryCount") or 0),
             "entries": _norm_entries(payload.get("entries")),
+            "unselected": _norm_entries(payload.get("unselected")),
             "kept": _norm_kept(payload.get("kept")),
             "failures": _norm_failures(payload.get("failures")),
             "warnings": [str(x) for x in (payload.get("warnings") or [])
@@ -962,6 +1125,7 @@ class CleanupPanel:
         restore = {
             "status": status,
             "count": count,
+            "entries": _norm_entries(payload.get("entries"), action="restore"),
             "alreadyRestored": int(payload.get("alreadyRestored") or 0),
             "skipped": skipped,
             "unrestored": unrestored,
@@ -995,7 +1159,7 @@ class CleanupPanel:
             self._refresh_steps()
             self._refresh_result()
             if status == "success":
-                self._toast(f"已恢复 {count} 个文件")
+                self._toast(f"已恢复 {count}{_entry_unit(restore)}")
             elif status == "empty":
                 self._toast("该批次没有可恢复的条目")
             elif status in ("partial", "cancelled"):
@@ -1109,13 +1273,13 @@ class CleanupPanel:
         rows.append(C.kv_row(t, "期目录", root, mono=True))
         trash = str(rec.get("trashDir") or "")
         rows.append(C.kv_row(t, "回收区", trash or "—", mono=True))
-        rows.append(C.kv_row(t, "实际回收", f"{int(rec.get('count') or 0)} 个文件"))
+        rows.append(C.kv_row(t, "实际回收", f"{int(rec.get('count') or 0)}{_entry_unit(rec)}"))
         last_trash, last_op, last_count, last_fin = self._last_batch(rec)
         if last_trash and last_trash != trash:
             rows.append(C.section_label("上次可撤销批次", t))
             rows.append(C.kv_row(t, "批次号", last_op or "—", mono=True))
             rows.append(C.kv_row(t, "回收区", last_trash, mono=True))
-            rows.append(C.kv_row(t, "实际回收", f"{last_count} 个文件"))
+            rows.append(C.kv_row(t, "实际回收", f"{last_count} 项"))
             if last_fin:
                 rows.append(C.kv_row(t, "完成于", last_fin))
         restore = self._restore_of(rec)
@@ -1138,13 +1302,21 @@ class CleanupPanel:
             if restore.get("error"):
                 rows.insert(0, C.inline_note(str(restore["error"]), t, "error"))
         entries = _norm_entries(rec.get("entries"))
+        unselected = _norm_entries(rec.get("unselected"))
         if entries:
-            body = [f"· {item['path']}" for item in entries]
+            body = [f"· {_entry_text(item)}" for item in entries]
             rows.append(C.section_label(
                 f"已回收条目（{len(entries)}）", t,
                 trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
                     "\n".join(b), "回收条目"), t, height=t.px(24))))
-            rows += self._detail_rows(entries, lambda item: f"· {item['path']}")
+            rows += self._detail_rows(entries, lambda item: f"· {_entry_text(item)}")
+        if unselected:
+            body = [f"· {_entry_text(item)}" for item in unselected]
+            rows.append(C.section_label(
+                f"未勾选（{len(unselected)}，未移动）", t,
+                trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
+                    "\n".join(b), "未勾选项"), t, height=t.px(24))))
+            rows += self._detail_rows(unselected, lambda item: f"· {_entry_text(item)}")
         kept = _norm_kept(rec.get("kept"))
         if kept:
             body = [f"· {item['path']} — {item.get('reason') or item.get('kind') or '受保护'}"
@@ -1190,8 +1362,9 @@ class CleanupPanel:
         all_lines = [f"期目录：{root}", f"状态：{_STATUS_LABEL.get(str(rec.get('status')), '—')}",
                      f"批次号：{rec.get('operationId') or '—'}",
                      f"回收区：{trash or '—'}",
-                     f"实际回收：{int(rec.get('count') or 0)} 个文件"]
-        all_lines += [f"回收：{item['path']}" for item in entries]
+                     f"实际回收：{int(rec.get('count') or 0)}{_entry_unit(rec)}"]
+        all_lines += [f"回收：{_entry_text(item)}" for item in entries]
+        all_lines += [f"未勾选（未移动）：{_entry_text(item)}" for item in unselected]
         all_lines += [f"保留：{item['path']} — {item.get('reason') or item.get('kind') or '受保护'}"
                       for item in kept]
         all_lines += [f"失败：{item['path']}"

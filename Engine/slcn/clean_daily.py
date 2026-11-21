@@ -5,7 +5,7 @@
     外壳要用户先选「删哪一档」。清理页改为**一个日常入口**：范围判定全部收进 Engine，
     壳只传目录、显示结果、提供撤销 —— 界面与 CLI 不可能再各写一套判据。
   · 日常范围 = 可识别、可再生、且**不被成品引用**的生成残留：
-    编译辅助文件、经证明的编译日志、`.toolbox-tmp/` 内容、根级时间戳中英目录 tex、
+    编译辅助文件、经证明的编译日志、工具工作区、Bib 时间戳备份、根级时间戳中英目录 tex、
     根级 `目录结果.json`、旧 `信息检查*` 报告组（最新一组整组保留）。
   · 判据的总纲是**保守**：无法证明可再生的（未知 .log / 无文献来源的 .bbl / 自定义 .out /
     解析不了的引用 / 符号链接 / 备份与历史稿）一律**保留并给原因**，绝不为凑数量放宽。
@@ -30,23 +30,27 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
 import stat as _stat
+import tempfile
 import threading
 import uuid
+from contextlib import nullcontext
 from collections.abc import Callable
 
 from . import clean as _clean
+from . import clean_workspaces as _work
 from . import paths as P
 
 # ── 常量（判据单点；RULES.md 与本文件同步）────────────────────────────────
 
 TRASH_DIR = _clean.TRASH_DIR
-TOC_WORK_DIR = ".toolbox-tmp"
+TOC_WORK_DIR = _work.TMP_DIR
 
 #: 编译辅助后缀（统一小写比较）。`.log/.bbl/.out` 不在表里：它们要过「可再生证明」。
 AUX_SUFFIXES = (
@@ -66,12 +70,6 @@ AUX_SUFFIXES = (
     ".bbl-save-error",
     ".ds_store",
 )
-
-#: 「备份/历史/待核」目录名片段（整棵不遍历、整棵保留）
-_PROTECTED_DIR_MARKERS = ("backup", "history", "历史", "待核", "备份")
-
-#: 无论出现在哪都不进入的目录（回收区另判）
-_ALWAYS_SKIP_DIRS = frozenset({".git", ".svn", ".hg", "__pycache__"})
 
 #: 根级「中英目录时间戳 tex」与它的备份变体（时间戳格式由 toc 生成器决定）
 TIMESTAMP_TEX_RE = re.compile(
@@ -176,16 +174,9 @@ def _inside(parent_real: str, child: str) -> bool:
         return False
 
 
-def _protected_dir_name(name: str) -> bool:
-    low = name.lower()
-    if any(m in name for m in _PROTECTED_DIR_MARKERS) or any(m in low for m in ("backup", "history")):
-        return True
-    return low.endswith(("_bak", "-bak", ".bak"))
-
-
 def _looks_backup_file(name: str) -> bool:
     low = name.lower()
-    if low.endswith((".bak", ".backup", ".orig")):
+    if low.endswith((".bak", ".backup", ".orig", ".ai前")):
         return True
     if any(m in name for m in ("备份", "历史", "待核")):
         return True
@@ -222,6 +213,7 @@ class _RefScanner:
     def __init__(self, root: str, errors: list[dict]) -> None:
         self.root = root
         self.root_real = os.path.realpath(root)
+        self.device = os.lstat(root).st_dev
         self.errors = errors
         self.refs: set[str] = set()
         self._texts: dict[str, str | None] = {}
@@ -249,6 +241,50 @@ class _RefScanner:
             self._seen_errors.add(key)
             self.errors.append({"path": path, "message": message})
 
+    @staticmethod
+    def _ambiguous_parent(raw: str) -> bool:
+        """Only normalize leading parent components before inspecting links."""
+        parts = iter(raw.split("/"))
+        for part in parts:
+            if part not in ("", ".", ".."):
+                return ".." in parts
+        return False
+
+    def _local_reference(self, full: str) -> tuple[str, bool, bool]:
+        """Resolve within the issue; stop at skipped paths or the first external link."""
+        try:
+            for _ in range(40):
+                # Both the selected path and its canonical spelling refer to the same root.
+                base = self.root if _inside(self.root, full) else self.root_real
+                if not _inside(base, full):
+                    return "", False, True
+                rel = _rel(base, full)
+                parts = [] if rel == "." else rel.split("/")
+                current = base
+                for i, part in enumerate(parts):
+                    if _work.skip_dir(part):
+                        return "", True, False
+                    current = os.path.join(current, part)
+                    st = os.lstat(current)
+                    if _work.is_link(st):
+                        if not _stat.S_ISLNK(st.st_mode):
+                            return "", True, False
+                        target = os.readlink(current)
+                        if self._ambiguous_parent(target):
+                            self._error(rel, "链接目标中段含上级路径（无法安全判定）")
+                            return "", False, False
+                        full = os.path.normpath(os.path.join(os.path.dirname(current), target, *parts[i + 1:]))
+                        if not (_inside(self.root, full) or _inside(self.root_real, full)):
+                            return "", True, False
+                        break
+                    if _work.boundary(st, current, self.device):
+                        return "", True, False
+                else:
+                    return current, False, False
+        except OSError:
+            return "", False, False
+        return "", False, False
+
     # -- 单条引用解析 --------------------------------------------------
     @staticmethod
     def _split_bases(bases: list[str]) -> list[str]:
@@ -266,6 +302,9 @@ class _RefScanner:
         if any(ch in p for ch in ("\\", "{", "}", "#", "$")):
             self._error(p, f"无法解析的引用（动态路径）：{p}")
             return []
+        if self._ambiguous_parent(p):
+            self._error(p, f"引用中段含上级路径（无法安全判定）：{p}")
+            return []
         if os.path.isabs(p) or re.match(r"^[A-Za-z]:[\\/]", p):
             self._error(p, f"绝对路径引用（不安全）：{p}")
             return []
@@ -275,24 +314,16 @@ class _RefScanner:
         for base in self._split_bases(bases):
             for c in cands:
                 full = os.path.normpath(os.path.join(base, c))
-                real = os.path.realpath(full)
-                if not _inside(self.root_real, real):
-                    # R04：根内别名指向根外——只保护别名本身，不跟随、不递归。
-                    root_abs = os.path.abspath(self.root)
-                    full_abs = os.path.abspath(full)
-                    if _inside(root_abs, full_abs) and os.path.lexists(full_abs):
-                        rel = P.rel(full_abs, root_abs).replace(os.sep, "/")
-                        if rel not in found:
-                            found.append(rel)
-                    else:
-                        escaped = True
+                target, opaque, outside = self._local_reference(full)
+                escaped |= outside
+                if not opaque and (not target or not os.path.isfile(target)):
                     continue
-                if not os.path.isfile(real) and not os.path.isfile(full):
-                    continue
-                for target in (full, real):
-                    rel = P.rel(target, self.root_real).replace(os.sep, "/")
-                    if rel.startswith("../"):
-                        continue
+                if opaque:
+                    # Preserve the alias without opening or probing its external target.
+                    target = full
+                for path in (full, target):
+                    base_path = self.root if _inside(self.root, path) else self.root_real
+                    rel = _rel(base_path, path)
                     if rel not in found:
                         found.append(rel)
         if found:
@@ -322,9 +353,13 @@ class _RefScanner:
                 raw = pm.group(1).strip()
                 if not raw:
                     continue
+                if self._ambiguous_parent(raw):
+                    self._error(raw, f"图像路径中段含上级路径（无法安全判定）：{raw}")
+                    continue
                 for base in (tex_dir, self.root):
                     full = os.path.normpath(os.path.join(base, raw))
-                    if os.path.isdir(full):
+                    target, _opaque, _outside = self._local_reference(full)
+                    if target and os.path.isdir(target):
                         gbases.append(full)
         for m in _TEX_GRAPHICS_RE.finditer(text):
             for got in self.resolve(m.group(1), gbases, _GRAPHICS_EXTS):
@@ -336,8 +371,14 @@ class _RefScanner:
                 self.refs.add(got)
                 if not got.lower().endswith(".tex"):
                     continue  # 显式 input 一个 .bbl/.out：保护即可，不递归
-                if not _inside(self.root_real, os.path.realpath(_abs(self.root, got))):
-                    continue  # 别名指向根外（外链）：保护别名，不读目标、不递归
+                if any(_work.skip_dir(part) for part in got.split("/")):
+                    self._error(got, "引用进入跳过目录（无法安全判定间接引用）")
+                    continue
+                try:
+                    if not _stat.S_ISREG(_work.checked_stat(self.root, got).st_mode):
+                        continue
+                except OSError:
+                    continue  # 链接本身不读；根内真实目标已单独加入引用闭包。
                 if depth + 1 >= CLOSURE_MAX_DEPTH:
                     self._error(got, "引用嵌套过深（无法安全判定）")
                     continue
@@ -372,11 +413,12 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
     stop = stop_check or (lambda: None)
     public: dict = {"root": root, "candidates": [], "kept": [], "errors": [], "ok": True}
     meta: dict = {"refs": set(), "fp": {}, "paths": set()}
-    if not os.path.isdir(root):
+    if not os.path.isdir(root) or _work.is_link(os.lstat(root)):
         public["errors"].append({"path": root, "message": "路径不是文件夹"})
         public["ok"] = False
         return {"public": public, "meta": meta}
 
+    device = os.lstat(root).st_dev
     files: list[dict] = []
     ref_infos: list[dict] = []
     kept: list[dict] = [{"path": "", "kind": "", "reason": ""}][:0]
@@ -387,7 +429,32 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
     def add_kept(path: str, kind: str, reason: str) -> None:
         kept.append({"path": path, "kind": kind, "reason": reason})
 
-    def walk(abs_dir: str, rel_dir: str, in_tmp: bool) -> None:
+    def add_workspace(full: str, rel: str, *, ai: bool) -> None:
+        reason = _work.ai_retention(full) if ai else None
+        if ai and reason is None:
+            try:
+                with _work.idle_ai(full) as idle:
+                    if not idle:
+                        reason = ("ai-active", "AI 工作区正由另一进程使用")
+            except OSError:
+                reason = ("ai-unknown", "无法核对 AI 工作区活动锁（保留）")
+        if reason:
+            add_kept(rel, *reason)
+            return
+        try:
+            tree = _work.snapshot(full, stop)
+        except (OSError, RecursionError) as exc:
+            add_kept(rel, "workspace-protected", f"工作区无法整体安全回收：{exc}")
+            return
+        directories = sum(_stat.S_ISDIR(fp[2]) for key, fp in tree.items() if key)
+        cands[rel] = {
+            "path": rel, "type": "dir", "kind": "ai-workspace" if ai else "tmp-workspace",
+            "reason": ("AI 初排已交付，可整体回收" if ai else "整期工具临时工作区，可整体回收"),
+            "fileCount": len(tree) - 1 - directories, "directoryCount": directories,
+        }
+        meta["fp"][rel] = tree
+
+    def walk(abs_dir: str, rel_dir: str) -> None:
         stop()
         try:
             entries = sorted(os.scandir(abs_dir), key=lambda e: e.name.lower())
@@ -397,36 +464,42 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
                 "message": f"无法读取目录：{exc.strerror or exc}",
             })
             return
+        has_ai_workspace = any(ent.name.lower() == _work.AI_DIR for ent in entries)
         for ent in entries:
+            stop()
             name = ent.name
             rel = name if rel_dir == "" else f"{rel_dir}/{name}"
-            try:
-                is_link = ent.is_symlink()
-                is_dir = ent.is_dir(follow_symlinks=False)
-            except OSError:
-                add_kept(rel, "unrecognized", "无法读取属性（保守保留）")
-                continue
-            if is_link:
-                add_kept(rel, "symlink", "符号链接（不跟随、不回收）")
-                continue
-            if is_dir:
-                low = name.lower()
-                if low in _ALWAYS_SKIP_DIRS or name == TRASH_DIR:
-                    continue
-                if low in {d.lower() for d in _clean.SKIP_DIRS}:
-                    continue  # 作者来稿目录：不遍历
-                if _protected_dir_name(name):
-                    add_kept(rel, "dir", "备份/历史/待核目录（整棵保留）")
-                    continue
-                if rel_dir == "" and name == TOC_WORK_DIR:
-                    walk(ent.path, rel, True)
-                else:
-                    walk(ent.path, rel, in_tmp)
+            low = name.lower()
+            if _work.skip_dir(name):
+                continue  # 作者来稿、其他期及其他现行跳过目录。
+            if "\\" in name:
+                add_kept(rel, "unrecognized", "路径含反斜杠，无法安全跨平台撤销（保留）")
                 continue
             try:
                 st = ent.stat(follow_symlinks=False)
             except OSError as exc:
-                errors.append({"path": rel, "message": f"无法读取文件属性：{exc.strerror or exc}"})
+                errors.append({"path": rel, "message": f"无法读取属性：{exc.strerror or exc}"})
+                continue
+            if _work.is_link(st):
+                add_kept(rel, "symlink", "符号链接或重解析点（不跟随、不回收）")
+                continue
+            if _work.boundary(st, ent.path, device):
+                add_kept(rel, "mount", "挂载点或其他卷内容（保留）")
+                continue
+            if _stat.S_ISDIR(st.st_mode):
+                if _work.protected_dir(name):
+                    add_kept(rel, "dir", "备份/历史/待核目录（整棵保留）")
+                elif has_ai_workspace and low == "stage":
+                    add_kept(rel, "ai-stage", "AI 初排冻结暂存目录（整棵保留）")
+                elif low.endswith(_work.AI_DIR):
+                    if name == _work.AI_DIR:
+                        add_workspace(ent.path, rel, ai=True)
+                    else:
+                        add_kept(rel, "ai-unknown", "AI 工作区名称不标准（保留）")
+                elif rel_dir == "" and name == TOC_WORK_DIR:
+                    add_workspace(ent.path, rel, ai=False)
+                else:
+                    walk(ent.path, rel)
                 continue
             if not _stat.S_ISREG(st.st_mode):
                 add_kept(rel, "unrecognized", "非普通文件（保守保留）")
@@ -436,18 +509,14 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
                 "full": ent.path,
                 "name": name,
                 "rel_dir": rel_dir,
-                "in_tmp": in_tmp,
                 "st": st,
             }
             files.append(info)
-            if not in_tmp and low_ends_tex(name):
+            if name.lower().endswith(".tex"):
                 if not (rel_dir == "" and TIMESTAMP_TEX_RE.match(name)):
                     ref_infos.append(info)
 
-    def low_ends_tex(name: str) -> bool:
-        return name.lower().endswith(".tex")
-
-    walk(root, "", False)
+    walk(root, "")
 
     # 1) 引用闭包（先算，因为「被引用」压过一切后缀判据）
     ref_scanner = _RefScanner(root, errors)
@@ -464,12 +533,15 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
         name = info["name"]
         rel = info["rel"]
         low = name.lower()
-        # R05：备份/历史判据优先于 .toolbox-tmp —— tmp 里的 .bak 同样是不可证明可再生的备份。
+        if _work.BIB_BACKUP.fullmatch(name):
+            cands[rel] = {"path": rel, "kind": "bib-timestamp-backup",
+                          "reason": "工具生成的 reference.bib 时间戳备份"}
+            continue
+        if low == _work.SOURCE_FINGERPRINT:
+            add_kept(rel, "source-fingerprint", "源指纹保护元数据（保留）")
+            continue
         if _looks_backup_file(name):
             add_kept(rel, "backup", "备份/历史稿命名（保留）")
-            continue
-        if info["in_tmp"]:
-            cands[rel] = {"path": rel, "kind": "tmp", "reason": "工具临时工作目录残留"}
             continue
         if info["rel_dir"] == "" and name in TOC_RESULT_NAMES:
             cands[rel] = {"path": rel, "kind": "toc-result", "reason": "目录生成结果（可重新生成）"}
@@ -537,8 +609,12 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
                     }
 
     # 4) 引用保护压过后缀：被 TeX 直接/间接引用的候选一律保留
+    folded_refs = {ref.casefold() for ref in refs}
     for rel in list(cands):
-        if rel in refs:
+        folded = rel.casefold()
+        if folded in folded_refs or (cands[rel].get("type") == "dir"
+                                     and any(ref.startswith(folded + "/") for ref in folded_refs)):
+            meta["fp"].pop(rel, None)
             cand = cands.pop(rel)
             add_kept(rel, "referenced", f"被 TeX 引用（保护）：{cand['reason']}")
 
@@ -554,11 +630,9 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
             item["kind"] = "referenced"
 
     # 5) 指纹（执行前复核候选身份用；不暴露给 GUI）
-    for cand in cands.values():
-        info = next((f for f in files if f["rel"] == cand["path"]), None)
-        if info is not None:
-            st = info["st"]
-            meta["fp"][cand["path"]] = (st.st_size, st.st_mtime_ns, info["st"].st_ino)
+    for info in files:
+        if info["rel"] in cands:
+            meta["fp"][info["rel"]] = _work.identity(info["st"])
     meta["refs"] = refs
 
     public["candidates"] = sorted(cands.values(), key=lambda c: c["path"])
@@ -603,6 +677,11 @@ def _has_bib_source(info: dict, texts: dict) -> bool | None:
         full = os.path.normpath(os.path.join(d, name))
         text = texts.get(full)
         if text is None:
+            try:
+                if not _stat.S_ISREG(_work.checked_stat(d, name).st_mode):
+                    continue
+            except OSError:
+                continue
             text = _read_text_quiet(full)
         if text and (_TEX_ADDBIB_RE.search(text) or _TEX_BIBLIO_RE.search(text)):
             return True
@@ -639,6 +718,8 @@ def _mk_result(
     already_restored: int = 0,
     skipped: list[dict] | None = None,
     summary: dict | None = None,
+    preview_id: str = "",
+    unselected: list[dict] | None = None,
 ) -> dict:
     paths = paths or []
     if entries is None:
@@ -663,6 +744,10 @@ def _mk_result(
         "status": status,
         "kept": kept or [],
     }
+    if preview_id:
+        result["previewId"] = preview_id
+    if unselected is not None:
+        result["unselected"] = [dict(item) for item in unselected]
     if action == "restore":
         # R08：撤销账本对外字段（INTERFACE-REWORK 冻结）。
         result["alreadyRestored"] = already_restored
@@ -688,15 +773,18 @@ class _ManifestWriteError(OSError):
 
 
 def _save_manifest(trash_root: str, data: dict) -> None:
-    """原子写 manifest + fsync（先意图后搬移的关键）。失败抛 _ManifestWriteError。"""
+    """Write the intent atomically without opening a predictable temporary path."""
     path = os.path.join(trash_root, "manifest.json")
-    tmp = path + ".tmp"
+    temp = ""
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with tempfile.NamedTemporaryFile(dir=trash_root, prefix=".manifest-", delete=False,
+                                         mode="w", encoding="utf-8") as fh:
+            temp = fh.name
             json.dump(data, fh, ensure_ascii=False, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        os.replace(temp, path)
+        temp = ""
         try:
             dfd = os.open(trash_root, os.O_RDONLY)
             try:
@@ -707,6 +795,12 @@ def _save_manifest(trash_root: str, data: dict) -> None:
             pass
     except OSError as exc:
         raise _ManifestWriteError(str(exc)) from exc
+    finally:
+        if temp:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
 
 
 def _rmtree_quiet(path: str) -> None:
@@ -787,6 +881,11 @@ def _move_into_trash(src: str, dst: str) -> None:
         ) from exc
 
 
+def _rename_directory(src: str, dst: str) -> None:
+    """Move a workspace as one same-volume rename, with no copy/delete fallback."""
+    _work.rename_exclusive(src, dst)
+
+
 def _same_root(a: str, b: str) -> bool:
     """root 比较用真实路径：同一目录经符号链接/相对路径传入时不误判为「不属于」。"""
     try:
@@ -802,10 +901,12 @@ def _trash_parent_problem(root: str) -> str:
     parent = os.path.join(root, TRASH_DIR)
     if not os.path.lexists(parent):
         return ""
-    if os.path.islink(parent):
+    if _work.is_link(os.lstat(parent)):
         return f"回收目录 {TRASH_DIR} 是符号链接（拒绝跟随）"
     if not os.path.isdir(parent):
         return f"回收目录 {TRASH_DIR} 不是文件夹（拒绝使用）"
+    if _work.boundary(os.lstat(parent), parent, os.lstat(root).st_dev):
+        return f"回收目录 {TRASH_DIR} 是挂载点或在其他卷（拒绝使用）"
     if not _inside(os.path.realpath(root), os.path.realpath(parent)):
         return f"回收目录 {TRASH_DIR} 的真实路径不在期目录内（拒绝使用）"
     return ""
@@ -813,16 +914,19 @@ def _trash_parent_problem(root: str) -> str:
 
 def _batch_problem(root: str, trash_root: str) -> str:
     """R01/R06/R07：恢复前校验批次归属与边界；返回空串=通过。"""
-    if os.path.islink(trash_root):
-        return "回收批次是符号链接（拒绝跟随）"
-    if not os.path.isdir(trash_root):
-        return f"回收目录不存在：{trash_root}"
     parent = os.path.dirname(os.path.normpath(trash_root))
     expected = os.path.normpath(os.path.join(root, TRASH_DIR))
     if parent != expected:
-        return f"回收批次不在 {os.path.join(root, TRASH_DIR)} 下（拒绝恢复）"
-    if os.path.islink(parent):
-        return f"回收目录 {TRASH_DIR} 是符号链接（拒绝恢复）"
+        return f"回收批次不在 {expected} 下（拒绝恢复）"
+    problem = _trash_parent_problem(root)
+    if problem:
+        return problem
+    if os.path.lexists(trash_root) and _work.is_link(os.lstat(trash_root)):
+        return "回收批次是符号链接（拒绝跟随）"
+    if not os.path.isdir(trash_root):
+        return f"回收目录不存在：{trash_root}"
+    if _work.boundary(os.lstat(trash_root), trash_root, os.lstat(root).st_dev):
+        return "回收批次是挂载点或在其他卷（拒绝恢复）"
     root_real = os.path.realpath(root)
     parent_real = os.path.realpath(parent)
     if not _inside(root_real, parent_real):
@@ -856,9 +960,11 @@ def read_manifest(trash_root: str) -> dict | None:
     """读回收清单；读不到/坏 JSON 返回 None（CLI 据此回退旧兼容路径）。"""
     path = os.path.join(os.path.abspath(os.path.expanduser(trash_root)), "manifest.json")
     try:
+        if not _stat.S_ISREG(_work.checked_stat(trash_root, "manifest.json").st_mode):
+            return None
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -870,6 +976,8 @@ def run_daily(
     root: str,
     *,
     dry_run: bool = False,
+    expect_preview: str = "",
+    selected_paths: list[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> dict:
     """日常清理：预检 → 先持久化清单/意图 → 逐条搬移；返回与 CLI JSON 同构的 dict。"""
@@ -877,12 +985,44 @@ def run_daily(
     root = os.path.abspath(os.path.expanduser(root))
     with _StopGuard():
         _reset_stop()
-        return _run_daily_inner(root, dry_run=dry_run, emit=emit)
+        return _run_daily_inner(root, dry_run=dry_run, expect_preview=expect_preview,
+                                selected_paths=selected_paths, emit=emit)
 
 
-def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -> dict:
+def _entry_details(cand: dict) -> dict:
+    entry = {"path": cand["path"], "action": "move"}
+    for key in ("type", "kind", "reason", "fileCount", "directoryCount"):
+        if key in cand:
+            entry[key] = cand[key]
+    return entry
+
+
+def _recheck_candidate(root: str, cand: dict, fingerprint) -> None:
+    rel = cand["path"]
+    st = _work.checked_stat(root, rel)
+    if cand.get("type") == "dir":
+        folder = _abs(root, rel)
+        if (not _stat.S_ISDIR(st.st_mode) or _work.snapshot(folder, _check_stop) != fingerprint
+                or (cand["kind"] == "ai-workspace" and _work.ai_retention(folder))):
+            raise OSError("工作区内容或状态已变化")
+    elif not _stat.S_ISREG(st.st_mode) or _work.identity(st) != fingerprint:
+        raise OSError("候选文件已变化")
+
+
+def _run_daily_inner(root: str, *, dry_run: bool, expect_preview: str,
+                     selected_paths: list[str] | None,
+                     emit: Callable[[str], None]) -> dict:
+    if (selected_paths is None) != (not bool(expect_preview)):
+        msg = "逐项回收必须同时提供预览身份和显式选择集合"
+        return _mk_result(root, status="preflight_failed", dry_run=dry_run,
+                          error=f"预检未通过（未写入任何文件）：{msg}")
     # R01：先验证回收区自身可信；不通过则零写入。
-    problem = _trash_parent_problem(root)
+    try:
+        st = os.lstat(root)
+        root_valid = _stat.S_ISDIR(st.st_mode) and not _work.is_link(st)
+    except OSError:
+        root_valid = False
+    problem = _trash_parent_problem(root) if root_valid else "期目录不存在或是链接"
     if problem:
         return _mk_result(
             root,
@@ -914,8 +1054,43 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
         )
 
     candidates = public["candidates"]
+    payload = json.dumps([root, candidates, meta["fp"]], sort_keys=True).encode()
+    preview_id = hashlib.sha256(payload).hexdigest()
+    if expect_preview and preview_id != expect_preview:
+        return _mk_result(root, status="preflight_failed", kept=kept,
+                          error="候选自预览后已变化，请重新扫描（未写入任何文件）",
+                          preview_id=preview_id)
+    unselected: list[dict] | None = None
+    if selected_paths is not None:
+        if dry_run:
+            return _mk_result(root, status="preflight_failed", kept=kept,
+                              error="预检未通过（未写入任何文件）：扫描不能附带回收选择",
+                              preview_id=preview_id)
+        if not isinstance(selected_paths, list) or any(
+                not isinstance(path, str) or not path for path in selected_paths):
+            return _mk_result(root, status="preflight_failed", kept=kept,
+                              error="预检未通过（未写入任何文件）：选择集合格式无效",
+                              preview_id=preview_id)
+        if len(selected_paths) != len(set(selected_paths)):
+            return _mk_result(root, status="preflight_failed", kept=kept,
+                              error="预检未通过（未写入任何文件）：选择集合含重复项",
+                              preview_id=preview_id)
+        candidate_paths = {cand["path"] for cand in candidates}
+        unknown = [path for path in selected_paths if path not in candidate_paths]
+        if unknown:
+            return _mk_result(
+                root, status="preflight_failed", kept=kept,
+                failures=[{"path": path, "error": "不属于本次预览候选"} for path in unknown],
+                error="预检未通过（未写入任何文件）：选择项不属于本次预览",
+                preview_id=preview_id)
+        selected_set = set(selected_paths)
+        unselected = [_entry_details(cand) for cand in candidates
+                      if cand["path"] not in selected_set]
+        candidates = [cand for cand in candidates if cand["path"] in selected_set]
+
     if not candidates:
-        return _mk_result(root, status="empty", dry_run=dry_run, kept=kept)
+        return _mk_result(root, status="empty", dry_run=dry_run, kept=kept,
+                          unselected=unselected, preview_id=preview_id)
 
     if dry_run:
         for cand in candidates:
@@ -924,9 +1099,11 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
             root,
             status="success",
             count=len(candidates),
-            paths=[c["path"] for c in candidates],
+            entries=[_entry_details(c) for c in candidates],
+            preview_id=preview_id,
             dry_run=True,
             kept=kept,
+            unselected=unselected,
         )
 
     # 执行前复核候选身份（冻结根；文件变化/消失 → 保留，绝不盲搬）
@@ -939,28 +1116,23 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
         except _Cancelled:
             msg = "已停止：扫描已取消，未写入任何文件"
             return _mk_result(root, status="cancelled", dry_run=False, kept=extra_kept,
-                              warnings=[msg], error=msg)
-        fp = meta["fp"].get(cand["path"])
-        full = _abs(root, cand["path"])
+                              warnings=[msg], error=msg, unselected=unselected)
         try:
-            st = os.lstat(full)
-        except OSError:
-            warnings.append(f"候选已消失：{cand['path']}")
-            continue
-        if not _stat.S_ISREG(st.st_mode) or os.path.islink(full):
-            warnings.append(f"候选已不是普通文件：{cand['path']}（保留）")
-            extra_kept.append({"path": cand["path"], "kind": cand["kind"],
-                               "reason": "执行前复核：已不是普通文件（保留）"})
-            continue
-        if fp is not None and (st.st_size, st.st_mtime_ns, st.st_ino) != fp:
+            _recheck_candidate(root, cand, meta["fp"][cand["path"]])
+        except _Cancelled:
+            return _mk_result(root, status="cancelled", kept=extra_kept,
+                              error="已停止：扫描已取消，未写入任何文件",
+                              unselected=unselected)
+        except (OSError, RecursionError) as exc:
             warnings.append(f"候选已变化：{cand['path']}（保留）")
             extra_kept.append({"path": cand["path"], "kind": cand["kind"],
-                               "reason": "执行前复核：文件已变化（保留）"})
+                               "reason": f"执行前复核：{exc}（保留）"})
             continue
         ready.append(cand)
 
     if not ready:
-        return _mk_result(root, status="empty", kept=extra_kept, warnings=warnings)
+        return _mk_result(root, status="empty", kept=extra_kept, warnings=warnings,
+                          unselected=unselected, preview_id=preview_id)
 
     operation_id = _new_operation_id()
     try:
@@ -976,10 +1148,12 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
         failures = [{"path": os.path.join(root, TRASH_DIR), "error": f"无法创建回收批次：{exc}"}]
         msg = "预检未通过（未写入任何文件）：无法创建回收批次"
         return _mk_result(root, status="preflight_failed", failures=failures,
-                          warnings=warnings, error=msg, kept=extra_kept)
+                          warnings=warnings, error=msg, kept=extra_kept,
+                          unselected=unselected)
 
     # 意图清单（**先落盘再搬第一个文件**）
-    intent: list[dict] = [{"path": c["path"], "type": "file", "status": "planned"} for c in ready]
+    intent = [{"path": c["path"], "type": c.get("type", "file"), "status": "planned"} for c in ready]
+    details = {c["path"]: _entry_details(c) for c in ready}
     manifest: dict = {
         "schema": 3,
         "root": root,
@@ -998,36 +1172,25 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
         failures = [{"path": trash_root, "error": f"无法写入回收清单：{exc}"}]
         msg = "预检未通过（未写入任何文件）：无法写入可恢复清单"
         return _mk_result(root, status="preflight_failed", failures=failures,
-                          warnings=warnings, error=msg, kept=extra_kept)
+                          warnings=warnings, error=msg, kept=extra_kept,
+                          unselected=unselected)
 
     moved: list[str] = []
     failures = []
     cancelled = False
     abort_error = ""
     try:
-        for cand in ready:
+        for cand, entry in zip(ready, intent):
             _check_stop()
             rel = cand["path"]
-            entry = next(e for e in intent if e["path"] == rel)
             full = _abs(root, rel)
-            # 复核（清单写入与真正搬移之间还有时间窗）
             try:
-                st = os.lstat(full)
-            except OSError as exc:
+                _recheck_candidate(root, cand, meta["fp"][rel])
+                if entry["type"] == "file":
+                    entry["sha256"] = _clean._sha256_file(full)
+            except (OSError, RecursionError) as exc:
                 entry["status"] = "failed"
                 failures.append({"path": rel, "error": f"搬移前复核失败：{exc}"})
-                continue
-            if not _stat.S_ISREG(st.st_mode) or os.path.islink(full):
-                entry["status"] = "failed"
-                failures.append({"path": rel, "error": "搬移前复核：已不是普通文件"})
-                continue
-            try:
-                # C1.2：搬移前先算内容 sha256，随 moving 状态一起原子落盘，再 move。
-                entry["sha256"] = _clean._sha256_file(full)
-            except OSError as exc:
-                entry["status"] = "failed"
-                failures.append({"path": rel, "error": f"搬移前计算内容摘要失败：{exc}"})
-                emit(f"Error moving {rel}: {exc}")
                 continue
             entry["status"] = "moving"
             try:
@@ -1037,8 +1200,21 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
                 raise
             dst = os.path.join(trash_root, rel)
             try:
-                _move_into_trash(full, dst)
-            except OSError as exc:
+                lock = (_work.idle_ai(full, for_rename=True) if cand["kind"] == "ai-workspace"
+                        else nullcontext(True))
+                with lock as idle:
+                    if not idle:
+                        raise OSError("AI 工作区正由另一进程使用")
+                    _recheck_candidate(root, cand, meta["fp"][rel])
+                    if entry["type"] == "dir":
+                        _work.ensure_parent(trash_root, rel)
+                        _rename_directory(full, dst)
+                    else:
+                        reason = _work.path_problem(trash_root, rel, "目标")
+                        if reason:
+                            raise OSError(reason)
+                        _move_into_trash(full, dst)
+            except (OSError, RecursionError) as exc:
                 entry["status"] = "failed"
                 failures.append({"path": rel, "error": str(exc)})
                 emit(f"Error moving {rel}: {exc}")
@@ -1065,6 +1241,15 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
     except _ManifestWriteError:
         cancelled = False  # abort_error 已记录
 
+    # A hard interruption after rename may leave the last durable state as moving.
+    for entry in intent:
+        if entry["status"] == "moving":
+            rel = entry["path"]
+            if os.path.lexists(_abs(trash_root, rel)) and not os.path.lexists(_abs(root, rel)):
+                entry["status"] = "moved"
+                moved.append(rel)
+    moved_details = [details[rel] for rel in moved]
+
     # 收尾清单：entries 只留已搬（GUI 的撤销按钮/清单计数都只看 entries）
     final_status = "cancelled" if cancelled else ("partial" if (failures or abort_error) else "success")
     manifest["status"] = final_status
@@ -1081,26 +1266,29 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
             msg = "已停止：未回收任何文件"
             _rmtree_quiet(trash_root)
             trash_root = ""
-        return _mk_result(root, status="cancelled", count=len(moved), paths=moved,
+        return _mk_result(root, status="cancelled", count=len(moved), entries=moved_details,
                           trash=trash_root, operation_id=operation_id if trash_root else "",
-                          failures=failures, warnings=warnings, error=msg, kept=extra_kept)
+                          failures=failures, warnings=warnings, error=msg, kept=extra_kept,
+                          unselected=unselected)
 
     if failures or abort_error:
         if not moved:
             _rmtree_quiet(trash_root)
             msg = abort_error or f"清理未完成：成功 0 项，失败 {len(failures)} 项"
             return _mk_result(root, status="preflight_failed", failures=failures,
-                              warnings=warnings, error=msg, kept=extra_kept)
+                              warnings=warnings, error=msg, kept=extra_kept,
+                              unselected=unselected)
         msg = f"清理未完成：成功 {len(moved)} 项，失败 {len(failures)} 项"
         if abort_error:
             warnings.append(abort_error)
-        return _mk_result(root, status="partial", count=len(moved), paths=moved,
+        return _mk_result(root, status="partial", count=len(moved), entries=moved_details,
                           trash=trash_root, operation_id=operation_id,
-                          failures=failures, warnings=warnings, error=msg, kept=extra_kept)
+                          failures=failures, warnings=warnings, error=msg, kept=extra_kept,
+                          unselected=unselected)
 
-    return _mk_result(root, status="success", count=len(moved), paths=moved,
+    return _mk_result(root, status="success", count=len(moved), entries=moved_details,
                       trash=trash_root, operation_id=operation_id, warnings=warnings,
-                      kept=extra_kept)
+                      kept=extra_kept, unselected=unselected)
 
 
 # ── 恢复（restore_daily）─────────────────────────────────────────────────
@@ -1132,7 +1320,7 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
                           trash=trash_root, restore=trash_root,
                           failures=[{"path": path, "error": msg}], error=msg)
 
-    if not os.path.isdir(root):
+    if not os.path.isdir(root) or _work.is_link(os.lstat(root)):
         return preflight(f"路径不是文件夹：{root}", root)
     root_real = os.path.realpath(root)
     # R01/R06/R07：批次归属、父目录、链接与边界校验 —— 全部先于任何写入。
@@ -1156,12 +1344,40 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
         )
 
     trash_real = os.path.realpath(trash_root)
+    daily = data.get("mode") == "daily" or data.get("kind") == "daily"
     items: list[dict] = []
     for plan_item in plan_items:
         rel = plan_item["path"]
-        bad = _validate_entry_rel(rel, root_real, trash_real)
+        if daily:
+            bad = _clean._validate_manifest_rel(rel)
+            if not bad:
+                bad = _work.path_problem(root, rel, "目标") or _work.path_problem(trash_root, rel, "来源")
+        else:
+            bad = _validate_entry_rel(rel, root_real, trash_real)
         if bad:
             return preflight(f"清单条目不安全（{bad}）：{rel or '（空路径）'}", rel)
+        if daily and plan_item["type"] == "dir":
+            parts = rel.split("/")
+            if "\\" in rel or (rel != TOC_WORK_DIR and parts[-1] != _work.AI_DIR):
+                return preflight(f"清单目录条目不是工具工作区：{rel}", rel)
+            if any(part in ("", ".") or _work.skip_dir(part) or _work.protected_dir(part)
+                   for part in parts):
+                return preflight(f"清单目录条目位于受保护路径：{rel}", rel)
+            if any(other is not plan_item and
+                   (other["path"] == rel or other["path"].startswith(rel + "/"))
+                   for other in plan_items):
+                return preflight(f"清单目录条目与其他条目重叠：{rel}", rel)
+            try:
+                source = _abs(trash_root, rel)
+                if os.path.lexists(source):
+                    _work.checked_stat(trash_root, rel)
+                    _work.snapshot(source, _check_stop)
+            except (OSError, RecursionError) as exc:
+                return preflight(f"回收工作区不安全：{exc}", rel)
+            except _Cancelled:
+                msg = "已停止：撤销预检已取消，未写入任何文件"
+                return _mk_result(root, status="cancelled", action="restore", dry_run=dry_run,
+                                  error=msg, trash=trash_root, restore=trash_root)
         items.append(plan_item)
 
     # 内容摘要闸（C1.2/C3.2/C3.8）：版本判定后、任何写入（含台账持久化）前，整批只读预检。
@@ -1180,6 +1396,14 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
             emit(legacy_warnings[-1])
 
     raw_items = [item["raw"] for item in items]
+    directories = {item["path"] for item in items if daily and item["type"] == "dir"}
+
+    def restored_entries(paths: list[str]) -> list[dict]:
+        return [
+            {"path": path, "action": "restore", "status": "restored",
+             **({"type": "dir"} if path in directories else {})}
+            for path in paths
+        ]
 
     done: list[str] = []
     failures: list[dict] = []
@@ -1206,7 +1430,7 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
             action="restore", dry_run=dry_run, trash=trash_root,
             restore=trash_root, operation_id=str(data.get("operationId") or ""),
             failures=failures, warnings=warnings, error=msg,
-            entries=[{"path": p, "action": "restore", "status": "restored"} for p in done],
+            entries=restored_entries(done),
             already_restored=already, skipped=skipped,
             summary={"restored": len(done), "alreadyRestored": already,
                      "skipped": len(skipped), "failed": len(failures)},
@@ -1252,8 +1476,18 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
                 done.append(rel)
                 continue
             try:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.move(src, dst)
+                if daily:
+                    reason = _work.path_problem(root, rel, "目标") or _work.path_problem(trash_root, rel, "来源")
+                    if reason:
+                        raise OSError(reason)
+                if daily and typ == "dir":
+                    _work.checked_stat(trash_root, rel)
+                    _work.snapshot(src, _check_stop)
+                    _work.ensure_parent(root, rel)
+                    _rename_directory(src, dst)
+                else:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.move(src, dst)
             except OSError as exc:
                 failures.append({"path": rel, "error": str(exc)})
                 emit(f"Error restoring {rel}: {exc}")
@@ -1270,11 +1504,10 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
 
     summary = {"restored": len(done), "alreadyRestored": already,
                "skipped": len(skipped), "failed": len(failures)}
-    entries_out = [{"path": p, "action": "restore", "status": "restored"} for p in done]
+    entries_out = restored_entries(done)
     # C13：旧 v1/v2 批次保留旧 CLI 语义（冲突/缺失 → 警告，退出 0）；
     # daily 批次按 INTERFACE-REWORK 报 partial（ok=false、rc2），GUI 据此提示重试。
-    strict = data.get("mode") == "daily" or data.get("kind") == "daily"
-    if failures or (strict and skipped):
+    if failures or (daily and skipped):
         status = "partial"
         error = f"撤销未完成：恢复 {len(done)} 项，跳过/失败 {len(skipped) + len(failures)} 项"
     elif done:

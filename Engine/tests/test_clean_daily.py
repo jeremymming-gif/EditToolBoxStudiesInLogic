@@ -148,7 +148,7 @@ def snap(root: str, skip_trash: bool = True) -> dict:
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 
-def run_cli(*args: str) -> tuple:
+def run_cli(*args: str, input_text: str | None = None) -> tuple:
     proc = subprocess.run(
         [sys.executable, CLEANTEMP, *args],
         cwd=ENGINE,
@@ -157,6 +157,7 @@ def run_cli(*args: str) -> tuple:
         text=True,
         encoding="utf-8",
         errors="replace",
+        input=input_text,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -168,9 +169,15 @@ def _json_last(out: str) -> dict:
     return json.loads(lines[-1])
 
 
-def run_cli_json(*args: str) -> tuple:
-    rc, out, err = run_cli(*args, "--json")
+def run_cli_json(*args: str, input_text: str | None = None) -> tuple:
+    rc, out, err = run_cli(*args, "--json", input_text=input_text)
     return rc, _json_last(out), err
+
+
+def run_selected(root: str, preview_id: str, selected: list[str]) -> tuple:
+    return run_cli_json("--folder", root, "--mode", "daily",
+                        "--expect-preview", preview_id, "--selection-stdin",
+                        input_text=json.dumps({"selected": selected}, ensure_ascii=False))
 
 
 def trash_path(root: str) -> str:
@@ -253,7 +260,7 @@ def test_daily_scope_and_latest_report_group() -> None:
     os.symlink(os.path.join(outside, "keep.aux"), os.path.join(root, "链接文件.aux"))
 
     expected = [
-        ".toolbox-tmp/x.tmp",
+        ".toolbox-tmp",
         "Chinese Content_2026-01-01_00-00-00.tex",
         "main.aux",
         "main.bcf",
@@ -329,7 +336,7 @@ def test_daily_scope_and_latest_report_group() -> None:
     after = snap(root)
     protected_ok = True
     for rel, val in before.items():
-        if rel in expected:
+        if rel in expected or rel.startswith(".toolbox-tmp/"):
             continue
         if after.get(rel) != val:
             protected_ok = False
@@ -441,7 +448,7 @@ def test_daily_preserves_unproven_regenerable_files() -> None:
     os.symlink(os.path.join(outside, "keep.aux"), os.path.join(root, ".toolbox-tmp/链接.aux"))
     w(root, "Chinese Content_2026-01-01_00-00-00.tex.bak", b"bak\n")
 
-    expected = [".toolbox-tmp/keep.tmp", "appendix.bbl", "sub/chapter.aux", "sub/chapter.log"]
+    expected = ["appendix.bbl", "sub/chapter.aux", "sub/chapter.log"]
     before = snap(root)
     scan = cd.scan_daily(root)
     check("unproven.no_scan_errors", scan["ok"] is True, _bad(repr(scan["errors"])))
@@ -451,8 +458,10 @@ def test_daily_preserves_unproven_regenerable_files() -> None:
     check("unproven.unknown_logs_kept",
           kinds.get("sub/orphan.log") == "log" and kinds.get("sub/unknown.log") == "log")
     check("unproven.custom_out_kept", kinds.get("sub/custom.out") == "aux")
-    check("unproven.backup_subdir_kept", kinds.get(".toolbox-tmp/backup") == "dir")
-    check("unproven.tmp_symlink_kept", kinds.get(".toolbox-tmp/链接.aux") == "symlink")
+    check("unproven.tmp_protected_as_unit", kinds.get(".toolbox-tmp") == "workspace-protected")
+    check("unproven.tmp_untouched",
+          all(os.path.lexists(os.path.join(root, ".toolbox-tmp", name))
+              for name in ("backup/inner.aux", "链接.aux", "keep.tmp")))
     check("unproven.timestamp_bak_kept",
           kinds.get("Chinese Content_2026-01-01_00-00-00.tex.bak") == "backup"
           and kinds.get("sub/备份稿.aux") == "backup")
@@ -585,7 +594,7 @@ def test_daily_cli_dry_run_and_actual_paths_agree() -> None:
                  "信息检查2026_11_01_00_00_00_摘要.md"):
         w(root, name, b"new\n")
     expected = [
-        ".toolbox-tmp/a.tmp",
+        ".toolbox-tmp",
         "Chinese Content_2026-03-03_00-00-00.tex",
         "main.aux",
         "main.log",
@@ -712,7 +721,7 @@ def test_daily_restore_all_bytes_and_empty_dirs() -> None:
     check("bytes.clean_rc", rc == 0, _bad(err))
     check("bytes.clean_count", js.get("count") == 4, _bad(json.dumps(js)))
     check("bytes.dirs_kept_after_move",
-          os.path.isdir(os.path.join(root, ".toolbox-tmp"))
+          not os.path.lexists(os.path.join(root, ".toolbox-tmp"))
           and os.path.isdir(os.path.join(root, "sub/deep"))
           and os.path.isdir(os.path.join(root, "emptydir/inner")))
     check("bytes.files_gone",
@@ -1314,17 +1323,12 @@ def test_rework_r05_tmp_backup_priority() -> None:
     w(root, ".toolbox-tmp/final.tex.bak", b"BACKUP\n")
     w(root, ".toolbox-tmp/scratch.aux", b"SCRATCH\n")
     scan = cd.scan_daily(root)
-    kinds = kept_kind(scan)
-    check("r05.tmp_bak_kept", kinds.get(".toolbox-tmp/final.tex.bak") == "backup",
-          _bad(json.dumps(kinds)))
-    check("r05.tmp_scratch_candidate", ".toolbox-tmp/scratch.aux" in cand_paths(scan),
-          _bad(str(cand_paths(scan))))
+    check("r05.tmp_is_unit", cand_paths(scan) == [".toolbox-tmp"], repr(scan))
     res = cd.run_daily(root)
-    check("r05.run_moves_scratch_keeps_bak",
-          res.get("status") == "success" and res.get("count") == 1
-          and os.path.exists(os.path.join(root, ".toolbox-tmp/final.tex.bak"))
-          and not os.path.exists(os.path.join(root, ".toolbox-tmp/scratch.aux")),
-          _bad(json.dumps(res)))
+    check("r05.tmp_moves_backup_with_directory", res["count"] == 1
+          and not os.path.exists(os.path.join(root, ".toolbox-tmp"))
+          and all(os.path.isfile(os.path.join(res["trashDir"], ".toolbox-tmp", name))
+                  for name in ("final.tex.bak", "scratch.aux")), repr(res))
 
 
 @test
@@ -1502,6 +1506,307 @@ def main() -> int:
     print()
     print("SUMMARY total=%d pass=%d fail=%d" % (TOTAL, PASS, FAIL))
     return 0 if FAIL == 0 else 1
+
+
+@test
+def test_workspace_and_exact_bib_backup_round_trip() -> None:
+    root = tmpdir("workspace_roundtrip")
+    backup = "article/reference.bib.20261117-111847-595398.bak"
+    protected = (
+        "other/Reference.bib.20261117-111847-595398.bak",
+        "article/reference.bib.20261117-111847-59539.bak",
+        "article/reference.bib.20261117-111847-595398.bak.old",
+        "article/other.bib.20261117-111847-595398.bak",
+        "article/reference.bib.bak", "article/reference.bib.ai前",
+        "article/.slcn-源指纹.json", ".git/hidden.aux",
+        "2026年第2期/hidden.aux", ".toolbox-trash/old/hidden.aux",
+    )
+    contents = (backup, ".toolbox-tmp/sub/ordinary.bak", ".toolbox-tmp/raw.data", *protected)
+    for name in contents:
+        w(root, name, name.encode())
+    mkdirs(root, ".toolbox-tmp/empty")
+    rc, preview, _ = run_cli_json("--folder", root, "--mode", "daily", "--dry-run")
+    check("workspaces.preview", rc == 0 and preview["count"] == 2
+          and [e["path"] for e in preview["entries"]] == [".toolbox-tmp", backup], repr(preview))
+    details = next(iter(preview.get("entries", [])), {})
+    check("workspaces.directory_counts", details.get("type") == "dir"
+          and details.get("fileCount") == 2 and details.get("directoryCount") == 2, repr(details))
+    result = cd.run_daily(root)
+    check("workspaces.moves_atomically", result["count"] == 2
+          and not os.path.lexists(os.path.join(root, ".toolbox-tmp"))
+          and all(os.path.isfile(os.path.join(root, path)) for path in protected), repr(result))
+    restored = cd.restore_daily(root, result["trashDir"]) if result["trashDir"] else {}
+    check("workspaces.full_undo", restored.get("count") == 2
+          and os.path.isdir(os.path.join(root, ".toolbox-tmp/empty"))
+          and all(os.path.isfile(os.path.join(root, name))
+                  and open(os.path.join(root, name), "rb").read() == name.encode()
+                  for name in contents), repr(restored))
+
+
+@test
+def test_conservative_ai_workspace_classification() -> None:
+    root = tmpdir("workspace_ai")
+    for name, phase, overrides in (
+        ("finished", "delivered", {}),
+        ("active", "requesting", {"request_status": "in_flight"}),
+        ("pending", "applying", {"pending_apply": {}}),
+        ("conflicting", "delivered", {"pending_apply": {"write": True}}),
+        ("unknown", "new-phase", {}),
+        ("applied", "applied", {"undo": {"copy": "before"}}),
+        ("corrupt", "delivered", {}),
+    ):
+        rel = name + "/.aiw/"
+        journal = {"task_id": "anonymous", "ok": True, "delivered": True, "promoting": False, "backup": ""}
+        state = {"schema_version": "slcn.ai_workflow/3", "entry": "convert",
+                 "task_id": "anonymous", "work_dir": os.path.join(root, name),
+                 "phase": phase, "conversion": {"final_dir": os.path.join(root, "out")},
+                 "delivery": journal, **overrides}
+        journal["final"] = state["conversion"]["final_dir"]
+        journal["shas"] = {"anon.tex": "a" * 64}
+        w(root, rel + "state.json", b"{" if name == "corrupt" else json.dumps(state).encode())
+        w(root, rel + "delivery-journal.json", json.dumps(journal).encode())
+        w(root, rel + "anonymous/x.aux", b"opaque")
+    scan = cd.scan_daily(root)
+    check("workspaces.terminal_only", cand_paths(scan) == ["finished/.aiw"], repr(scan))
+    kinds = kept_kind(scan)
+    check("workspaces.ai_reason_codes",
+          [kinds.get(name + "/.aiw") for name in ("active", "pending", "conflicting",
+                                                 "unknown", "applied", "corrupt")]
+          == ["ai-active", "ai-pending", "ai-pending", "ai-unknown", "ai-active", "ai-invalid"], repr(kinds))
+    result = cd.run_daily(root)
+    check("workspaces.finished_moved", result["count"] == 1, repr(result))
+    restored = cd.restore_daily(root, result["trashDir"]) if result["trashDir"] else {}
+    check("workspaces.finished_restored", restored.get("count") == 1
+          and os.path.isfile(os.path.join(root, "finished/.aiw/anonymous/x.aux")), repr(restored))
+
+
+@test
+def test_workspace_never_moves_link_or_protection_metadata() -> None:
+    parent = tmpdir("workspace_links")
+    root = os.path.join(parent, "issue")
+    w(root, ".toolbox-tmp/safe.aux", b"scratch")
+    w(parent, "outside/untouched.aux", b"outside")
+    link = os.path.join(root, ".toolbox-tmp/link")
+    os.symlink(os.path.join(parent, "outside"), link)
+    result = cd.run_daily(root)
+    check("workspaces.link_retains_whole_directory", result["status"] == "empty"
+          and os.path.islink(link)
+          and os.path.isfile(os.path.join(parent, "outside/untouched.aux")), repr(result))
+    os.unlink(link)
+    w(root, ".toolbox-tmp/sub/.slcn-源指纹.json", b"protect")
+    result = cd.run_daily(root)
+    check("workspaces.fingerprint_retains_whole_directory", result["status"] == "empty"
+          and os.path.isfile(os.path.join(root, ".toolbox-tmp/sub/.slcn-源指纹.json")), repr(result))
+
+
+@test
+def test_workspace_preview_change_and_interrupted_directory_move() -> None:
+    root = tmpdir("workspace_interruption")
+    w(root, ".toolbox-tmp/old.txt", b"old")
+    preview = cd.run_daily(root, dry_run=True)
+    w(root, ".toolbox-tmp/new.txt", b"new")
+    rc, refused, _ = run_selected(root, preview["previewId"], [".toolbox-tmp"])
+    check("workspaces.preview_drift_is_zero_write", rc == 2
+          and refused.get("status") == "preflight_failed"
+          and not os.path.exists(trash_path(root)), repr(refused))
+    rename = cd._rename_directory
+
+    def interrupt(src, dst):
+        rename(src, dst)
+        raise KeyboardInterrupt
+
+    try:
+        cd._rename_directory = interrupt
+        result = cd.run_daily(root)
+    finally:
+        cd._rename_directory = rename
+    check("workspaces.interrupted_rename_keeps_batch", result["status"] == "cancelled"
+          and result["count"] == 1 and bool(result["trashDir"]), repr(result))
+    restored = cd.restore_daily(root, result["trashDir"]) if result["trashDir"] else {}
+    check("workspaces.interrupted_batch_can_restore", restored.get("count") == 1
+          and os.path.isfile(os.path.join(root, ".toolbox-tmp/new.txt")), repr(restored))
+
+
+@test
+def test_workspace_restore_rejects_nested_link_and_keeps_conflicting_target() -> None:
+    parent = tmpdir("workspace_restore_conflict")
+    root = os.path.join(parent, "issue")
+    w(root, ".toolbox-tmp/nested/source.txt", b"original")
+    outside = w(parent, "outside/untouched.txt", b"outside")
+    result = cd.run_daily(root)
+    batch = result["trashDir"]
+    if not batch:
+        check("workspaces.restore_requires_batch", False, repr(result))
+        return
+
+    link = os.path.join(batch, ".toolbox-tmp/nested/external")
+    os.symlink(outside, link)
+    refused = cd.restore_daily(root, batch)
+    check("workspaces.restore_rejects_nested_link", refused["status"] == "preflight_failed"
+          and not os.path.exists(os.path.join(root, ".toolbox-tmp"))
+          and os.path.islink(link), repr(refused))
+    os.unlink(link)
+    manifest_temp = os.path.join(batch, "manifest.json.tmp")
+    os.symlink(outside, manifest_temp)
+
+    mkdirs(root, ".toolbox-tmp")
+    refused = cd.restore_daily(root, batch)
+    check("workspaces.restore_conflict_does_not_overwrite_empty_directory",
+          refused["status"] == "partial" and refused["count"] == 0
+          and not os.listdir(os.path.join(root, ".toolbox-tmp")), repr(refused))
+    os.rmdir(os.path.join(root, ".toolbox-tmp"))
+    restored = cd.restore_daily(root, batch)
+    check("workspaces.restore_retry_moves_directory", restored["count"] == 1
+          and os.path.isfile(os.path.join(root, ".toolbox-tmp/nested/source.txt")), repr(restored))
+    with open(outside, "rb") as handle:
+        check("workspaces.manifest_temp_link_never_touched",
+              os.path.islink(manifest_temp) and handle.read() == b"outside")
+
+
+@test
+def test_workspace_scan_never_crosses_a_mount_or_unrestorable_path() -> None:
+    root = tmpdir("workspace_mount")
+    name = "reference.bib.20261117-111847-595398.bak"
+    w(root, "mounted/" + name, b"separate volume")
+    mounted = os.path.join(root, "mounted")
+    original_ismount = os.path.ismount
+    try:
+        os.path.ismount = lambda path: path == mounted or original_ismount(path)
+        result = cd.run_daily(root)
+    finally:
+        os.path.ismount = original_ismount
+    check("workspaces.never_scans_mounted_contents", result["status"] == "empty"
+          and os.path.isfile(os.path.join(mounted, name))
+          and any(item["kind"] == "mount" for item in result["kept"]), repr(result))
+    if os.name != "nt":
+        odd = r"literal\parent"
+        w(root, odd + "/" + name, b"unrestorable on Windows")
+        preview = cd.run_daily(root, dry_run=True)
+        check("workspaces.backslash_path_never_becomes_candidate",
+              [item["path"] for item in preview["entries"]] == ["mounted/" + name]
+              and any(item["path"] == odd for item in preview["kept"]), repr(preview))
+
+
+@test
+def test_workspace_ambiguous_tex_reference_prevents_cleanup() -> None:
+    root = tmpdir("workspace_reference")
+    bib = "reference.bib.20261117-111847-595398.bak"
+    w(root, "sub/work/" + bib, b"actual")
+    w(root, "work/" + bib, b"lexical")
+    mkdirs(root, "sub/deeper")
+    os.symlink("sub/deeper", os.path.join(root, "alias"))
+    w(root, "main.tex", f"\\input{{alias/../work/{bib}}}\n".encode())
+    result = cd.run_daily(root)
+    check("workspaces.ambiguous_reference_preflight_zero_write",
+          result["status"] == "preflight_failed" and not os.path.exists(trash_path(root))
+          and os.path.isfile(os.path.join(root, "sub/work", bib)), repr(result))
+
+
+@test
+def test_explicit_selection_moves_and_restores_only_selected_file() -> None:
+    root = tmpdir("selection_one")
+    selected = "中文 目录/主稿.aux"
+    unselected = "another.aux"
+    bib = "reference.bib.20261117-111847-595398.bak"
+    w(root, selected, b"selected-bytes")
+    w(root, unselected, b"keep-aux")
+    w(root, bib, b"keep-bib")
+    preview = cd.run_daily(root, dry_run=True)
+    preview_details = {item["path"]: item for item in preview.get("entries", [])}
+    check("selection.preview_explains_regular_candidates",
+          preview_details.get(selected, {}).get("kind") == "aux"
+          and bool(preview_details.get(selected, {}).get("reason"))
+          and preview_details.get(unselected, {}).get("kind") == "aux"
+          and bool(preview_details.get(unselected, {}).get("reason")), repr(preview_details))
+    rc, result, err = run_selected(root, preview["previewId"], [selected])
+    check("selection.one_only_moves_selected", rc == 0 and result.get("count") == 1
+          and [item["path"] for item in result.get("entries", [])] == [selected]
+          and not os.path.exists(os.path.join(root, selected))
+          and os.path.isfile(os.path.join(root, unselected))
+          and os.path.isfile(os.path.join(root, bib)), err + repr(result))
+    check("selection.unselected_reported",
+          sorted(item["path"] for item in result.get("unselected", []))
+          == sorted([unselected, bib]), repr(result))
+    batch = result.get("trashDir") or ""
+    manifest = _manifest(batch) if batch else {}
+    check("selection.manifest_contains_only_selected",
+          [item["path"] for item in manifest.get("entries", [])] == [selected], repr(manifest))
+    restored = cd.restore_daily(root, batch) if batch else {}
+    check("selection.undo_restores_only_selected_bytes",
+          restored.get("count") == 1
+          and open(os.path.join(root, selected), "rb").read() == b"selected-bytes"
+          and open(os.path.join(root, unselected), "rb").read() == b"keep-aux"
+          and open(os.path.join(root, bib), "rb").read() == b"keep-bib", repr(restored))
+
+
+@test
+def test_explicit_empty_selection_creates_no_batch() -> None:
+    root = tmpdir("selection_empty")
+    w(root, "one.aux", b"untouched")
+    preview = cd.run_daily(root, dry_run=True)
+    rc, result, err = run_selected(root, preview["previewId"], [])
+    check("selection.empty_zero_move_no_batch", rc == 0 and result.get("status") == "empty"
+          and result.get("count") == 0 and not result.get("trashDir")
+          and not os.path.exists(trash_path(root))
+          and os.path.isfile(os.path.join(root, "one.aux")), err + repr(result))
+    check("selection.empty_reports_unselected",
+          [item["path"] for item in result.get("unselected", [])] == ["one.aux"], repr(result))
+
+
+@test
+def test_explicit_directory_selection_is_one_reversible_unit() -> None:
+    root = tmpdir("selection_directory")
+    w(root, ".toolbox-tmp/子目录/中间 文件.aux", b"directory-bytes")
+    w(root, "leave.aux", b"leave")
+    preview = cd.run_daily(root, dry_run=True)
+    rc, result, err = run_selected(root, preview["previewId"], [".toolbox-tmp"])
+    check("selection.directory_is_one_unit", rc == 0 and result.get("count") == 1
+          and result.get("entries", [{}])[0].get("type") == "dir"
+          and not os.path.exists(os.path.join(root, ".toolbox-tmp"))
+          and os.path.isfile(os.path.join(root, "leave.aux")), err + repr(result))
+    restored = cd.restore_daily(root, result.get("trashDir", "")) if result.get("trashDir") else {}
+    check("selection.directory_undo_preserves_tree",
+          restored.get("count") == 1
+          and open(os.path.join(root, ".toolbox-tmp/子目录/中间 文件.aux"), "rb").read()
+          == b"directory-bytes", repr(restored))
+
+
+@test
+def test_selection_rejects_missing_preview_duplicate_and_injected_paths() -> None:
+    root = tmpdir("selection_reject")
+    w(root, "one.aux", b"candidate")
+    preview = cd.run_daily(root, dry_run=True)
+    rc, out, _ = run_cli("--folder", root, "--mode", "daily",
+                         "--selection-stdin", "--json",
+                         input_text=json.dumps({"selected": ["one.aux"]}))
+    check("selection.missing_preview_rejected", rc == 2
+          and not out.strip()
+          and not os.path.exists(trash_path(root)), repr(out))
+    for label, selected in (
+        ("duplicate", ["one.aux", "one.aux"]),
+        ("injected-child", ["not-in-preview.aux"]),
+        ("protected", [".slcn-源指纹.json"]),
+    ):
+        rc, result, _ = run_selected(root, preview["previewId"], selected)
+        check("selection." + label + "_rejected_zero_write", rc == 2
+              and result.get("status") == "preflight_failed"
+              and not os.path.exists(trash_path(root))
+              and open(os.path.join(root, "one.aux"), "rb").read() == b"candidate",
+              repr(result))
+
+
+@test
+def test_explicit_selection_rejects_preview_drift() -> None:
+    root = tmpdir("selection_drift")
+    w(root, "one.aux", b"before")
+    preview = cd.run_daily(root, dry_run=True)
+    w(root, "two.aux", b"after")
+    rc, result, _ = run_selected(root, preview["previewId"], ["one.aux"])
+    check("selection.preview_drift_zero_write", rc == 2
+          and result.get("status") == "preflight_failed"
+          and not os.path.exists(trash_path(root))
+          and os.path.isfile(os.path.join(root, "one.aux"))
+          and os.path.isfile(os.path.join(root, "two.aux")), repr(result))
 
 
 if __name__ == "__main__":

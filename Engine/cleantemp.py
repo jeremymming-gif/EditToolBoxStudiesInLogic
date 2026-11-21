@@ -97,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="tocwork 模式：旧检查报告也全清（默认保留最新一组 txt/json/_摘要）")
     ap.add_argument("--empty-trash", action="store_true",
                     help="清空 <目录>/.toolbox-trash/ 下的所有回收目录")
+    ap.add_argument("--expect-preview", default="", metavar="ID",
+                    help="日常清理仅在候选仍与 dry-run 的 previewId 一致时执行")
+    ap.add_argument("--selection-stdin", action="store_true",
+                    help="从标准输入读取逐项回收 JSON：{\"selected\":[相对路径…]}（须同时提供 --expect-preview）")
     ap.add_argument("--json", action="store_true",
                     help="stdout 只输出一个 JSON 结果对象（人类日志改走 stderr）")
     args = ap.parse_args(argv)
@@ -128,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
                warnings: list[str] | None = None,
                already_restored: int = 0,
                skipped: list[dict] | None = None,
-               summary: dict | None = None) -> None:
+               summary: dict | None = None, preview_id: str = "",
+               unselected: list[dict] | None = None) -> None:
         if not json_mode:
             return
         items = entries if entries is not None else _collect_entries(logged)
@@ -162,8 +167,28 @@ def main(argv: list[str] | None = None) -> int:
                     "skipped": len(skipped or []),
                     "failed": len(failures or []),
                 }
+            if unselected is not None:
+                data["unselected"] = list(unselected)
+        if preview_id:
+            data["previewId"] = preview_id
         print(json.dumps(data, ensure_ascii=False), file=sys.stdout)
 
+    if args.expect_preview and (args.mode != "daily" or args.dry_run or args.restore):
+        return _die("--expect-preview 只用于执行日常清理")
+    if args.selection_stdin and (args.mode != "daily" or args.dry_run or args.restore
+                                 or not args.expect_preview):
+        return _die("--selection-stdin 只用于带 --expect-preview 的日常清理执行")
+    if args.expect_preview and not args.selection_stdin:
+        return _die("--expect-preview 必须与显式 --selection-stdin 选择集合同时使用")
+    args.selected_paths = None
+    if args.selection_stdin:
+        try:
+            selection = json.load(sys.stdin)
+        except (json.JSONDecodeError, UnicodeError):
+            return _die("逐项回收选择 JSON 无效")
+        if not isinstance(selection, dict) or not isinstance(selection.get("selected"), list):
+            return _die("逐项回收选择必须是包含 selected 数组的 JSON 对象")
+        args.selected_paths = selection["selected"]
     if args.restore:
         trash_root = os.path.abspath(os.path.expanduser(args.restore))
         if not os.path.isdir(trash_root):
@@ -293,15 +318,17 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
     """
     say("清理临时文件（日常规则）\n")
     say(f"路径：{root}\n")
-    res = _clean_daily.run_daily(root, dry_run=args.dry_run, log=log)
+    res = _clean_daily.run_daily(root, dry_run=args.dry_run,
+                                 expect_preview=args.expect_preview,
+                                 selected_paths=args.selected_paths, log=log)
     status = res.get("status") or ""
     operation_id = res.get("operationId") or ""
     kept = res.get("kept") or []
+    unselected = res.get("unselected")
     warnings = res.get("warnings") or []
     failures = [(str(f.get("path") or ""), str(f.get("error") or ""))
                 for f in (res.get("failures") or [])]
-    entries = [{"path": e["path"], "action": e.get("action", "move")}
-               for e in (res.get("entries") or [])]
+    entries = res["entries"]
     n = int(res.get("count") or 0)
     error = res.get("error") or ""
 
@@ -315,7 +342,7 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
         print("", file=sys.stderr)
         finish(mode="daily", count=0, ok=False, error=error, failures=failures,
                entries=[], status=status, operation_id=operation_id,
-               kept=kept, warnings=warnings)
+               kept=kept, warnings=warnings, unselected=unselected)
         return 2
 
     if status == "cancelled":
@@ -323,7 +350,8 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
         print(f"\n❌ {error or '已停止'}", file=sys.stderr)
         finish(mode="daily", count=n, ok=False, trash=res.get("trashDir") or "",
                error=error, failures=failures, entries=entries, status=status,
-               operation_id=operation_id, kept=kept, warnings=warnings)
+               operation_id=operation_id, kept=kept, warnings=warnings,
+               unselected=unselected)
         return 2
 
     if status == "partial":
@@ -331,7 +359,8 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
               file=sys.stderr)
         finish(mode="daily", count=n, ok=False, trash=res.get("trashDir") or "",
                error=error, failures=failures, entries=entries, status=status,
-               operation_id=operation_id, kept=kept, warnings=warnings)
+               operation_id=operation_id, kept=kept, warnings=warnings,
+               unselected=unselected)
         return 2
 
     say()
@@ -340,7 +369,8 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
     if status == "empty":
         say(f"完成。没有可清理的临时文件（目录：{root}）")
         finish(mode="daily", count=0, ok=True, entries=[], status=status,
-               operation_id=operation_id, kept=kept, warnings=warnings)
+               operation_id=operation_id, kept=kept, warnings=warnings,
+               preview_id=res.get("previewId", ""), unselected=unselected)
         return 0
 
     trash = res.get("trashDir") or ""
@@ -349,7 +379,8 @@ def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> 
     else:
         say(f"完成。已回收 {n} 项（回收目录：{trash}）")
     finish(mode="daily", count=n, ok=True, trash=trash, entries=entries,
-           status=status, operation_id=operation_id, kept=kept, warnings=warnings)
+           status=status, operation_id=operation_id, kept=kept, warnings=warnings,
+           preview_id=res.get("previewId", ""), unselected=unselected)
     return 0
 
 
@@ -372,9 +403,7 @@ def _run_restore_daily(root: str, trash_root: str, args: argparse.Namespace,
         "restored": n, "alreadyRestored": already,
         "skipped": len(skipped), "failed": len(failures),
     }
-    entries = [{"path": e["path"], "action": "restore",
-                "status": e.get("status", "restored")}
-               for e in (res.get("entries") or [])]
+    entries = res["entries"]
     error = res.get("error") or ""
     verb = "将恢复" if args.dry_run else "已恢复"
 

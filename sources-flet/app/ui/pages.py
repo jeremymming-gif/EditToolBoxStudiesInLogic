@@ -1737,7 +1737,7 @@ class IssuePage(BasePage):
         {"key": "merge", "title": "合并 PDF", "icon": "PICTURE_AS_PDF",
          "desc": "按篇序合并整期 PDF；可插编委页 / 封底 / 书签。"},
         {"key": "cleantemp", "title": "清理临时文件", "icon": "DELETE_SWEEP_OUTLINED",
-         "desc": "一次点击自动校验并回收 aux / 日志 / 中间件 / 时间戳 tex / 目录结果 / 旧信息检查；移入回收区，可撤销。"},
+         "desc": "扫描后选择回收项；移入回收区，可撤销。"},
         {"key": "dirpush", "title": "推送目录摘要", "icon": "IOS_SHARE",
          "desc": "生成《目录摘要》docx 并写入推送根；只预演时不动文件。"},
     ]
@@ -2598,7 +2598,7 @@ class IssuePage(BasePage):
         state = self._state_of(key)
         running = self.app.running and self._state_of(key) == "running"
         if key == "cleantemp":
-            # T3 单入口：文案只反映真实阶段（扫描/清理/撤销），没有三档/预演态。
+            # 手动清理分为扫描、确认、回收和撤销。
             return self._cleanup.phase_label()
         if key == "compileall" and running:
             return "停止"
@@ -2743,8 +2743,7 @@ class IssuePage(BasePage):
         skip = {"done": True}
         rows: list = []
         danger = C.notice_bar(
-            "勾选「清理临时文件」= 自动校验并回收（移入回收区，可撤销）；"
-            "默认不勾选，整期串行不会清理。", t, "warn")
+            "整期串行会回收本期全部候选项；默认不勾选。", t, "warn")
         danger.visible = bool(chosen.get("cleantemp"))
         self._runall_danger = danger
         for index, step in enumerate(self.STEPS):

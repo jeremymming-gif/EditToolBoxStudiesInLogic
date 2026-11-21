@@ -37,7 +37,51 @@ def engine(tmp_path, monkeypatch):
 def _panel(page):
     panel = CLEANUP.CleanupPanel(page)
     page._cleanup = panel
+    _drive_selection(panel, None)
     return panel
+
+
+def _drive_selection(panel, paths):
+    """Drive the inline chooser in legacy flow tests; None means select all."""
+    refresh = panel._refresh_result
+    handled_state = None
+
+    def choose_when_ready():
+        nonlocal handled_state
+        refresh()
+        state = panel._selection
+        if state is None or state is handled_state:
+            return
+        handled_state = state
+        assert state["selected"] == set()
+        panel._selection_preview_texts = _texts(panel._box) + [
+            str(ctl.label or "") for ctl in _walk(panel._box)
+            if isinstance(ctl, ft.Checkbox)]
+        checks = [ctl for ctl in _walk(panel._box) if isinstance(ctl, ft.Checkbox)]
+        if paths is None:
+            checks[0].value = True
+            checks[0].on_change(SimpleNamespace(control=checks[0]))
+            selected = {item["path"] for item in state["entries"]}
+        else:
+            selected = set(paths)
+            for check in checks[1:]:
+                check_path = next((item["path"] for item in state["entries"]
+                                   if item["path"] in str(check.label)), "")
+                if check_path in selected:
+                    check.value = True
+                    check.on_change(SimpleNamespace(control=check))
+        button = next(ctl for ctl in _walk(panel._box)
+                      if isinstance(ctl, ft.FilledButton))
+        assert button.disabled is (not selected)
+        if selected:
+            button.on_click(None)
+        else:
+            cancel = next(ctl for ctl in _walk(panel._box)
+                          if isinstance(ctl, ft.TextButton)
+                          and str(ctl.content) == "取消")
+            cancel.on_click(None)
+
+    panel._refresh_result = choose_when_ready
 
 
 def _payload(root, **over):
@@ -46,6 +90,7 @@ def _payload(root, **over):
         "root": root, "count": 0, "entryCount": 0, "entries": [],
         "trashDir": "", "restoreDir": "", "failures": [], "warnings": [],
         "error": "", "operationId": "", "status": "success", "kept": [],
+        "previewId": "engine-preview",
     }
     data.update(over)
     return data
@@ -94,7 +139,7 @@ def _undo_button(control):
     return None
 
 
-def test_cleanup_one_click_ignores_legacy_modes(tmp_path, monkeypatch):
+def test_cleanup_scan_requires_selection_and_ignores_legacy_modes(tmp_path, monkeypatch):
     root = str(tmp_path / "期A")
     (tmp_path / "期A").mkdir()
     page = make_page(tmp_path / "期A")
@@ -115,11 +160,13 @@ def test_cleanup_one_click_ignores_legacy_modes(tmp_path, monkeypatch):
     ])
     panel = _panel(page)
 
-    panel.start()  # 一次点击：自动校验 + 清理
+    panel.start()  # 测试选择器驱动全选，再确认回收
 
     assert len(calls) == 2
     assert _args(calls[0]) == ["--folder", root, "--mode", "daily", "--dry-run", "--json"]
-    assert _args(calls[1]) == ["--folder", root, "--mode", "daily", "--json"]
+    assert _args(calls[1]) == ["--folder", root, "--mode", "daily", "--json",
+                               "--expect-preview", "engine-preview", "--selection-stdin"]
+    assert json.loads(calls[1].stdin_text) == {"selected": ["a.aux", "b.log"]}
     for argv in (_args(calls[0]), _args(calls[1])):
         assert "workspace" not in argv and "delivery" not in argv
         assert "--trash" not in argv and "--all-reports" not in argv
@@ -127,7 +174,7 @@ def test_cleanup_one_click_ignores_legacy_modes(tmp_path, monkeypatch):
     assert rec["status"] == "success" and rec["count"] == 2 and rec["operationId"] == OP
     assert panel.phase == ""
     texts = _texts(panel.result())
-    assert any("实际回收 2 个文件" in text for text in texts), texts
+    assert any("已回收 2 个文件" in text for text in texts), texts
     assert "撤销本次清理" in texts and "查看明细" in texts
     assert _undo_button(panel.result()).disabled is False
 
@@ -155,8 +202,8 @@ def test_cleanup_result_matches_operation_and_partial_failure(tmp_path, monkeypa
     rec = panel.record()
     assert (rec["status"], rec["count"], rec["operationId"]) == ("partial", 2, OP)
     texts = _texts(panel.result())
-    assert any("实际回收 2 个文件" in text and "1 项失败" in text for text in texts), texts
-    assert any("保留 1 项" in text for text in texts)
+    assert any("已回收 2 个文件" in text and "失败 1 项" in text for text in texts), texts
+    assert any("受保护 1 项" in text for text in texts)
     assert any("paper.pdf" in text and "被 .tex 引用" in text for text in texts)
     assert any("c.synctex.gz" in text and "EBUSY" in text for text in texts)
     assert "已撤销本次清理" not in texts
@@ -165,12 +212,12 @@ def test_cleanup_result_matches_operation_and_partial_failure(tmp_path, monkeypa
     # 结果绑 root：切到另一期不显示本期结果；切回来/刷新重建仍在。
     page.set_field("issue_dir", str(root_b))
     other = _texts(panel.result())
-    assert any("尚未清理" in text for text in other), other
+    assert any("待扫描" in text for text in other), other
     assert not any("实际回收" in text for text in other)
     page.set_field("issue_dir", str(root_a))
     fresh = _panel(page)  # 模拟重建/重新进入页面：结果从持久化状态恢复
     refreshed = _texts(fresh.result())
-    assert any("实际回收 2 个文件" in text for text in refreshed), refreshed
+    assert any("已回收 2 个文件" in text for text in refreshed), refreshed
     assert fresh.record()["operationId"] == OP
 
 
@@ -335,7 +382,7 @@ def test_cleanup_empty_keeps_previous_batch_undo(tmp_path, monkeypatch):
     assert rec["lastTrashDir"] == batch and rec["lastOperationId"] == OP
     assert rec["lastCount"] == 1
     texts = _texts(panel.result())
-    assert any("没有可清理的临时文件（未创建新批次）；上次清理批次仍可撤销。" in text
+    assert any("本次无候选；上次清理可撤销。" in text
                for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and str(undo.content) == "撤销上次清理"
@@ -350,7 +397,7 @@ def test_cleanup_empty_keeps_previous_batch_undo(tmp_path, monkeypatch):
     assert any("上次可撤销批次" in text for text in details), details
     assert any(OP in text for text in details), details
     assert any(batch in text for text in details), details
-    assert any("1 个文件" in text for text in details), details
+    assert any("1 项" in text for text in details), details
     C._open_dialogs.clear()
 
     panel.restore_last()  # 必须精确用上一批次，而不是本次空结果
@@ -364,8 +411,8 @@ def test_cleanup_empty_keeps_previous_batch_undo(tmp_path, monkeypatch):
     assert "已撤销上次清理" in str(undo.content)
     texts = _texts(panel.result())
     assert any("已撤销上次清理：恢复 1 个文件。" in text for text in texts), texts
-    assert any("没有可清理的临时文件（未创建新批次）；上次清理已撤销。" in text
-               for text in texts), texts
+    assert not any("实际回收" in text for text in texts), texts
+    assert not any("没有可清理的临时文件" in text for text in texts), texts
 
 
 def test_cleanup_empty_without_previous_is_not_undoable(tmp_path, monkeypatch):
@@ -381,7 +428,7 @@ def test_cleanup_empty_without_previous_is_not_undoable(tmp_path, monkeypatch):
     assert rec["status"] == "empty"
     assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
     texts = _texts(panel.result())
-    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+    assert any("本次无候选。" in text
                for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and str(undo.content) == "撤销本次清理"
@@ -473,7 +520,7 @@ def test_cleanup_undo_then_empty_does_not_revive_undone_batch(tmp_path, monkeypa
     assert "restore" not in rec
     texts = _texts(panel.result())
     assert not any("仍可撤销" in text for text in texts), texts
-    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+    assert any("本次无候选。" in text
                for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and undo.disabled is True
@@ -550,7 +597,7 @@ def test_cleanup_empty_does_not_inherit_undone_persisted_last(tmp_path, monkeypa
     assert not rec.get("lastCount") and not rec.get("lastFinishedAt")
     texts = _texts(panel.result())
     assert not any("仍可撤销" in text for text in texts), texts
-    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+    assert any("本次无候选。" in text
                for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and undo.disabled is True
@@ -762,8 +809,8 @@ def test_cleanup_cancel_without_json_never_claims_old_batch(tmp_path, monkeypatc
     assert rec["entries"] == [] and rec["entryCount"] == 0
     assert rec["lastTrashDir"] == batch and rec["lastOperationId"] == OP
     texts = _texts(panel.result())
-    assert any("已停止：扫描阶段未写入，未回收任何文件" in text for text in texts), texts
-    assert any("上次清理批次仍可撤销" in text for text in texts), texts
+    assert any("扫描已停止；未移动文件。" in text for text in texts), texts
+    assert any("上次清理可撤销。" in text for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and undo.disabled is False
     assert "上次" in str(undo.content)
@@ -821,3 +868,84 @@ def test_cleanup_runall_rejects_mismatched_artifact_root(tmp_path):
     assert panel.record(str(root_b)) == {}
     assert any(event == "cleanup_rejected" for event, _fields in page.app.marks)
 
+
+
+def test_workspace_selection_is_inline_and_binds_execution(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    page = make_page(tmp_path)
+    candidate = {"path": ".toolbox-tmp", "type": "dir", "kind": "tmp-workspace",
+                 "reason": "可整体回收", "fileCount": 2, "directoryCount": 1}
+    unselected = {"path": "独立 文件.aux", "kind": "aux",
+                  "reason": "编译辅助文件（可重新编译生成）"}
+    kept = [{"path": "article/.aiw", "kind": "ai-pending", "reason": "待应用"}]
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=2, entryCount=2,
+                  entries=[candidate, unselected],
+                  kept=kept, previewId="engine-preview"), 0),
+        (_payload(root, count=1, entryCount=1, entries=[candidate],
+                  unselected=[unselected], kept=kept,
+                  operationId=OP, trashDir=root + "/.toolbox-trash/" + OP), 0),
+    ])
+    panel = CLEANUP.CleanupPanel(page)
+    page._cleanup = panel
+    _drive_selection(panel, [".toolbox-tmp"])
+    panel.start()
+
+    texts = panel._selection_preview_texts
+    assert len(calls) == 2
+    assert any(".toolbox-tmp" in text and "2 个文件" in text and "1 个子目录" in text
+               for text in texts), texts
+    assert any("article/.aiw" in text and "待应用" in text for text in texts)
+    assert any("独立 文件.aux" in text for text in _texts(panel.result()))
+    assert panel.phase == ""
+    assert _args(calls[1])[-3:] == ["--expect-preview", "engine-preview",
+                                    "--selection-stdin"]
+    assert json.loads(calls[1].stdin_text) == {"selected": [".toolbox-tmp"]}
+    assert panel.record()["entries"][0]["type"] == "dir"
+    assert panel.record()["unselected"][0]["path"] == "独立 文件.aux"
+
+
+def test_cleanup_empty_selection_cancels_without_batch(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    page = make_page(tmp_path)
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=1, entries=[{"path": "a.aux"}]), 0),
+    ])
+    panel = CLEANUP.CleanupPanel(page)
+    page._cleanup = panel
+    _drive_selection(panel, [])
+
+    panel.start()
+
+    assert len(calls) == 1
+    assert panel.record() == {}
+    assert panel.phase == ""
+
+
+@pytest.mark.parametrize("selection,event_value,expected", [
+    (set(), True, {"a.aux", "b.log"}),
+    ({"a.aux"}, None, {"a.aux", "b.log"}),
+    ({"a.aux"}, True, {"a.aux", "b.log"}),
+    ({"a.aux"}, False, {"a.aux", "b.log"}),
+    ({"a.aux", "b.log"}, False, set()),
+    ({"a.aux", "b.log"}, None, set()),
+])
+def test_cleanup_select_all_toggles_from_current_selection(
+        tmp_path, selection, event_value, expected):
+    page = make_page(tmp_path)
+    panel = CLEANUP.CleanupPanel(page)
+    entries = [{"path": "a.aux"}, {"path": "b.log"}]
+    state = {"root": panel.root, "token": panel._token, "previewId": "preview",
+             "entries": entries, "kept": [], "selected": set(selection)}
+    panel._selection = state
+    panel._phase = "preview"
+    panel._phase_root = panel.root
+    controls = panel._selection_controls(state)
+    checkbox = next(ctl for ctl in _walk(ft.Column(controls=controls))
+                    if isinstance(ctl, ft.Checkbox)
+                    and ctl.label == "全选本次候选")
+
+    checkbox.value = event_value
+    checkbox.on_change(SimpleNamespace(control=checkbox))
+
+    assert state["selected"] == expected
