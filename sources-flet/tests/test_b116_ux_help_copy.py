@@ -2,7 +2,7 @@
 
 锁：
 1. 入口计数由 `ia_map` 现算，不再是「六个入口」：5 个一级页（引用库在侧栏无父行）
-   + 引用库 3 组 9 叶 + 页头齿轮进设置；文案同时给出 `bib:settings` 可深链。
+   + 引用库页内导航 3 组 9 个视图 + 页头齿轮进设置；文案同时给出 `bib:settings` 可深链。
 2. 旧 IA 名一律不得回流：四组 / 10 视图 / 规范化 / 六个入口 / 「维护」组。
 3. 视图名统一「AI 辅助处理 Bib」；9 叶名称与 `ia_map` 逐一对得上（组名 查阅 / 采录 / 治理）。
 4. 快捷键段仍与外壳同源（`settings_shell.shortcut_rows`），不另抄一份。
@@ -116,6 +116,16 @@ def test_stale_ia_wording_is_gone_from_copy_and_render():
         assert stale not in data, stale
     assert "AI 辅助处理 Bib" in rendered
     assert "AI 辅助处理 Bib" in next(d for _n, _w, d in HC.ENTRIES if "单篇" in _n)
+
+
+def test_navigation_source_comments_match_rendered_bib_navigation():
+    stale = ("3 组" + " caption", "3 个" + " caption", "9 叶" + "直接常驻")
+    source_notes = (IA.__doc__, HP.__doc__, HP.HelpPage._entries_note.__doc__)
+    for note in source_notes:
+        for wording in stale:
+            assert wording not in note
+    assert "页内导航 3 组 9 视图" in HP.__doc__
+    assert "页内导航按 3 组排列 9 个视图" in HP.HelpPage._entries_note.__doc__
 
 
 def test_single_page_points_to_intake_group_readback_check():

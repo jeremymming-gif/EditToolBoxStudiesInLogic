@@ -16,7 +16,7 @@ label muted、value 右对齐可截断）。原来「平台差异与托盘」+�
 变成 Stack）；构造期 / 测试替身没有挂载时不跳，静默返回。
 
 批 116 UX（P1-13 / P2-12）：入口计数改由 `ia_map` 现算（5 个一级页 + 引用库
-3 组 9 叶 + 页头齿轮），文案里的视图名统一「AI 辅助处理 Bib」；目录点击后整行选中
+页内导航 3 组 9 视图 + 页头齿轮），文案里的视图名统一「AI 辅助处理 Bib」；目录点击后整行选中
 （`accent_soft`）标出最近跳转的段。滚动联动高亮要分区几何，而 flet 1.0.5 的
 `OnScrollEvent` 只有 pixels、`BaseControl` 无 rect/top，故不按比例猜段。
 """
@@ -165,7 +165,7 @@ class HelpPage(BasePage):
     def _entries_note(self) -> str:
         """入口计数从导航树现算（`ia_map` 是唯一事实来源，不写死「六个入口」）。
 
-        引用库在侧栏没有父行：3 组组标签 + 9 叶直接常驻，设置走页头齿轮
+        引用库在侧栏只有单叶：页内导航按 3 组排列 9 个视图，设置走页头齿轮
         （`bib:settings` 仅路由）；一级页行 = 工作台 / 单篇 / 整期 / 设置 / 帮助 共 5 行。
         """
         top = [entry for entry in IA.nav_parent_entries() if entry["key"] != "bib"]
