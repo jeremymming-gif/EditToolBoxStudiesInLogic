@@ -175,6 +175,31 @@ An anonymous mispelling for conversion.
         self.assertIn("源侧正文", taskbook["text"])
         self.assertIn("An Anonymous Example", taskbook["text"])
 
+    def test_daily_cleanup_retains_active_and_protected_delivery_workspace(self):
+        from slcn import clean_daily
+        from slcn.ai_workflow_state_v3 import request_lock
+
+        self.convert()
+        active = clean_daily.scan_daily(str(self.root))
+        self.assertIn("ai-active", {item["kind"] for item in active["kept"]})
+        self.assertNotIn("work/.aiw", {item["path"] for item in active["candidates"]})
+        self.assertTrue(self.cli("deliver", "--use-original")["delivered"])
+
+        with request_lock(str(self.work)) as acquired:
+            self.assertTrue(acquired)
+            locked = clean_daily.scan_daily(str(self.root))
+            self.assertIn("ai-active", {item["kind"] for item in locked["kept"]}, locked)
+            self.assertNotIn("work/.aiw", {item["path"] for item in locked["candidates"]})
+
+        result = clean_daily.run_daily(str(self.root))
+        kept = {item["path"]: item for item in result["kept"]}
+        self.assertEqual(kept["work/.aiw"]["kind"], "workspace-protected", result)
+        self.assertIn(".slcn-源指纹.json", kept["work/.aiw"]["reason"])
+        self.assertTrue((self.work / ".aiw" / "delivery-journal.json").is_file())
+        self.assertTrue((self.final / ".slcn-源指纹.json").is_file())
+        self.assertTrue(undo_delivery(work_dir=str(self.work))["ok"])
+        self.assertFalse(self.final.exists())
+
     def test_original_delivers_and_undo_restores_whole_directory(self):
         self.final.mkdir(parents=True)
         sentinel = self.final / "prior.txt"

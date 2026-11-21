@@ -1347,11 +1347,20 @@ def _request_failure(phase, error):
 
 
 @contextmanager
-def request_lock(work_dir):
-    """Hold a cross-process advisory lock until the response has been persisted."""
+def request_lock(work_dir, *, existing_only=False):
+    """Hold the workflow lock. Read-only callers can check without creating it."""
     folder = Path(workflow.state_dir(work_dir))
-    folder.mkdir(exist_ok=True, parents=True)
-    with open(folder / "request.lock", "a+b") as handle:
+    if not existing_only:
+        folder.mkdir(exist_ok=True, parents=True)
+    lock_path = folder / "request.lock"
+    try:
+        handle = open(lock_path, "rb") if existing_only else open(lock_path, "a+b")
+    except FileNotFoundError:
+        if not existing_only:
+            raise
+        yield True
+        return
+    with handle:
         if os.name == "nt":
             import msvcrt
 
