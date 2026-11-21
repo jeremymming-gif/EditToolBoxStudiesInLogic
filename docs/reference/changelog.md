@@ -5,9 +5,13 @@ description: 当前版本与历史 Release。
 
 # 版本记录
 
-当前版本：**1.7.0**（Flet 单壳，macOS + Windows）。
+当前发布版本以 [GitHub 最新发布](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 为准。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
+
+## 1.7.1
+
+[正式发布说明](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/tag/v1.7.1)
 
 ## 1.7.0（2026-11-05）
 

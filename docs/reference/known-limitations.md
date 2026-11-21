@@ -1,12 +1,11 @@
 ---
 title: 已知限制与绕行
-description: v1.7.0（Flet 单壳）当前仍存在的限制与可操作的绕行办法（随版本维护）。
+description: 桌面版已知限制、症状与处理办法。
 ---
 
 # 已知限制与绕行
 
-适用版本：**v1.7.0**（Flet 单壳）。只列当前版本仍存在的限制，已修复项不入表。
-本页随版本维护，与 GitHub Release 正文「如实说明」同源。
+本页随当前正式版维护。发布版本见 [GitHub 最新发布](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest)。
 
 ## 平台与界面（Flet 单壳）
 
@@ -14,12 +13,10 @@ description: v1.7.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 |---|---|---|---|---|
 | 系统拖放不可用 | 从资源管理器/访达把文件拖到窗口无反应（Flet/Flutter 桌面端未暴露外部拖放 API，已实测记录） | 选文件要走对话框 | 点「浏览…」打开 Windows 原生对话框，或把路径粘贴进输入框 | 待 Flet 上游支持 / P4 评估 pywin32 旁路 |
 | IME 候选窗 | 中文输入本身可用（已实测 Unicode 输入 17 字符无误），但候选窗位置/跟随未做自动化验证 | 个别输入场景观感不同 | 先确认系统输入法状态；异常时附截图反馈 | 待人工真机复核 |
-| onefile 冷启动偏慢 | 每次启动解包 ~77MB 单文件运行时（暖机约 4s）；Windows 首启另需解压 Flet 桌面客户端（约 135MB，慢盘 30–60s；macOS 自 P09 起随包 `Contents/Resources/flet-client/Flet.app`，无此步） | 启动等待明显、首启更久 | 1.6.1 起首启弹系统通知提示等待，并写启动日志便于定位；二次启动正常 | 观察 / 评估分发形态 |
-| 安装包体积 | Windows zip 约 **75–85MiB**；macOS 约 **210–220MiB**（含 Flet 客户端与 onedir 引擎；1.7.0 实测 227,155,607B≈216.6MiB） | 下载体积较大 | 网络慢时用支持断点的下载工具 | 无（预期） |
-| 首启窗口延迟（已缓解） | 打包形态首启要解压 Flet 客户端，窗口出现前可能只有 Dock 图标、鼠标转圈 | 易被误认为「没启动」而重复点击 | 1.6.1 起：首启系统通知提示 + 启动诊断日志；建议下载后首次启动耐心等待，避免重复双击 | 已缓解 |
-| 未签名 / 未公证 | Windows SmartScreen「Windows 已保护你的电脑」；macOS「已损坏，无法打开」 | 首次打开多一步 | Windows「更多信息 → 仍要运行」；macOS 右键→打开 或 `xattr -dr com.apple.quarantine` | 无（已定案不签名） |
-| Windows 真机验证 | 批 112 起维护机为 macOS：GUI 与引擎已在 mac 真机逐页验证；Windows 侧由 CI windows runner + 发版前冒烟覆盖 | Windows 长尾（DWM 深色标题栏 / 托盘 / 多 DPI / IME）缺少逐批人工走查 | 发版前按 `windows-smoke-checklist.md` 逐项走并留回执；`pytest` 常跑 | 发版流程固定项 |
-| Windows 平台覆盖 | 真机冒烟只在发版前各做一次 | 平台长尾风险 | 每次发版前按 `windows-smoke-checklist.md` 逐项走、留回执；pytest 常跑 | 发版流程固定项 |
+| 启动等待 | 单文件应用需要解包运行环境。Windows 首次启动还可能要准备 Flet 桌面客户端，macOS 包已附带客户端 | 首次启动可能要等一会儿才显示窗口 | 等待窗口出现，避免重复双击。若迟迟没有窗口，可附启动日志反馈 | 观察 |
+| 安装包体积 | 压缩包内含应用运行环境及引擎，macOS 包还含 Flet 桌面客户端 | macOS 包下载时间通常较长 | 下载页会显示各包大小 | 无 |
+| 首次打开提示 | Windows 可能出现 SmartScreen「Windows 已保护你的电脑」。macOS 包未公证，首次打开可能被系统拦截 | 首次打开需要核对来源 | Windows 从正式下载页获取后可点「更多信息 → 仍要运行」。macOS 按 [安装指南](../guide/install.md#macos) 操作，若仍无法打开，请反馈包版本、macOS 版本和具体报错 | 无 |
+| Windows 桌面验证 | 自动测试覆盖部分界面和引擎逻辑 | 托盘、不同缩放比例、中文输入法等行为还需在实际桌面确认 | 遇到异常请附版本、显示缩放及复现步骤反馈 | 待实机验证 |
 | 引用库写库 | Flet 版「待处理」含字段冲突与版本库状态区；另有「编辑 / 查重合并 / 字段归位 / 库健康」四个视图（含批量裁决 dry-run 预览与已处理留痕），「设置」页补上核实成本闸门（核实上限 / 先算账 / 全量核实 / 先查库，存 `settings.bibdb` 段）。仍缺：从「查库结果 / 待裁决 / 入藏结果」一键跳到编辑器的深链（目前只能在「编辑」视图按 key 打开） | 深链要手动抄 key；其余写库能力已可用 | 库健康也可用 `Engine/bibdb.py lint --with-records`，已处理用 `report`；核实成本闸门也可用 CLI（`--verify-plan` / `--verify-max`） | 后续版本（深链需改 `bib_advanced.py` / `bib_write.py`） |
 | 引用库核实上限与 AI 面板 | 走 AI 直连核实链路时，`services/engine_bridge.py` 的 `ai_verify_call` 会用 AI 面板的「单篇核实条数」覆盖 `settings.bibdb` 的 `verify_max`（`verify_plan` / `verify_all_refs` / `lookup_enabled` 仍透传） | 两个上限同时存在时以 AI 面板为准 | 需要引用库上限生效时：把 AI 面板的「单篇核实条数」设为同值，或走非 AI 设值/CLI | 后续版本（需统一两处预算键） |
 | 查重候选与 sidecar | 「查重合并」把 `report-duplicates` 的产物写到**临时目录**（读完即删，不写笔记仓）；同页「确认非重复」调用 `ack-duplicates`，只写库目录旁的 `health-ignore.json`（不改库、不自动提交，`git status` 会显示该未跟踪文件） | 需要把 sidecar 纳入版本管理时得手动提交 | 需要留档时在笔记仓手动 `git add bib_db/health-ignore.json` 并提交；重新审计仍会列出全部候选（引擎设计如此） | 无（引擎既有语义） |

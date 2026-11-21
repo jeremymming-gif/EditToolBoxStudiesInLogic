@@ -2,7 +2,7 @@
 
 本目录服务于 GitHub Actions 流水线 `.github/workflows/build-flet.yml`：把 Flet 单壳
 （`sources-flet/app`）与引擎 sidecar（`SLCNEngine`）打成 **Windows / macOS** 两个平台的可下载产物。
-正式发布（tag/Release）仍走 `release.yml`，本流水线只产 artifact，不发布、不签名。
+正式发布（tag/Release）仍走 `release.yml`；本流水线只产 artifact，不创建 tag 或 Release。
 
 ## 产物布局
 
@@ -89,7 +89,7 @@ codesign --verify --deep --strict "编辑部工具箱.app"
 - matrix：`windows-latest` + `macos-latest`，`fail-fast: false`；Python 3.14。
 - 版本号唯一出处：`Engine/slcn/__init__.py` 的 `__version__`（zip 名与 Windows exe 元数据同源）。
 - artifact：`actions/upload-artifact@v4`，name `flet-<os>-<版本>`；zip 的 sha256 打印在运行摘要里。
-- **不做** tag / Release / 签名；E2E 发版仍需人工确认（B-246c 红线）。
+- 不创建 tag 或 Release；Windows 包不做 Authenticode 签名，macOS 包使用 ad-hoc 封条而不做 Developer ID 签名或公证。E2E 发版仍需人工确认（B-246c 红线）。
 
 ## 品牌资产（图标）
 

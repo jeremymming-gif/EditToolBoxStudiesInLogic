@@ -15,6 +15,7 @@ import flet as ft
 
 from services import bib_git as GIT
 from services import engine_bridge as EB
+from services import version_info as VERSION
 from ui import bib_shell as S
 from ui import components as C
 
@@ -678,9 +679,9 @@ class BibPrefsView:
     # ── 04 关于 ──────────────────────────────────────────────────────
     def _footer(self) -> ft.Control:
         t = self.t
-        engine = _text((self.stats or {}).get("engine_version")) or "1.7.0"
+        version = getattr(self.app, "app_version", None) or VERSION.UNKNOWN_VERSION
         return ft.Container(content=C.text(
-            f"推送/回退只在此页 · v1.7.0 · settings.json", t, "caption", t.palette.text_faint,
+            f"推送/回退只在此页 · {version} · settings.json", t, "caption", t.palette.text_faint,
             max_lines=1))
 
     # ── 渲染 ─────────────────────────────────────────────────────────

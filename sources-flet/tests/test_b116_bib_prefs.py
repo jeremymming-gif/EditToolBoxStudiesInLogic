@@ -119,6 +119,14 @@ def _button_labels(root) -> list[str]:
     return [_label(c) for c in _buttons(root)]
 
 
+def test_footer_uses_current_app_version():
+    host = _Host()
+    host.app.app_version = "v-test"
+    view = BP.BibPrefsView(host)
+
+    assert "v-test" in view._footer().content.value
+
+
 STATS = {"sha256": "a" * 64, "records": 3883,
          "aliases": {"records": 2081, "total": 4102},
          "bytes": 2202009, "engine_version": "1.6.1"}

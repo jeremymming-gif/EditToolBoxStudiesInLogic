@@ -1,13 +1,13 @@
-编辑部工具箱 · macOS 首次运行说明（未签名版）
+编辑部工具箱 · macOS 首次运行说明（未公证版）
 ================================================
 
 1) 解压得到 编辑部工具箱.app（应用内已带引擎 SLCNEngine，请勿单独拆开或移动）。
    引擎真身在 .app 的 Contents/Resources/SLCNEngine/（目录形态）；Contents/MacOS/SLCNEngine 是一个转调它的启动脚本，两条路径都不用手动处理。
 
-2) 首次打开：不要双击（Gatekeeper 会拦未签名应用）。请
+2) 首次打开：Gatekeeper 可能拦截未公证应用。请
    - 方式 A：在 Finder 里右键（或 Control+单击）编辑部工具箱.app →「打开」→ 再点「打开」；
    - 方式 B：双击被拦后，打开「系统设置 → 隐私与安全性」，在底部点「仍要打开」。
-   这是未签名/未公证应用的正常提示（0 成本发布，不做 Apple 签名）。
+   发布流程未配置 Developer ID 签名或 Apple 公证。
 
 3) 若提示「无法验证开发者 / 已损坏」：
    终端执行  xattr -dr com.apple.quarantine /path/to/编辑部工具箱.app  再打开。
@@ -27,10 +27,9 @@
    主程序摘要需单独计算，与上面的 sha256.txt 不是同一文件，勿互相核对：
      shasum -a 256 编辑部工具箱.app/Contents/MacOS/编辑部工具箱
    zip 的 sha256 由构建方随发布说明另行提供。
-   签名自检（可选；应无输出、退出码 0）：
+   签名自检（可选，退出码 0 表示校验通过）：
    codesign --verify --deep --strict 编辑部工具箱.app
-   说明：本包是 ad-hoc 签名（无 Team ID、未公证），这一步只验证包内封条自洽；
-   首次打开仍按第 2) 条处理。
+   若校验失败，请记录完整报错和包版本并反馈。
 
-已知限制：未签名/未公证；arm64（Apple Silicon）构建，Intel Mac 不保证；
+已知限制：未公证；arm64（Apple Silicon）构建，Intel Mac 不保证；
 文件拖放走「浏览...」原生对话框；macOS 版本不提供托盘（托盘是 Windows 功能），关闭窗口即退出。
