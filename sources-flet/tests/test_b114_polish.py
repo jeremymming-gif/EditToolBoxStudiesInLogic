@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import flet as ft
@@ -26,6 +27,7 @@ from ui import components as C
 from ui import pages as P
 from ui import ia_map as IA
 from ui import search_index as SI
+from ui import settings_shell as SHELL
 from ui.ia_map import NAV_GROUPS
 from ui.tokens import Tokens
 
@@ -181,11 +183,15 @@ def _search_app(data: dict | None = None):
     app.store = SimpleNamespace(data=data or {})
     app.pages = {key: SimpleNamespace(key=key)
                  for key in ("home", "single", "issue", "bib", "settings", "help")}
+    focus_target = SimpleNamespace(autofocus=False, focus=lambda: None)
+    for page in app.pages.values():
+        page.focus_after_nav = lambda target=focus_target: target
     app.current_page_key = "home"
     app._search_query = ""
     app._search_matches = []
     app._search_selected = 0
     app._search_focus = False
+    app._search_suggestions_open = False
     app._search_slot = None
     app._toolbar_search = None
     app.page = _NoopPage()
@@ -299,6 +305,159 @@ def test_search_keyboard_updown_and_escape():
     # 未聚焦时不抢全局热键
     app._search_focus = False
     assert app.search_key_handle(SimpleNamespace(key="Arrow Down")) is False
+
+
+def test_search_palette_focuses_existing_field_and_preserves_query():
+    app = _search_app()
+    focused = []
+    field = SimpleNamespace(value="设置", focus=lambda: focused.append(True))
+    app._toolbar_search = field
+    app._search_query = field.value
+    app._search_slot = ft.Container(visible=False)
+    scheduled = []
+    app.page.run_task = lambda handler, *args, **kwargs: scheduled.append(handler)
+
+    app.open_search_palette()
+
+    assert app._toolbar_search is field
+    assert field.value == app._search_query == "设置"
+    assert app._search_focus is True
+    assert app._search_suggestions_open is True
+    assert app._search_slot.visible is True
+    assert len(app._search_matches) <= SI.DEFAULT_LIMIT
+    assert scheduled[0].args[1] is field
+    asyncio.run(scheduled[0]())
+    assert focused == [True]
+
+
+def test_empty_search_suggestions_use_real_entries_and_enter_executes_selected():
+    app = _search_app()
+    entries = [
+        SI.SearchEntry(kind="page", key="home", label="工作台", action="goto:home"),
+        SI.SearchEntry(kind="command", key="theme.dark", label="切换深色", action="theme.dark"),
+        SI.SearchEntry(kind="recent", key="single_source", label="最近源稿：匿名.tex",
+                       action="open:/tmp/slcn-b329/匿名.tex"),
+        SI.SearchEntry(kind="path", key="notes_repo", label="笔记仓路径",
+                       action="open:/tmp/slcn-b329/notes"),
+        *[SI.SearchEntry(kind="page", key=f"page-{index}", label=f"页面 {index}",
+                         action=f"goto:page-{index}") for index in range(8)],
+    ]
+    app._search_entries = lambda: entries
+    app._toolbar_search = SimpleNamespace(value="", focus=lambda: None)
+    app._search_slot = ft.Container(visible=False)
+    app.page.run_task = lambda *args, **kwargs: None
+    executed = []
+    app._run_search_entry = lambda entry: executed.append(entry)
+
+    app.open_search_palette()
+
+    assert len(app._search_matches) == SI.DEFAULT_LIMIT
+    assert {entry.kind for entry in app._search_matches} == {"page", "command", "recent"}
+    assert entries[2] in app._search_matches
+    assert entries[3] not in app._search_matches
+    assert "快捷建议" in _texts(app._search_slot.content)
+    app._search_selected = 2
+    app._on_search_submit(SimpleNamespace(control=SimpleNamespace(value="")))
+    assert executed == [entries[2]]
+
+
+def test_search_panel_click_executes_selected_entry():
+    app = _search_app()
+    entry = SI.SearchEntry(kind="page", key="settings", label="设置",
+                           action="goto:settings")
+    executed = []
+    app._run_search_entry = lambda selected: executed.append(selected)
+
+    panel = app._search_panel_content("设置", [entry])
+    panel.controls[1].on_click(None)
+
+    assert executed == [entry]
+
+
+def test_search_palette_restores_suggestions_after_query_is_cleared():
+    app = _search_app()
+    entries = [
+        *[SI.SearchEntry(kind="page", key=f"page-{index}", label=f"页面 {index}",
+                         action=f"goto:page-{index}") for index in range(10)],
+        SI.SearchEntry(kind="command", key="theme.dark", label="切换深色",
+                       action="theme.dark"),
+    ]
+    app._search_entries = lambda: entries
+    app._search_slot = ft.Container(visible=False)
+
+    app.open_search_palette()
+    app._on_search_change(SimpleNamespace(control=SimpleNamespace(value="页面 9")))
+    assert app._search_matches == [entries[9]]
+
+    app._on_search_change(SimpleNamespace(control=SimpleNamespace(value="")))
+
+    assert app._search_matches == entries[:SI.DEFAULT_LIMIT]
+    assert "快捷建议" in _texts(app._search_slot.content)
+
+
+def test_search_filter_limit_and_enter_executes_selected_result():
+    app = _search_app()
+    entries = [SI.SearchEntry(kind="page", key=f"page-{index}",
+                              label=f"页面 {index}", action=f"goto:page-{index}")
+               for index in range(12)]
+    app._search_entries = lambda: entries
+    app._search_slot = ft.Container(visible=False)
+    executed = []
+    app._run_search_entry = lambda entry: executed.append(entry)
+
+    app._on_search_change(SimpleNamespace(control=SimpleNamespace(value="页面")))
+
+    assert app._search_matches == entries[:SI.DEFAULT_LIMIT]
+    app._search_selected = 3
+    app._on_search_submit(SimpleNamespace(control=SimpleNamespace(value="页面")))
+    assert executed == [entries[3]]
+
+
+def test_search_escape_is_consumed_before_global_stop_and_returns_focus():
+    app = _search_app()
+    app._search_focus = True
+    app._search_query = "设置"
+    app._search_slot = ft.Container(visible=True)
+    stops = []
+    app.stop_run = lambda: stops.append("stop")
+    event = SimpleNamespace(key="Escape", ctrl=False, meta=False, shift=False, alt=False)
+
+    SHELL.on_key(app, event)
+
+    assert app._search_query == ""
+    assert app._search_slot.visible is False
+    assert app._search_focus is True
+    assert stops == []
+
+    app._search_suggestions_open = True
+    app._search_slot.visible = True
+    scheduled = []
+    app.page.run_task = lambda handler, *args, **kwargs: scheduled.append(handler)
+    SHELL.on_key(app, event)
+
+    assert app._search_suggestions_open is False
+    assert app._search_slot.visible is False
+    assert app._search_focus is False
+    assert stops == []
+    assert scheduled[0].args[1] is app.pages["home"].focus_after_nav()
+
+    SHELL.on_key(app, event)
+    assert stops == ["stop"]
+
+    app = _search_app()
+    app._search_suggestions_open = True
+    app._search_focus = False
+    app._search_slot = ft.Container(visible=True)
+    stops = []
+    app.stop_run = lambda: stops.append("stop")
+    scheduled = []
+    app.page.run_task = lambda handler, *args, **kwargs: scheduled.append(handler)
+    SHELL.on_key(app, event)
+    assert app._search_slot.visible is False
+    assert scheduled[0].args[1] is app.pages["home"].focus_after_nav()
+    assert stops == []
+    SHELL.on_key(app, event)
+    assert stops == ["stop"]
 
 
 # ── 3. 输入控件无灰底块 ───────────────────────────────────────────────────

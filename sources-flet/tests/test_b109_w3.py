@@ -281,12 +281,46 @@ def test_log_buffer_limit_filter_and_classify():
 
 def test_hotkeys_are_fixed():
     assert SHELL.hotkey_action(",", ctrl=True) == "settings"
+    assert SHELL.hotkey_action("k", meta=True, platform_name="Darwin") == "search"
+    assert SHELL.hotkey_action("k", ctrl=True, platform_name="Linux") == "search"
+    assert SHELL.hotkey_action("k", ctrl=True, platform_name="Darwin") == ""
+    assert SHELL.hotkey_action("k", meta=True, platform_name="Windows") == ""
     assert SHELL.hotkey_action("F1") == "help"
     assert SHELL.hotkey_action("F5") == "refresh"
     assert SHELL.hotkey_action("F9") == "run"
     assert SHELL.hotkey_action("Escape") == "stop"
     assert SHELL.hotkey_action("d", ctrl=True, shift=True) == "theme"
     assert SHELL.hotkey_action("2", ctrl=True) == "page:2"
+
+
+def test_search_hotkey_dispatch_and_help_label_follow_platform(monkeypatch):
+    actions: list[str] = []
+    app = SimpleNamespace(
+        search_key_handle=lambda event: False,
+        open_search_palette=lambda: actions.append("search"),
+        mark=lambda event, **fields: None,
+    )
+    event = SimpleNamespace(key="k", ctrl=False, meta=True, shift=False, alt=False)
+    monkeypatch.setattr(SHELL.platform, "system", lambda: "Darwin")
+    SHELL.on_key(app, event)
+    assert actions == ["search"]
+
+    event.ctrl, event.meta = True, False
+    monkeypatch.setattr(SHELL.platform, "system", lambda: "Linux")
+    SHELL.on_key(app, event)
+    assert actions == ["search", "search"]
+
+    monkeypatch.setattr(SHELL.platform, "system", lambda: "Windows")
+    SHELL.on_key(app, event)
+    assert actions == ["search", "search", "search"]
+
+    def search_label(system):
+        rows = SHELL.shortcut_rows(Tokens(), platform_name=system)
+        return next(row.controls[0].value for row in rows
+                    if row.controls[-1].value == "打开全局搜索")
+
+    assert search_label("Darwin") == "⌘K"
+    assert search_label("Windows") == "Ctrl+K"
 
 
 def test_diagnosis_redacts_secrets_and_writes(tmp_path):

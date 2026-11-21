@@ -126,9 +126,13 @@ def test_single_page_points_to_intake_group_readback_check():
 # ── 3. 快捷键与外壳同源（不另抄一份）──────────────────────────────────────
 def test_shortcut_section_stays_sourced_from_shell_rows():
     texts = _texts(HP.HelpPage(_app_stub()).build())
-    for item in SHELL.SHORTCUTS:
-        assert item["keys"] in texts, item["keys"]
-        assert item["label"] in texts, item["label"]
+    rows = SHELL.shortcut_rows(_t())
+    assert len(rows) == len(SHELL.SHORTCUTS)
+    for item, row in zip(SHELL.SHORTCUTS, rows, strict=True):
+        keys, label = _texts(row)
+        assert label == item["label"]
+        assert keys in texts, keys
+        assert label in texts, label
     assert "与外壳实际绑定同源" in "\n".join(texts)
 
 

@@ -34,6 +34,7 @@ FIX_HINTS = {
     "path": "检查路径是否含空格/中文导致工具链找不到文件",
 }
 SHORTCUTS = [
+    {"keys": "Ctrl+K", "action": "search", "label": "打开全局搜索"},
     {"keys": "Ctrl+,", "action": "settings", "label": "打开设置"},
     {"keys": "F1", "action": "help", "label": "帮助与关于"},
     {"keys": "F5", "action": "refresh", "label": "重新检测引擎"},
@@ -96,8 +97,12 @@ def log_buffer(app) -> LogBuffer:
 
 # ── 快捷键 ───────────────────────────────────────────────────────────────
 def hotkey_action(key: str, ctrl: bool = False, shift: bool = False,
-                  alt: bool = False) -> str:
+                  alt: bool = False, meta: bool = False,
+                  platform_name: str | None = None) -> str:
     name = str(key or "")
+    is_macos = (platform_name or platform.system()).lower() in ("darwin", "macos")
+    if name.lower() == "k" and (meta if is_macos else ctrl):
+        return "search"
     if ctrl and shift and name.lower() == "d":
         return "theme"
     if ctrl and name == ",":
@@ -136,9 +141,12 @@ def on_key(app, event) -> None:
                 return
         except Exception:  # noqa: BLE001 搜索键盘处理失败不能拖垮全局热键
             pass
-    action = hotkey_action(getattr(event, "key", ""), bool(getattr(event, "ctrl", False)),
-                           bool(getattr(event, "shift", False)),
-                           bool(getattr(event, "alt", False)))
+    action = hotkey_action(
+        getattr(event, "key", ""), ctrl=bool(getattr(event, "ctrl", False)),
+        shift=bool(getattr(event, "shift", False)),
+        alt=bool(getattr(event, "alt", False)),
+        meta=bool(getattr(event, "meta", False)),
+    )
     if not action:
         # Q2（FIX-20261112）：未命中热键的按键（绝大多数普通输入）不能留给框架的
         # 自动整页 patch —— page.on_keyboard_event 让每个按键都走这里，而整页 patch
@@ -153,6 +161,8 @@ def on_key(app, event) -> None:
             app.goto(PAGE_KEYS[index])
     elif action in ("settings", "help"):
         app.goto(action)
+    elif action == "search":
+        app.open_search_palette()
     elif action == "refresh":
         app.refresh_engine_status()
         app.rebuild_shell()
@@ -195,9 +205,12 @@ def install_hotkeys(app) -> None:
         app.mark("hotkeys_error", error=f"{type(exc).__name__}: {exc}")
 
 
-def shortcut_rows(t) -> list:
+def shortcut_rows(t, platform_name: str | None = None) -> list:
+    system = (platform_name or platform.system()).lower()
+    is_macos = system in ("darwin", "macos")
     return [ft.Row(spacing=t.sp("1"), controls=[
-        C.text(item["keys"], t, "small", t.palette.text, weight="semibold"),
+        C.text(("⌘K" if is_macos else "Ctrl+K") if item["action"] == "search"
+               else item["keys"], t, "small", t.palette.text, weight="semibold"),
         ft.Container(expand=True),
         C.text(item["label"], t, "small", t.palette.text_muted),
     ]) for item in SHORTCUTS]

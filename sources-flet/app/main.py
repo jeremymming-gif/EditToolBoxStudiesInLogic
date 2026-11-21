@@ -422,6 +422,7 @@ class App:
         self._search_matches: list = []
         self._search_selected = 0
         self._search_focus = False
+        self._search_suggestions_open = False
         self._search_slot = None
         # 注意：不要在这里存 browse task 句柄 —— 会遮蔽下方同名 async 方法（GUI-04：
         # flet 1.0.5 的 run_task 只收 coroutine function）。句柄需要的话改名，别复用方法名。
@@ -930,6 +931,13 @@ class App:
         except Exception:  # noqa: BLE001
             pass
 
+    def open_search_palette(self) -> None:
+        self._search_suggestions_open = True
+        self._set_search_focus(True)
+        self._refresh_search_panel()
+        self.page.run_task(functools.partial(
+            _run_focus_safely, self, self._toolbar_search, "search"))
+
     def _search_entries(self) -> list:
         store = getattr(self, "store", None)
         data = getattr(store, "data", None)
@@ -991,8 +999,9 @@ class App:
                     C.text(SI.KIND_LABELS.get(entry.kind, ""), t, "caption", p.text_faint),
                 ]),
             ))
+        title = f"搜索「{query}」" if query else "快捷建议"
         header = ft.Row(spacing=t.sp("1"), controls=[
-            C.text(f"搜索「{query}」", t, "caption", p.text_muted),
+            C.text(title, t, "caption", p.text_muted),
             ft.Container(expand=True),
             C.text(f"{len(matches)} 条", t, "caption", p.text_faint),
         ])
@@ -1006,14 +1015,18 @@ class App:
         if slot is None:
             return
         query = str(getattr(self, "_search_query", "") or "").strip()
-        if not query:
+        if not query and not self._search_suggestions_open:
             self._search_matches = []
             self._search_selected = 0
             slot.visible = False
             slot.content = None
             self._update_search_slot(slot)
             return
-        matches = self._search_matches_now(query)
+        if query:
+            matches = self._search_matches_now(query)
+        else:
+            matches = [entry for entry in self._search_entries()
+                       if entry.kind in ("page", "command", "recent")][:SI.DEFAULT_LIMIT]
         self._search_matches = matches
         if matches:
             self._search_selected = max(0, min(int(getattr(self, "_search_selected", 0) or 0),
@@ -1034,15 +1047,19 @@ class App:
         query = str(getattr(e.control, "value", "") or "").strip()
         self._search_query = str(getattr(e.control, "value", "") or "")
         if not query:
-            self._refresh_search_panel()
-            return
-        matches = self._search_matches_now(query)
+            if not self._search_suggestions_open:
+                self._refresh_search_panel()
+                return
+            matches = self._search_matches
+        else:
+            matches = self._search_matches_now(query)
         if not matches:
-            self.toast("没有匹配的页面、命令或最近记录")
-            try:
-                self.page.update()
-            except Exception:  # noqa: BLE001 构建期
-                pass
+            if query:
+                self.toast("没有匹配的页面、命令或最近记录")
+                try:
+                    self.page.update()
+                except Exception:  # noqa: BLE001 构建期
+                    pass
             self._refresh_search_panel()
             return
         self._run_search_entry(matches[min(int(getattr(self, "_search_selected", 0) or 0),
@@ -1052,6 +1069,7 @@ class App:
         self._search_query = ""
         self._search_matches = []
         self._search_selected = 0
+        self._search_suggestions_open = False
         search = getattr(self, "_toolbar_search", None)
         if search is not None:
             search.value = ""
@@ -1135,23 +1153,29 @@ class App:
         self._refresh_search_panel()
 
     def search_key_handle(self, event) -> bool:
-        """全局热键前置：搜索框聚焦时 ↑↓ 选择、Escape 收起结果。
+        """全局热键前置：搜索框聚焦时 ↑↓ 选择并消费 Escape。
 
         Enter 走 TextField 的 on_submit（Flet 里文本框内的 Enter 不会冒泡成普通键），
         所以这里不重复处理 Enter，避免两条路径各执行一次。
         """
-        if not getattr(self, "_search_focus", False):
+        focused = self._search_focus
+        query = str(self._search_query or "").strip()
+        if not focused and not query and not self._search_suggestions_open:
             return False
         key = str(getattr(event, "key", "") or "")
         if key in ("Arrow Down", "ArrowDown", "Down", "Arrow Up", "ArrowUp", "Up"):
+            if not focused:
+                return False
             self._search_move(1 if "Down" in key or key == "Down" else -1)
             return True
-        if key == "Escape" and getattr(self, "_search_query", ""):
-            self._clear_search()
-            try:
-                self.page.update()
-            except Exception:  # noqa: BLE001
-                pass
+        if key == "Escape":
+            if query:
+                self._clear_search()
+            else:
+                self._clear_search()
+                if focused:
+                    self._set_search_focus(False)
+                self._focus_after_nav(self.pages[self.current_page_key])
             return True
         return False
 
