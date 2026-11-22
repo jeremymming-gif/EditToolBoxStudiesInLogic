@@ -312,7 +312,6 @@ else:
         # the caller lacks an authorized manuscript root. Strict availability above
         # remains based solely on the inherited caller environment.
         _inputs = _collect_synthetic_auto_inputs()
-        _inputs["env_complete"] = True
         _need = {"corpus_csv_sha256", "corpus_tex_manifest_sha256", "audit_csv_sha256",
                  "audit_txt_sha256", "tests_manifest_sha256", "engine_py_sha256",
                  "env_complete", "manuscripts_fingerprint"}
@@ -320,6 +319,8 @@ else:
               f"缺 {sorted(_need - set(_inputs))}")
         check("(e2) 输入指纹确定性（两次采集相同）",
               _G.inputs_sha(_inputs) == _G.inputs_sha(_collect_synthetic_auto_inputs()))
+        # Model a complete environment for the cache-contract assertions below.
+        _inputs["env_complete"] = True
         _proj = {"schema": _G.AUTO_INPUTS_SCHEMA, "inputs": _inputs,
                  "test_rows": [["test_x", 1, 0]], "block_sha256": "0" * 64}
         check("(e3) engine/tests 未变 → 可复用测试计数缓存（写模式不整跑套件）",
