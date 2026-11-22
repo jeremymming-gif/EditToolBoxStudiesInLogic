@@ -245,3 +245,35 @@ def test_overview_narrow_has_no_horizontal_scroll(monkeypatch):
     rows = [node for node in _walk(tree) if isinstance(node, ft.Row)]
     assert all(not getattr(row, "scroll", None) for row in rows)
     assert host.view_obj._build_width < 1100
+
+
+def test_manual_refresh_keeps_overview_scroller_and_displays_snapshot(monkeypatch):
+    _patch(monkeypatch)
+    host = _Host()
+    host.page.width = 1000
+    view = host.view_obj = OV.OverviewView(host)
+    _load(host)
+    panel = view.build()
+    host.view_slot = ft.Container(content=panel)
+    body = panel._bib_body.content
+    dock = panel._bib_dock
+    old_snapshot = view.snapshot
+    phases = []
+
+    def record_patch():
+        assert host.view_slot.content is panel and panel._bib_body.content is body
+        assert panel._bib_dock is dock
+        phases.append((view.loading, view.snapshot, _texts(body), dock.content.value))
+
+    monkeypatch.setattr(panel, "update", record_patch)
+    _patch(monkeypatch, stats={**STATS, "records": 4666})
+    monkeypatch.setattr(OV, "_clock", lambda: "test-refreshed")
+    refresh = next(c for c in _walk(body) if getattr(c, "content", None) == "重新统计")
+    refresh.on_click(None)
+    asyncio.run(host.page.tasks.pop()())
+    start, done = phases
+    assert start[:2] == (True, old_snapshot) and "3,883" in start[2] and "运行中" in start[3]
+    assert done[:2] == (False, "test-refreshed") and "4,666" in done[2]
+    assert any("已刷新" in text for text in done[2]) and "只读" in done[3]
+    assert "test-refreshed" in panel._bib_meta.value
+    assert host.renders == 0

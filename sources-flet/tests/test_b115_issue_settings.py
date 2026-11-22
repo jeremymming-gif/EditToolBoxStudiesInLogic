@@ -296,12 +296,51 @@ def test_settings_page_methods_have_no_cards_or_section_titles(tmp_path):
     assert "section_label" in calls
     assert "hairline" in calls
     assert "kv_row" in calls
-    assert "inline_note" in calls
+    assert "_engine_note" in calls
+    assert "inline_note" in _calls(P.SettingsPage._engine_note)
     assert "_flat" in calls  # settings_shell / ai_panel 的卡片统一去壳
     assert "button_palette_row" in calls
     src = inspect.getsource(P.SettingsPage.build)
     assert "panel=True" in src
     assert src.count("self._group(") == 3
+
+
+def test_engine_display_refresh_keeps_settings_scroller(tmp_path):
+    page, root = _build_settings(tmp_path)
+    body = root.content
+    engine_note = page._engine_status_note
+    page.app.engine_status.ok = False
+    page.app.engine_status.version = "1.8.0"
+    page.app.app_version = "1.8.1"
+
+    page.refresh_engine_display()
+
+    assert root.content is body
+    assert page._engine_status_note is engine_note
+    assert engine_note.controls[1].value == "引擎未就绪 · 1.8.0"
+    assert page._about_version.value == "1.8.1"
+
+
+def test_save_editor_names_updates_mounted_menu(tmp_path):
+    app = _SettingsApp(tmp_path)
+    single = P.SinglePage(app)
+    root = single.ensure_built()
+    scroller = single._single_scroll_body
+    box = single._editor_box
+    dialogs = []
+    app.page.show_dialog = dialogs.append
+    app.page.pop_dialog = dialogs.pop
+    box._choose("__manage__", "编辑名单…")
+    dialog = dialogs[-1]
+    dialog.content.content.controls[-1].value = "匿名责编甲\n匿名责编乙"
+    dialog.actions[-1].on_click(None)
+
+    assert dialogs == []
+    assert single.root is root
+    assert single._single_scroll_body is scroller
+    assert single._editor_box is box
+    assert [item.content.value for item in box.items] == [
+        "未指定", "匿名责编甲", "匿名责编乙", "自定义…", "编辑名单…"]
 
 
 def test_settings_body_has_no_card_containers_left(tmp_path):

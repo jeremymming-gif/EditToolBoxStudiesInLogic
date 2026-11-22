@@ -427,7 +427,10 @@ class BibHost(BasePage):
                   aliases_total=aliases.get("total"), conflicts=conflicts.get("records"),
                   bytes=stats.get("bytes"), error=self.stats_error[-500:])
         self._sync_badge(stats)
-        self._render()
+        view = "version_sync" if self._version_sync_active else self.view
+        refresh_stats = getattr(self._views.get(view), "on_stats_changed", None)
+        if callable(refresh_stats):
+            refresh_stats()
         self._sync_toolbar_meta()
         self._update_toolbar()
 

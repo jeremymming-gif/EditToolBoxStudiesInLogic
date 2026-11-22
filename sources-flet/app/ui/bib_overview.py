@@ -107,7 +107,7 @@ def _engine_reason(result) -> tuple[str, str]:
 
 
 class OverviewView:
-    """概览视图；`build()` 只按当前状态重建控件。"""
+    """概览视图，页内刷新时保留正文滚动容器。"""
 
     def __init__(self, page) -> None:
         self.page = page
@@ -126,6 +126,7 @@ class OverviewView:
         self.detail: dict = {}
         self._task_running = False
         self._build_width = 0.0
+        self._panel: ft.Container | None = None
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -177,9 +178,19 @@ class OverviewView:
                 pass
 
     def _refresh(self) -> None:
-        render = getattr(self.page, "_render", None)
-        if callable(render):
-            render()
+        panel = self._panel
+        slot = getattr(self.page, "view_slot", None)
+        if panel is None or (slot is not None and slot.content is not panel):
+            return
+        self._build_width = self._design_width()
+        panel._bib_body.content.controls = self._body_controls(self._build_width < 1100)
+        panel._bib_meta.value = self._meta()
+        panel._bib_dock.content = self._notice_dock()
+        panel._bib_dock.height = self.t.px(S.DOCK_H_EXPANDED if self.error else S.DOCK_H)
+        try:
+            panel.update()
+        except RuntimeError:  # 控件尚未挂载
+            pass
 
     def _schedule(self) -> None:
         """统一走 Page.run_task(coroutine function)（flet 1.0.5 只收函数）。"""
@@ -390,17 +401,18 @@ class OverviewView:
         t = self.t
         self._build_width = self._design_width()
         narrow = self._build_width < 1100
-        header = S.page_shell(
+        self._panel = S.page_shell(
             t, title=TITLE,
             meta=self._meta(),
             role_chip="readonly",
             action=self._primary(),
             on_gear=lambda e: self._goto("settings"),
-            body=self._body(narrow),
+            body=ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
+                           controls=self._body_controls(narrow)),
             dock=self._notice_dock(),
             dock_height=S.DOCK_H_EXPANDED if self.error else S.DOCK_H,
         )
-        return header
+        return self._panel
 
     def _meta(self) -> str:
         if not self.loaded:
@@ -482,7 +494,7 @@ class OverviewView:
             padding=ft.Padding(left=t.px(16), top=t.px(12), right=0, bottom=0),
             content=ft.Column(spacing=t.sp("half"), controls=body))
 
-    def _body(self, narrow: bool) -> ft.Control:
+    def _body_controls(self, narrow: bool) -> list[ft.Control]:
         t = self.t
         parts: list = []
         if self.error and self.loaded:
@@ -511,8 +523,7 @@ class OverviewView:
                 spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[ft.Container(expand=True, content=table), detail]))
         parts.append(self._refresh_row())
-        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
-                         controls=parts)
+        return parts
 
     def _detail_grid(self) -> ft.Control:
         """1000 宽：详情折成 3 行 × 2 列，不横向滚动。"""

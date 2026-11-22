@@ -7,6 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import flet as ft
+import pytest
 
 from services import engine_bridge as EB
 from ui import bib_edit as BE
@@ -270,6 +274,89 @@ def test_clear_draft_restores_loaded_values(tmp_path, monkeypatch):
     view._clear_draft()
     assert view.values["year"] == "2021"
     assert view.new_key == ""
+
+
+def _walk(control):
+    yield control
+    if isinstance(getattr(control, "content", None), ft.Control):
+        yield from _walk(control.content)
+    for child in getattr(control, "controls", ()):
+        yield from _walk(child)
+
+
+@pytest.mark.parametrize("width", [1000, 1160])
+def test_edit_preserves_mounted_scrollers_through_preview_and_confirmation(
+        tmp_path, monkeypatch, width):
+    db = _db(tmp_path)
+    host = _Host(db)
+    host.page.width = width
+    fields = {f"synthetic_{i:02}": f"old-{i:02}" for i in range(18)}
+    diff = {name: {"old": old, "new": f"new-{i:02}"}
+            for i, (name, old) in enumerate(fields.items())}
+    calls = _install(monkeypatch, query={"hits": [{"record": {**RECORD, "fields": fields}}]},
+                     preview={"db_sha256_before": "a" * 64, "field_changes": diff})
+    view = BE.BibEditView(host)
+    root = view.build()
+
+    def scrollers():
+        return tuple(c for c in _walk(root) if isinstance(c, ft.Column)
+                     and isinstance(c.scroll, ft.Scrollbar))
+
+    empty_panes = scrollers()
+    view.key_input = RECORD["key"]
+    asyncio.run(view._load())
+    shell = root.content
+    panes = scrollers()
+    assert all(old is not new for old, new in zip(empty_panes, panes, strict=True))
+    assert all(len(pane.controls) == 9 for pane in panes)
+
+    def visible(control):
+        return any(node is control for node in _walk(root))
+
+    def field_with_value(value):
+        return next(c for c in _walk(root) if isinstance(c, ft.TextField) and c.value == value)
+
+    def assert_field_panes():
+        assert root.content is shell
+        assert all(visible(pane) for pane in panes)
+
+    changed = field_with_value("old-17")
+    changed.value = "new-17"
+    changed.on_change(SimpleNamespace(control=changed))
+    asyncio.run(view._preview())
+    assert_field_panes()
+    diff_scroll, = (c for c in scrollers() if all(c is not pane for pane in panes))
+    assert visible(diff_scroll) and len(diff_scroll.controls) == 19
+    assert not view._bottom_holder.content._bib_confirm_btn.disabled
+
+    def assert_diff_scroll():
+        assert_field_panes()
+        assert visible(diff_scroll)
+        assert len(diff_scroll.controls) == 19
+
+    view._bottom_holder.content._bib_confirm_btn.on_click(None)
+    assert view.confirm_layer
+    assert_diff_scroll()
+    next(c for c in _walk(root) if getattr(c, "content", None) == "取消").on_click(None)
+    assert not view.confirm_layer and not view._bottom_holder.content._bib_confirm_btn.disabled
+    assert_diff_scroll()
+
+    changed = field_with_value("new-17")
+    changed.value = "draft-17"
+    before = host.page.updates
+    changed.on_change(SimpleNamespace(control=changed))
+    assert host.page.updates == before and visible(changed)
+    assert view._bottom_holder.content._bib_confirm_btn.disabled
+    assert_diff_scroll()
+    asyncio.run(view._preview())
+    assert_diff_scroll()
+
+    view._clear_draft()
+    assert_field_panes()
+    assert field_with_value("old-17") and not visible(diff_scroll)
+    assert view.payload is None and not view._can_confirm()
+    assert all("--dry-run" in args_of(call) for call in calls if "edit" in args_of(call))
+    assert not host.tasks and Path(db).read_bytes() == b""
 
 
 def test_activate_consumes_focus_key(tmp_path, monkeypatch):

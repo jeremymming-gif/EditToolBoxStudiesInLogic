@@ -121,6 +121,8 @@ class BibTable:
         self._sort_desc = bool(sort_desc)
         self._selected: tuple[str, Any] | None = None
         self._last_control: ft.Control | None = None
+        self._row_scroller: ft.Column | ft.ListView | None = None
+        self._table_root: ft.Column | None = None
 
     # ── 数据与状态 ────────────────────────────────────────────────────────
     @property
@@ -471,6 +473,18 @@ class BibTable:
         """底部加载更多；无剩余返回 None，不占 36 高。"""
         return self._load_more() if self.has_more else None
 
+    def refresh_rows(self) -> None:
+        """Apply row state in-place for the existing table layout."""
+        scroller = self._row_scroller
+        root = self._table_root
+        if scroller is None or root is None:
+            return
+        rows = [self._row(row, i) for i, row in enumerate(self.visible_rows())]
+        scroller.controls = rows if rows or isinstance(scroller, ft.ListView) else [self._empty()]
+        root._bib_visible = len(rows)
+        footer = self._footer()
+        root.controls = root.controls[:1 if self.scroll_x else 2] + ([footer] if footer else [])
+
     def build(self) -> ft.Control:
         """构建当前帧：表头 + 行区 + 载入更多；空数据仍保留表头。
 
@@ -492,11 +506,14 @@ class BibTable:
                              controls=rows or [self._empty()])
             body._bib_list = False
 
+        self._row_scroller = body
+
         if self.scroll_x:
             # 两轴：外层 Row 定住视口高（底部常显横条始终可见），内层 Column
             # 纵向滚动并带常显竖条；表头与行一起横向移动，不出现双表头。
             inner = ft.Column(spacing=0, scroll=C.scrollbar(t), expand=True,
                               controls=rows or [self._empty()])
+            self._row_scroller = inner
             grid = ft.Column(spacing=0, width=t.px(self._total_width()), expand=True,
                              controls=[header, inner])
             scroller = ft.Row(scroll=C.scrollbar(t, horizontal=True), expand=True,
@@ -514,6 +531,7 @@ class BibTable:
         root._bib_table = True
         root._bib_scroll_x = self.scroll_x
         root._bib_visible = len(visible)
+        self._table_root = root
         if footer is not None:
             root.controls.append(footer)
         wrapped: ft.Control = root

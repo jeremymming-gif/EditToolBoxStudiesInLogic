@@ -183,6 +183,8 @@ class BibDupesView:
         self.commit: dict | None = None
         self.result: dict | None = None
         self._root: ft.Container | None = None
+        self._shell: ft.Container | None = None
+        self._body_content: ft.Column | None = None
         self._bottom_holder: ft.Container | None = None
 
     # ── 宿主小工具 ───────────────────────────────────────────────────
@@ -260,7 +262,16 @@ class BibDupesView:
                 pass
 
     def _render(self) -> None:
-        if self._root is not None:
+        if self._root is not None and self._shell is not None and self._body_content is not None:
+            # 同页状态变化只替换各内容槽；保留 page shell、筛选栏、正文滚动宿主
+            # 和确认条的挂载身份，避免点击排序/条目后滚动位置回到顶部。
+            self._filter_holder.content = self._filter_row()
+            self._table_holder.content = self._table()
+            self._diff_holder.content = self._diff_section()
+            self._plan_holder.content = self._plan_band()
+            self._bottom_holder.content = self._bottom()
+            self._shell._bib_dock.content = self._dock()
+        elif self._root is not None:
             self._root.content = self._body()
             replant = getattr(self.page, "_replant_nav", None)
             if callable(replant):
@@ -681,21 +692,26 @@ class BibDupesView:
         t = self.t
         width = int(getattr(self._flet(), "width", 1160) or 1160)
         self.narrow = width <= S.NARROW_W
+        self._filter_holder = ft.Container(content=self._filter_row())
+        self._table_holder = ft.Container(content=self._table())
+        self._diff_holder = ft.Container(content=self._diff_section())
+        self._plan_holder = ft.Container(content=self._plan_band())
         self._bottom_holder = ft.Container(content=self._bottom())
-        body = ft.Column(spacing=0, expand=True, controls=[
-            self._filter_row(),
-            self._table(),
+        self._body_content = ft.Column(spacing=0, expand=True, controls=[
+            self._filter_holder,
+            self._table_holder,
             ft.Container(height=t.px(8)),
-            self._diff_section(),
-            self._plan_band(),
+            self._diff_holder,
+            self._plan_holder,
             self._bottom_holder,
         ])
-        return S.page_shell(
+        self._shell = S.page_shell(
             t, title=TITLE,
             meta="选对候选 → 并排对比 → 预览写入",
             role_chip=S.role_chip(t, "write"),
             action=C.secondary_button("重新生成报告", lambda e: self._task(self._scan), t),
-            body=body, dock=self._dock())
+            body=self._body_content, dock=self._dock())
+        return self._shell
 
     def _dock(self) -> ft.Control:
         t = self.t

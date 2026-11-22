@@ -251,6 +251,7 @@ class QueryView:
         self.sort_desc = False
         self._task_running = False
         self._build_width = 0.0
+        self._shell: ft.Container | None = None
         # ── P06 分页与复用状态（CONTRACT §5）：page 字段只消费、不重算 ──
         self.query_advanced = True
         self.adv_values: dict[str, str] = {field: "" for field, _, _ in COMMON_QUERY_FIELDS}
@@ -307,10 +308,34 @@ class QueryView:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, preserve_scroll: bool = False) -> None:
+        if preserve_scroll and self._shell is not None:
+            if not self._is_current_shell():
+                return
+            self._status_slot.controls = self._banners()
+            self._status_slot.visible = bool(self._status_slot.controls)
+            self._query_slot.content = self._query_button()
+            self._count_slot.content = self._count_control()
+            table = self._results_table
+            table.set_rows(self.rows, reset_limit=False)
+            table.limit = max(PAGE_SIZE, len(self.rows))
+            self._select_table_row(table)
+            table.refresh_rows()
+            self._footer_slot.content = self._footer()
+            if self._detail_key != self.selected_key:
+                self._update_detail()
+            try:
+                self._shell.update()
+            except RuntimeError:  # 未挂载（首帧或 headless）
+                pass
+            return
         render = getattr(self.page, "_render", None)
         if callable(render):
             render()
+
+    def _is_current_shell(self) -> bool:
+        slot = getattr(self.page, "view_slot", None)
+        return self._shell is not None and (slot is None or slot.content is self._shell)
 
     def _mark(self, event: str, **kwargs) -> None:
         marker = getattr(self.page, "mark", None)
@@ -466,7 +491,7 @@ class QueryView:
         # 取消 = 让在途结果世代过期（契约 §5）：迟到结果丢弃，可重跑不串结果。
         self._gen += 1
         self.cancelled = True
-        self._refresh()
+        self._refresh(preserve_scroll=True)
 
     def _cancel_clicked(self, e=None) -> None:
         self.cancel()
@@ -640,9 +665,9 @@ class QueryView:
             self.running = False
             self._task_running = False
             self.error = f"查询失败：{_first_line(str(exc))}"
-            self._refresh()
+            self._refresh(preserve_scroll=more)
             return
-        self._refresh()
+        self._refresh(preserve_scroll=more)
         try:
             engine_started = time.monotonic()
             result = await asyncio.to_thread(
@@ -656,16 +681,16 @@ class QueryView:
         self._task_running = False
         if gen != self._gen:
             # 迟到结果 / 取消 / 条件变化：世代不符，一律丢弃，不串结果。
-            self._refresh()
+            self._refresh(preserve_scroll=more)
             return
         if self.cancel_requested:
             self.cancelled = True
             self.success = ""
-            self._refresh()
+            self._refresh(preserve_scroll=more)
             return
         if not result.get("ok"):
             self.error = f"查询失败：{_first_line(result.get('error') or '引擎返回失败')}"
-            self._refresh()
+            self._refresh(preserve_scroll=more)
             return
         data = result.get("json") or {}
         adopt_started = time.monotonic()
@@ -675,7 +700,7 @@ class QueryView:
             self._adopt_first(data)
         adopt_elapsed_ms = round((time.monotonic() - adopt_started) * 1000, 1)
         refresh_started = time.monotonic()
-        self._refresh()
+        self._refresh(preserve_scroll=more)
         self._mark("bib_query_timing", more=more, engine_ms=engine_elapsed_ms,
                    adopt_ms=adopt_elapsed_ms,
                    refresh_call_ms=round((time.monotonic() - refresh_started) * 1000, 1),
@@ -793,11 +818,13 @@ class QueryView:
                 ft.Container(expand=True, content=control)]) for control in controls]
         rows.extend(self._extra_condition_row(i) for i in range(len(self.extra_terms)))
 
+        self._query_slot = ft.Container(content=self._query_button())
+        self._count_slot = ft.Container(content=self._count_control())
         actions = ft.Row(
             spacing=t.sp("1"), run_spacing=t.sp("1"), wrap=wrap,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                self._query_button(),
+                self._query_slot,
                 C.paste_button(t, self.page, self._field, height=28),
                 C.text_button("增加条件", self._add_extra_term, t, height=28),
                 C.select(t, value=self.sort_key,
@@ -814,7 +841,7 @@ class QueryView:
                 ]),
                 C.text_button("清空", lambda e: self._clear(), t, height=28),
                 ft.Container(expand=True),
-                self._count_control(),
+                self._count_slot,
             ])
         form = ft.Column(spacing=t.sp("1"), controls=[
             C.text("多个条件同时填写时取交集；key、别名和 DOI 默认精确匹配。",
@@ -911,6 +938,9 @@ class QueryView:
         return C.text("", t, "caption", t.palette.text_faint)
 
     def _table(self) -> ft.Control:
+        return self._new_table().build()
+
+    def _new_table(self) -> BT.BibTable:
         t = self.t
         if self._build_width < 1100:
             # 1000 宽：只留题名/年/状态，详情折到表格下方，不横向滚动。
@@ -942,15 +972,20 @@ class QueryView:
             height=None, page=self.page.page)
         table._bib_first_col_width = 160
         table.empty_action = C.text_button(
-            "清空筛选" if self.loaded else "查询", 
+            "清空筛选" if self.loaded else "查询",
             (lambda e: self._clear()) if self.loaded else (lambda e: self.query()),
             t, height=28)
-        return table.build()
+        self._select_table_row(table)
+        return table
+
+    def _select_table_row(self, table: BT.BibTable) -> None:
+        row = next((row for row in self.rows if row.get("key") == self.selected_key), None)
+        table.select(row)
 
     def _row_clicked(self, row: dict) -> None:
         key = str(row.get("key") or "")
         self.selected_key = key
-        self._refresh()
+        self._refresh(preserve_scroll=True)
 
     def _clear(self) -> None:
         self.adv_values = {field: "" for field, _, _ in COMMON_QUERY_FIELDS}
@@ -992,7 +1027,8 @@ class QueryView:
         t = self.t
         hit = self._selected_hit()
         if hit is None:
-            return C.empty_line("未选择记录", t)
+            return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t),
+                             controls=[C.empty_line("未选择记录", t)])
         fields = _hit_fields(hit)
         record = hit.get("record") or {}
         rows = [
@@ -1189,7 +1225,7 @@ class QueryView:
             self._copy(text)
             return
         self.error = f"没有取到 {key} 的 BibTeX；可打开详情核对记录。"
-        self._refresh()
+        self._refresh(preserve_scroll=True)
 
     def _open_log(self, key: str) -> None:
         opener = getattr(getattr(self.page, "app", None), "open_path", None)
@@ -1224,7 +1260,16 @@ class QueryView:
             meta=(f"{hit.get('key')} · 单条记录" if hit else "选一行看字段，或按 key 精确定位。"),
             actions=self._detail_actions() or None)
 
-    def _fluid_detail(self, panel: ft.Control, *, wrap_actions: bool) -> ft.Control:
+    def _wrap_detail_actions(self, panel: ft.Container) -> None:
+        if not self._selected_hit():
+            return
+        t = self.t
+        actions = panel.content.controls[-1].controls[1:]  # 去掉宽窗用的弹性占位
+        panel.content.controls[-1] = ft.Row(
+            spacing=t.sp("1"), run_spacing=t.sp("1"), wrap=True,
+            alignment=ft.MainAxisAlignment.END, controls=actions)
+
+    def _fluid_detail(self, panel: ft.Container) -> ft.Control:
         """把固定宽详情面板变成「吃满父级宽」的柔性面板（R-05）。
 
         bib_shell.detail_panel 的 width 是设计定宽（宽窗右栏 360 用）；窄窗里父级
@@ -1236,14 +1281,7 @@ class QueryView:
            高宽，面板内部 Column(expand=True) 的正文滚动与底部动作都成立。
         """
         t = self.t
-        column = getattr(panel, "content", None)
-        if wrap_actions and isinstance(column, ft.Column) and column.controls:
-            last = column.controls[-1]
-            if isinstance(last, ft.Row):
-                column.controls[-1] = ft.Row(
-                    spacing=t.sp("1"), run_spacing=t.sp("1"), wrap=True,
-                    alignment=ft.MainAxisAlignment.END,
-                    controls=self._detail_actions())
+        self._wrap_detail_actions(panel)
         panel.width = None
         return ft.Container(
             expand=True,
@@ -1253,15 +1291,21 @@ class QueryView:
             ),
         )
 
-    def _placeholder(self) -> ft.Control:
-        t = self.t
-        return S.detail_panel(t, body=C.empty_line("未选择记录", t),
-                              title="未选择记录",
-                              meta="选一行看字段，或按 key 精确定位。")
+    def _update_detail(self) -> None:
+        panel = self._detail_view
+        fresh = self._detail_panel()
+        if self._build_width < 1100:
+            self._wrap_detail_actions(fresh)
+        body = panel._bib_detail_body
+        new_body = fresh._bib_detail_body
+        body.content.controls = new_body.content.controls
+        panel.content.controls = [body if child is new_body else child
+                                  for child in fresh.content.controls]
+        self._detail_key = self.selected_key
 
     def _footer(self) -> ft.Control:
         t = self.t
-        parts: list = []
+        parts: list[ft.Control] = []
         cap_legacy = self.limit >= ENGINE_CAP
         if self.loaded and self.count:
             if cap_legacy:
@@ -1300,10 +1344,8 @@ class QueryView:
                    t.palette.text_faint),
         ])
 
-    def _body(self) -> ft.Control:
+    def _banners(self) -> list[ft.Control]:
         t = self.t
-        self._build_width = self._design_width()
-        narrow = self._build_width < 1100
         parts: list = []
         if self.error and self.loaded:
             parts.append(S.state_banner(
@@ -1324,40 +1366,59 @@ class QueryView:
         if self.cancelled:
             parts.append(S.state_banner(t, "cancelled", message="已取消，可重跑。",
                                         next_label="重试", on_next=lambda e: self.query()))
-        table = self._table()
-        footer = self._footer()
+        return parts
+
+    def _body(self) -> ft.Control:
+        t = self.t
+        self._build_width = self._design_width()
+        narrow = self._build_width < 1100
+        banners = self._banners()
+        self._status_slot = ft.Column(spacing=t.sp("1"), controls=banners,
+                                      visible=bool(banners))
+        self._results_table = self._new_table()
+        table = self._results_table.build()
+        self._footer_slot = ft.Container(content=self._footer())
+        self._detail_view = self._detail_panel()
+        self._detail_key = self.selected_key
         if narrow:
             # R-05：窄窗详情不再按「页面设计宽 × t.px」定宽（父级还有侧栏/内外边距，
             # 定宽会超出实际内容区，动作行右端被父级裁剪、点不到）。改成柔性铺满：
             # 外层 Row+STRETCH 给详情一个有界高宽，面板 width=None 由父级拉伸决定，
             # 动作行换成 wrap Row（Column STRETCH 已给它紧宽），360 自动折行不越界。
-            parts.append(table)
-            parts.append(footer)
-            if self.selected_key:
-                parts.append(self._fluid_detail(self._detail_panel(),
-                                                wrap_actions=True))
-            else:
-                parts.append(self._fluid_detail(self._placeholder(),
-                                                wrap_actions=False))
+            layout = [table, self._footer_slot, self._fluid_detail(self._detail_view)]
         else:
-            parts.append(ft.Row(
+            layout = [ft.Row(
                 expand=True, spacing=0, vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[ft.Container(expand=True, content=ft.Column(
-                    spacing=0, expand=True, controls=[table, footer])),
-                    self._detail_panel()]))
-        return ft.Column(spacing=t.sp("1"), expand=True, controls=parts)
+                    spacing=0, expand=True, controls=[table, self._footer_slot])),
+                    self._detail_view])]
+        return ft.Column(spacing=t.sp("1"), expand=True, controls=[self._status_slot, *layout])
 
-    def build(self) -> ft.Control:
-        self._build_width = self._design_width()
+    def _meta_line(self) -> str:
         meta = f"只读 · 每页 {PAGE_SIZE} 条"
         total = (getattr(self.page, "stats_data", None) or {}).get("records")
         if isinstance(total, int):
             meta = f"库 {total:,} 条 · {meta}"
-        return S.page_shell(
-            self.t, title=TITLE, meta=meta, role_chip="readonly",
+        return meta
+
+    def on_stats_changed(self) -> None:
+        if not self._is_current_shell():
+            return
+        meta = self._shell._bib_meta
+        meta.value = self._meta_line()
+        try:
+            meta.update()
+        except RuntimeError:  # 未挂载（首帧或 headless）
+            pass
+
+    def build(self) -> ft.Control:
+        self._build_width = self._design_width()
+        self._shell = S.page_shell(
+            self.t, title=TITLE, meta=self._meta_line(), role_chip="readonly",
             action=None, on_gear=lambda e: self._goto_settings(),
             body=ft.Column(spacing=0, expand=True,
                            controls=[self._filter(), self._body()]))
+        return self._shell
 
     def _goto_settings(self) -> None:
         setter = getattr(self.page, "set_view", None)

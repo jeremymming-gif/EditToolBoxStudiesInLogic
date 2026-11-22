@@ -292,17 +292,29 @@ class HelpPage(BasePage):
     def _about(self) -> ft.Column:
         t = self.t
         app = self.app
+        app_version = C.kv_row(t, "应用版本", app.app_version, mono=True)
+        engine_version = C.kv_row(t, "引擎", self._engine_version_text(), mono=True)
+        self._about_versions = (app_version.value_ctl, engine_version.value_ctl)
         return self._section(
             "about", "版本与许可", None,
-            C.kv_row(t, "应用版本", app.app_version, mono=True),
-            C.kv_row(t, "引擎", f"{app.engine_status.version} · {app.engine_status.mode}",
-                     mono=True),
+            app_version,
+            engine_version,
             C.kv_row(t, "外壳", f"Flet {app.flet_version} · Python {app.python_version}",
                      mono=True),
             self._item("页面", "6 个（工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于）"),
             self._item("许可", HC.LICENSE),
             self._item("第三方", HC.THIRD_PARTY),
         )
+
+    def _engine_version_text(self) -> str:
+        engine = self.app.engine_status
+        return f"{engine.version} · {engine.mode}"
+
+    def refresh_engine_display(self) -> None:
+        values = (self.app.app_version, self._engine_version_text())
+        for control, value in zip(getattr(self, "_about_versions", ()), values):
+            control.value = value
+            control.tooltip = value
 
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _item(self, title: str, desc: str, *, icon: str | None = None) -> ft.Column:

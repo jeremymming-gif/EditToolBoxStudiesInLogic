@@ -295,7 +295,11 @@ def test_toolbar_meta_matches_legacy_contract(monkeypatch) -> None:
 
 
 def test_load_stats_updates_meta_and_badge(monkeypatch) -> None:
-    page, app, _ = _host(monkeypatch)
+    page, app, _ = _host(monkeypatch, {"bib_view": "query"})
+    page.build()
+    content = page.view_slot.content
+    calls = []
+    page._views["query"].on_stats_changed = lambda: calls.append(page.stats_data["records"])
 
     def fake_read(call):
         if "lint" in list(getattr(call, "argv", []) or []):
@@ -312,6 +316,8 @@ def test_load_stats_updates_meta_and_badge(monkeypatch) -> None:
     assert page.lint_counts == {"warnings": 76}
     assert page.toolbar_meta() == "3,883 条 · 76 条警告"
     assert app.badges == [5]
+    assert calls == [3883]
+    assert page.view_slot.content is content
 
 
 def test_normalize_view_compat_translates_old_entrypoints(monkeypatch) -> None:

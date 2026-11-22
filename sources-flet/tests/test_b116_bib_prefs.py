@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import flet as ft
 import pytest
@@ -251,6 +252,20 @@ def test_load_failure_keeps_page_and_shows_error(tmp_path, monkeypatch):
     asyncio.run(view._load())
     root = view.build()
     assert any("读取失败" in text for text in _texts(root))
+
+
+def test_setting_update_keeps_shell_and_scroll_host(tmp_path, monkeypatch):
+    view, host = _view(tmp_path)
+    _install(monkeypatch)
+    asyncio.run(view._load())
+    root = view.build()
+    shell = root.content
+    scroll = view._scroll
+    view._on_lookup_change(SimpleNamespace(control=SimpleNamespace(value=False)))
+    assert root.content is shell
+    assert view._scroll is scroll
+    assert scroll in shell._bib_body.content.content.controls
+    assert getattr(scroll, "_bib_scroll_body", False)
 
 
 def test_real_stats_shape_dict_counters(tmp_path, monkeypatch):

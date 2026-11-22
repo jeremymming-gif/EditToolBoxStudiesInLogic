@@ -304,6 +304,142 @@ def test_expanded_row_has_manual_48_and_radio(tmp_path, monkeypatch):
     assert view.expanded == row["id"]
 
 
+def test_expanded_row_wraps_long_candidate_and_keeps_actions_reachable(tmp_path, monkeypatch):
+    view, host = _view(tmp_path, width=1000, height=668)
+    _install(monkeypatch)
+    asyncio.run(view._scan())
+    row = view.rows[0]
+    row["candidate"] = "极长候选值_" + ("x" * 240)
+    view._expand(row["id"])
+    detail = view._expanded_row(row)
+    assert detail.height is None, "展开详情必须随内容增高，不能固定裁切"
+    candidate_fields = [c for c in _walk(detail)
+                        if isinstance(c, ft.TextField) and c.value == row["candidate"]]
+    assert len(candidate_fields) == 1
+    candidate_field = candidate_fields[0]
+    assert candidate_field.multiline is True
+    assert candidate_field.max_lines is None
+    assert candidate_field.read_only is True
+    assert "跳过" in _texts(detail) or any(
+        getattr(c, "content", None) == "跳过" for c in _walk(detail))
+
+
+def test_expand_and_collapse_keep_the_mounted_table_scroll(tmp_path, monkeypatch):
+    view, host = _view(tmp_path, width=1000, height=668)
+    _install(monkeypatch)
+    asyncio.run(view._scan())
+    root = view.build()
+    body = root.content
+
+    def table_scroll():
+        return next(c for c in _walk(root) if isinstance(c, ft.Column)
+                    and isinstance(c.scroll, ft.Scrollbar)
+                    and any(getattr(row, "_bib_row", False) for row in c.controls))
+
+    scroll = table_scroll()
+    updates = host.page.updates
+
+    def click(index):
+        rows = [c for c in scroll.controls if getattr(c, "_bib_row", False)]
+        rows[index].on_click(None)
+        assert root.content is body
+        assert table_scroll() is scroll
+
+    def assert_detail(index):
+        detail_indices = [i for i, c in enumerate(scroll.controls)
+                          if any(isinstance(node, ft.RadioGroup) for node in _walk(c))]
+        if index is None:
+            assert detail_indices == []
+        else:
+            row = [i for i, c in enumerate(scroll.controls)
+                   if getattr(c, "_bib_row", False)][index]
+            assert detail_indices == [row + 1]
+
+    click(-1)
+    assert view.expanded == view._filtered()[-1]["id"]
+    assert_detail(-1)
+    click(0)
+    assert view.expanded == view._filtered()[0]["id"]
+    assert_detail(0)
+    click(0)
+    assert view.expanded is None
+    assert_detail(None)
+    assert host.page.updates == updates + 3
+
+
+@pytest.mark.parametrize("width", [1000, 1160])
+def test_table_stays_mounted_through_row_actions_and_preview(tmp_path, monkeypatch, width):
+    view, host = _view(tmp_path, width=width)
+    calls = []
+    commits = []
+    _install(monkeypatch, calls=calls, commit=commits)
+    asyncio.run(view._scan())
+    root = view.build()
+    shell = root.content
+    table = view._table_scroll
+    updated_states = []
+
+    def check_mounted():
+        assert root.content is shell
+        assert view._table_scroll is table and any(n is table for n in _walk(root))
+        updated_states.append(view.state)
+
+    monkeypatch.setattr(host.page, "update", check_mounted)
+
+    def checkbox():
+        return next(n for n in _walk(table) if isinstance(n, ft.Checkbox))
+
+    def button(label):
+        return next(n for n in _walk(root) if getattr(n, "content", None) == label)
+
+    row = view._filtered()[0]
+    checkbox().on_change(None)
+    assert view.checked == {row["id"]} and checkbox().value
+    before_sort = [r["key"] for r in view._filtered()]
+    view._on_sort(1)
+    rendered = " ".join(_texts(table))
+    sorted_keys = sorted(before_sort, reverse=True)
+    assert [r["key"] for r in view._filtered()] == sorted_keys
+    positions = [rendered.index(key) for key in sorted_keys]
+    assert positions == sorted(positions)
+
+    field_chip = next(n for n in _walk(root) if getattr(n, "_bib_filter_chip", None) == "field")
+    field_chip.on_click(None)
+    assert view.fields and len(view._filtered()) < len(view.rows)
+    assert sum(bool(getattr(n, "_bib_row", False)) for n in table.controls) == len(view._filtered())
+    view.fields.clear()
+    view._apply_search()
+
+    other = next(r for r in view.rows if r["id"] != row["id"])
+    view._expand(other["id"])
+    button("跳过").on_click(None)
+    assert not view._row_by_id(other["id"]) and not view.expanded
+    assert other["key"] not in " ".join(_texts(table))
+    assert f"{len(view.rows)} 条建议" in shell._bib_meta.value
+
+    button("预览所选").on_click(None)
+    asyncio.run(host.tasks.pop()())
+    assert view.state == "previewed" and "running" in updated_states
+    assert view._can_confirm() and not view._bottom_holder.content._bib_confirm_btn.disabled
+    assert all("--dry-run" in argv for argv in calls if "edit" in argv)
+
+    call = view._call
+
+    async def cancel_during_preview(cmd):
+        result = await call(cmd)
+        if "--dry-run" in cmd.argv:
+            button("取消").on_click(None)
+            assert view.state == "cancelled" and not view._can_confirm()
+        return result
+
+    monkeypatch.setattr(view, "_call", cancel_during_preview)
+    asyncio.run(view._preview())
+    check_mounted()
+    assert view.state == "cancelled" and "已取消预览，未写库" in _texts(root)
+    assert not view._can_confirm() and commits == []
+    assert all("--dry-run" in argv for argv in calls if "edit" in argv)
+
+
 def test_manual_override_invalidates_preview(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     calls: list[list[str]] = []

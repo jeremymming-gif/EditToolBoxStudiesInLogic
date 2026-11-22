@@ -1118,9 +1118,7 @@ class App:
                 self.set_theme(action.split(".", 1)[1])
                 return
             elif action == "engine.refresh":
-                self.refresh_engine_status()
-                self.rebuild_shell()
-                self.toast("引擎状态已刷新")
+                self.redetect_engine()
                 return
             elif action == "run.current":
                 SHELL._run_current(self)
@@ -1428,6 +1426,7 @@ class App:
         items: list = []
         brand_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                            controls=[brand.aleph_mark(t, 22)])
+        self._sidebar_engine_slot = None
         if not compact:
             brand_row.controls.append(C.text("编辑部工具箱", t, role="section"))
         items.append(ft.Container(padding=C._pad(t, 16, 8, 16, 4), content=brand_row))
@@ -1498,21 +1497,26 @@ class App:
                 padding=C._pad(t, 16, 2, 16, 2),
                 content=self._theme_row,
             ))
-            engine_ok = self.engine_status.ok
-            engine_version = str(self._version_info.get("engine_version") or self.app_version)
             items.append(C.divider(t))
-            items.append(ft.Container(
+            self._sidebar_engine_slot = ft.Container(
                 padding=C._pad(t, 16, 8, 16, 10),
-                content=ft.Column(spacing=t.sp("xs"), controls=[
-                    ft.Row(spacing=t.sp("half"), controls=[
-                        C.status_dot("ok" if engine_ok else "error", t),
-                        C.text(f"引擎 {engine_version} · " + ("就绪" if engine_ok else "不可用"),
-                               t, "caption", t.palette.text_muted),
-                    ]),
-                    C.text(f"本地运行 · {self.app_version}", t, "caption", t.palette.text_faint),
-                ]),
-            ))
+                content=self._sidebar_engine_summary(),
+            )
+            items.append(self._sidebar_engine_slot)
         return ft.Column(spacing=0, expand=True, controls=items)
+
+    def _sidebar_engine_summary(self) -> ft.Column:
+        t = self.t
+        ok = self.engine_status.ok
+        version = self._version_info.get("engine_version") or self.app_version
+        return ft.Column(spacing=t.sp("xs"), controls=[
+            ft.Row(spacing=t.sp("half"), controls=[
+                C.status_dot("ok" if ok else "error", t),
+                C.text(f"引擎 {version} · " + ("就绪" if ok else "不可用"),
+                       t, "caption", t.palette.text_muted),
+            ]),
+            C.text(f"本地运行 · {self.app_version}", t, "caption", t.palette.text_faint),
+        ])
 
     def toggle_sidebar(self, e=None) -> None:
         self.sidebar_open = not self.sidebar_open
@@ -2314,6 +2318,27 @@ class App:
         self.app_version = self._version_info["version"]
         self.mark("engine_status", **self.engine_status.to_dict())
         self.mark("app_version", version=self.app_version, source=self._version_info["source"])
+
+    def redetect_engine(self) -> None:
+        """Refresh the engine labels and run gates without remounting any page."""
+        self.refresh_engine_status()
+        engine_slot = getattr(self, "_sidebar_engine_slot", None)
+        if engine_slot is not None:
+            engine_slot.content = self._sidebar_engine_summary()
+        self.status_bar.set_meta(self._status_meta())
+        meta = getattr(self, "_toolbar_meta", None)
+        if isinstance(meta, ft.Text):
+            _, value, _ = self._toolbar_spec()
+            meta.value = value
+        self.pages["home"]._refresh_band()
+        for key in ("settings", "help"):
+            if self.pages[key].root is not None:
+                self.pages[key].refresh_engine_display()
+        for key in ("single", "issue"):
+            if self.pages[key].root is not None:
+                self.pages[key].refresh_running()
+        self.page.update()
+        self.toast("引擎状态已刷新")
 
     # ── 运行编排 ────────────────────────────────────────────────────────
     def begin_run(self, call: EB.EngineCall) -> bool:

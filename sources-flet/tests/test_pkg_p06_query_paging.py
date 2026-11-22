@@ -311,6 +311,62 @@ def test_load_more_uses_offset_chain_same_condition(monkeypatch):
     assert host.page.tasks == [] and len(fake.calls) == 3
 
 
+@pytest.mark.parametrize("width,total,vertical_type", [
+    (1000, 80, ft.Column), (1000, 165, ft.ListView), (1160, 165, ft.Column),
+])
+def test_query_same_page_updates_keep_mounted_scrollers(monkeypatch, width, total, vertical_type):
+    _, host, view = _prepared(monkeypatch, total=total)
+    host.page.width = width
+    view.adv_values["title"] = "分页"
+    asyncio.run(view._run())
+    tree = view.build()
+    host.view_slot = ft.Container(content=tree)
+    monkeypatch.setattr(host, "_render", lambda: pytest.fail("same-page host rebuild"))
+    updates = []
+    monkeypatch.setattr(type(tree), "update", lambda control: updates.append(control))
+    monkeypatch.setattr(ft.Text, "update", lambda control: updates.append(control))
+    search = view._field
+    table = next(node for node in _walk(tree) if getattr(node, "_bib_table", False))
+    scrollers = [node for node in _walk(table)
+                 if isinstance(node, ft.ListView) or getattr(node, "scroll", None)]
+    vertical = scrollers[-1]
+    assert isinstance(vertical, vertical_type)
+    assert len(scrollers) == (2 if width >= 1100 else 1)
+    panel = next(node for node in _walk(tree) if getattr(node, "_bib_detail_panel", False))
+    detail_scroll = panel._bib_detail_body.content
+
+    row = vertical.controls[-3]
+    key = row._bib_row_key[1]
+    row.on_click(None)
+    assert view.selected_key == key
+    assert any(node._bib_selected for node in vertical.controls)
+    assert f"{key} · 单条记录" in _texts(panel)
+
+    if total > 100:
+        load_more = next(node for node in _walk(tree)
+                         if getattr(node, "content", None) == "载入更多"
+                         and getattr(node, "on_click", None))
+        load_more.on_click(None)
+        _run_tasks(host)
+        assert f"已全部载入（共 {total} 条）" in _texts(tree)
+        assert len(vertical.controls) == total
+        assert view.selected_key == key
+
+    meta = tree._bib_meta
+    host.stats_data = {"records": 1234}
+    view.on_stats_changed()
+    assert meta.value == "库 1,234 条 · 只读 · 每页 100 条"
+    assert updates[-1] is meta
+    reachable = {id(node) for node in _walk(host.view_slot.content)}
+    assert all(id(control) in reachable for control in (search, table, detail_scroll, *scrollers))
+    assert host.page._bib_filter_state["field"] is search
+
+    host.view_slot.content = ft.Container()
+    host.stats_data = {"records": 987}
+    view.on_stats_changed()
+    assert meta.value == "库 1,234 条 · 只读 · 每页 100 条"
+
+
 def test_165_result_final_page_keeps_list_view_and_updates_footer(monkeypatch):
     _, host, view = _prepared(monkeypatch, total=165)
     view.adv_values["title"] = "分页"
@@ -417,6 +473,10 @@ def test_sha_change_refuses_merge_with_refresh_entry(monkeypatch):
     view.adv_values["title"] = "分页"
     asyncio.run(view._run())
     assert view._loaded == 100 and view._db_sha == SHA_A
+    tree = view.build()
+    host.view_slot = ft.Container(content=tree)
+    table = next(node for node in _walk(tree) if getattr(node, "_bib_table", False))
+    monkeypatch.setattr(host, "_render", lambda: pytest.fail("same-page host rebuild"))
 
     fake.sha = SHA_B  # 第二次读库时库文件已变
     view.load_more()
@@ -425,14 +485,19 @@ def test_sha_change_refuses_merge_with_refresh_entry(monkeypatch):
     assert view._has_more is False
     assert view._page_error == QV.DB_CHANGED_MSG
     assert "引用库已变化" in view._page_error
-    texts = _texts(view.build())
+    assert host.view_slot.content is tree
+    assert any(node is table for node in _walk(tree))
+    texts = _texts(tree)
     assert QV.DB_CHANGED_MSG in texts
     assert "刷新后重查" in texts
     assert "载入更多" not in texts
 
     # 刷新入口 = 按当前库重查（新首查 offset=0，采纳新 sha）。
-    view._restart_query()
+    monkeypatch.setattr(host, "_render", lambda: setattr(host.view_slot, "content", view.build()))
+    requery = next(node for node in _walk(tree) if getattr(node, "content", None) == "刷新后重查")
+    requery.on_click(None)
     _run_tasks(host)
+    assert host.view_slot.content is not tree
     assert view._page_error == ""
     assert view._db_sha == SHA_B
     assert view._loaded == 100 and view._has_more is True

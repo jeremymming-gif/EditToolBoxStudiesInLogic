@@ -95,6 +95,9 @@ class BibPrefsView:
         self.receipt = ""
         self.receipt_tone = "success"
         self._root: ft.Container | None = None
+        self._shell: ft.Container | None = None
+        self._body_column: ft.Column | None = None
+        self._scroll: ft.Column | None = None
 
     # ── 宿主小工具 ───────────────────────────────────────────────────
     def _flet(self):
@@ -167,7 +170,23 @@ class BibPrefsView:
                 pass
 
     def _render(self) -> None:
-        if self._root is not None:
+        if self._root is not None and self._shell is not None and self._scroll is not None:
+            # 偏好开关、保存回执和异步状态只更新滚动区内容，保留同一滚动宿主。
+            t = self.t
+            bottom_pad = self._scroll.controls[-1]
+            self._scroll.controls = [
+                self._state_line(),
+                self._group_db(),
+                ft.Container(height=t.px(12)),
+                self._version_link(),
+                ft.Container(height=t.px(12)),
+                self._footer(),
+                bottom_pad,
+            ]
+            self._shell._bib_dock.content = (
+                C.text(self.stderr or "", t, role="log", color=t.palette.log_text, max_lines=1)
+                if self.stderr else None)
+        elif self._root is not None:
             self._root.content = self._body()
             replant = getattr(self.page, "_replant_nav", None)
             if callable(replant):
@@ -641,7 +660,9 @@ class BibPrefsView:
     def _body(self) -> ft.Control:
         t = self.t
         meta = "保存只改设置，不动库"
-        scroll = ft.Column(
+        bottom_pad = ft.Container(height=t.px(12))
+        bottom_pad._bib_bottom_pad = True
+        self._scroll = ft.Column(
             spacing=0, expand=True, scroll=C.scrollbar(t), controls=[
                 self._state_line(),
                 self._group_db(),
@@ -649,25 +670,22 @@ class BibPrefsView:
                 self._version_link(),
                 ft.Container(height=t.px(12)),
                 self._footer(),
+                bottom_pad,
             ])
-        bottom_pad = ft.Container(height=t.px(12))
-        bottom_pad._bib_bottom_pad = True
-        scroll.controls.append(bottom_pad)
-        scroll._bib_scroll_body = True
-        body = ft.Container(
-            expand=True,
-            content=ft.Column(spacing=t.sp("1"), expand=True, controls=[
-                scroll,
-                self._impact_bar(),
-                ft.Container(height=t.px(8)),
-            ]))
-        return S.page_shell(
+        self._scroll._bib_scroll_body = True
+        self._body_column = ft.Column(spacing=t.sp("1"), expand=True, controls=[
+            self._scroll,
+            self._impact_bar(),
+            ft.Container(height=t.px(8)),
+        ])
+        self._shell = S.page_shell(
             t, title=TITLE, meta=meta, role_chip=S.role_chip(t, "readonly"),
-            body=body,
+            body=ft.Container(expand=True, content=self._body_column),
             dock=ft.Container(height=S.DOCK_H,
                               content=C.text(self.stderr or "", t, role="log",
                                              color=t.palette.log_text, max_lines=1)
                               if self.stderr else None))
+        return self._shell
 
     def _state_line(self) -> ft.Control:
         t = self.t

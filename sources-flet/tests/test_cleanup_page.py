@@ -949,3 +949,25 @@ def test_cleanup_select_all_toggles_from_current_selection(
     checkbox.on_change(SimpleNamespace(control=checkbox))
 
     assert state["selected"] == expected
+
+
+def test_cleanup_checkbox_updates_mounted_candidate_list(tmp_path):
+    panel = CLEANUP.CleanupPanel(make_page(tmp_path))
+    state = {"root": panel.root, "token": panel._token, "previewId": "preview",
+             "entries": [{"path": f"fixture{i}.aux"} for i in range(40)],
+             "kept": [], "selected": set()}
+    panel._selection = state
+    panel._phase = "preview"
+    panel._phase_root = panel.root
+    result = panel.result()
+    scroller = result.controls[-1]
+    scrollbar = scroller.scroll
+    checkbox = scroller.controls[40]
+    checkbox.value = True
+    checkbox.on_change(SimpleNamespace(control=checkbox))
+
+    assert state["selected"] == {"fixture39.aux"}
+    assert panel.result() is result
+    assert result.controls[-1] is scroller
+    assert scroller.scroll is scrollbar
+    assert scroller.controls[40].value is True

@@ -235,6 +235,29 @@ def test_build_narrow_collapses_diff_and_keeps_bar(tmp_path, monkeypatch):
     assert [c for c in _walk(root) if getattr(c, "_bib_confirm_bar", None)]
 
 
+def test_same_page_updates_keep_dupes_shell_and_body_hosts(tmp_path):
+    view, host = _view(tmp_path)
+    view.state = "ready"
+    view.pairs = [{"a": "a", "b": "b", "similarity": 0.95,
+                   "title": "T", "year": "2024", "diff": 1,
+                   "status": "候选", "code": "near_duplicates"}]
+    view.selected = 0
+    root = view.build()
+    shell = root.content
+    body = view._body_content
+    holders = (view._filter_holder, view._table_holder, view._diff_holder,
+               view._plan_holder, view._bottom_holder)
+
+    view._set_filter("high")
+    view._toggle_only_diff()
+    view._toggle_expand()
+
+    assert root.content is shell
+    assert view._body_content is body
+    assert all(holder in body.controls for holder in holders)
+    assert view._bottom_holder is holders[-1]
+
+
 # ── 报告 / 候选 ──────────────────────────────────────────────────────
 def test_scan_uses_temp_out_and_loads_pairs(tmp_path, monkeypatch):
     view, host = _view(tmp_path)

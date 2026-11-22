@@ -10,8 +10,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import tempfile
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import flet as ft
@@ -61,6 +65,31 @@ def _int(value) -> int:
         return 0
 
 
+@dataclass(frozen=True)
+class _ImportInputs:
+    revision: int
+    mode: str
+    source: str
+    issue: str
+    slug: str
+    verified: bool
+    force: bool
+    db: str
+    notes: str
+
+
+def _db_fingerprint(db: str) -> str | None:
+    if not db:
+        return ""
+    try:
+        with open(db, "rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+
+
 class BibImportView:
     """入藏页：左参数 356 / 右预览 520（1000 宽收单列）。"""
 
@@ -79,6 +108,8 @@ class BibImportView:
         self.params_open = False
         self.payload: dict | None = None
         self.expect_sha = ""
+        self._input_revision = 0
+        self._preview_inputs: _ImportInputs | None = None
         self.state = "empty"
         self.filter = "all"
         self.error = ""
@@ -93,6 +124,9 @@ class BibImportView:
         self.shown = 100
         self.expanded_change = ""
         self._root: ft.Container | None = None
+        self._layout: ft.ListView | ft.Row | None = None
+        self._confirmation_slot: ft.Container | None = None
+        self._confirm_holder: ft.Container | None = None
         self._preview_button: ft.Control | None = None
         # N01（DESIGN §11）：浏览入口必须接回真实文件选择服务。这里保留本次渲染
         # 创建的来源输入框引用，`app.browse_field` 直接往里写值（旧 `page.file_picker`
@@ -128,7 +162,12 @@ class BibImportView:
 
     def _db(self) -> str:
         stats = getattr(self.page, "stats_data", None)
-        db = stats.get("db") if isinstance(stats, dict) else ""
+        if isinstance(stats, dict):
+            # 引擎 stats --json 的真实路径字段是 `path`。保留 `db` 兼容
+            # 宿主测试/旧状态，避免预览快照与引擎回执使用不同库路径。
+            db = stats.get("db") or stats.get("path") or ""
+        else:
+            db = ""
         if not db:
             try:
                 db = GIT.default_db(self._notes())
@@ -170,6 +209,9 @@ class BibImportView:
             replant = getattr(self.page, "_replant_nav", None)
             if callable(replant):
                 replant()
+        self._update_page()
+
+    def _update_page(self) -> None:
         page = self._flet()
         update = getattr(page, "update", None)
         if callable(update):
@@ -217,6 +259,12 @@ class BibImportView:
             return self.paste_text if self.paste_text.strip() else ""
         return self.path if self.path.strip() else ""
 
+    def _inputs(self) -> _ImportInputs:
+        db = self._db()
+        return _ImportInputs(self._input_revision, self.mode, self._source(),
+                             self.issue, self.slug, self.verified, self.force,
+                             os.path.abspath(db) if db else "", self._notes())
+
     def _can_preview(self) -> bool:
         return bool(self._source()) and not self.busy
 
@@ -229,16 +277,21 @@ class BibImportView:
                                                      "stale", "success", "nothing")
 
     def _invalidate(self, reason: str) -> None:
+        self._input_revision += 1
+        refresh_gate = self.confirm_layer
         if self.payload is not None and not self.dirty_reason:
             self.dirty_reason = reason
+            refresh_gate = True
         self.confirm_layer = False
+        if refresh_gate and self._confirm_holder is not None:
+            self._confirm_holder.content = self._bottom()
+            self._refresh_confirmation()
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
             return
         self.mode = mode
         self._invalidate("来源已切换，预览已失效")
-        self.payload = None if mode != self.mode else self.payload
         self.state = "empty" if self.payload is None else self.state
         self._render()
 
@@ -286,9 +339,11 @@ class BibImportView:
 
     def _toggle_more(self, e=None) -> None:
         self.more_open = not self.more_open
-        self._render()
+        self._refresh_params()
 
     def _clear(self, e=None) -> None:
+        self._input_revision += 1
+        self._preview_inputs = None
         self.path = ""
         self.paste_text = ""
         self.issue = ""
@@ -306,19 +361,33 @@ class BibImportView:
         self._notify("表单已清空")
 
     # ── 引擎命令 ─────────────────────────────────────────────────────
-    def _build_call(self, *, dry_run: bool, expect_sha: str = "") -> EB.EngineCall:
-        bib = self._paste_file() if self.mode == "paste" else self.path
-        return EB.bibdb_import_call(
-            bib=bib, issue=self.issue, slug=self.slug, dry_run=dry_run,
-            force=self.force, verified=self.verified, unverified=not self.verified,
+    def _build_call(self, inputs: _ImportInputs, *, dry_run: bool,
+                    expect_sha: str = "") -> EB.EngineCall:
+        bib = self._paste_file(inputs.source) if inputs.mode == "paste" else inputs.source
+        call = EB.bibdb_import_call(
+            bib=bib, issue=inputs.issue, slug=inputs.slug, dry_run=dry_run,
+            force=inputs.force, verified=inputs.verified, unverified=not inputs.verified,
             expect_db_sha256=expect_sha)
+        # 预览与写入都显式绑定页面当前统计到的库路径。只依赖
+        # SLCN_NOTES 推导默认库会让隔离运行中的预览回执与页面库校验失配。
+        EB._append_opt(call.argv, "--db", inputs.db)
+        return call
 
-    def _paste_file(self) -> str:
+    def _paste_file(self, text: str) -> str:
         """粘贴文本落一个临时 .bib（temp dir，不碰笔记仓）。"""
         folder = Path(tempfile.mkdtemp(prefix="bib-import-"))
         target = folder / "pasted.bib"
-        target.write_text(self.paste_text, encoding="utf-8")
+        target.write_text(text, encoding="utf-8")
         return str(target)
+
+    def _discard_preview(self, reason: str) -> None:
+        self._preview_inputs = None
+        self.confirm_layer = False
+        self.state = "stale" if self.payload is not None else "empty"
+        self.dirty_reason = self.dirty_reason or reason
+        if self.payload is None and self._source():
+            self._notify(reason)
+        self._render()
 
     async def _preview(self) -> None:
         if self.busy:
@@ -326,6 +395,7 @@ class BibImportView:
         if not self._source():
             self._notify("先选择要导入的来源")
             return
+        inputs = self._inputs()
         self.busy = True
         self.state = "loading"
         self.error = ""
@@ -333,9 +403,22 @@ class BibImportView:
         self.confirm_layer = False
         self._render()
         started = time.time()
-        res = await self._call(self._build_call(dry_run=True))
+        res = None
+        end_sha = None
+        try:
+            start_sha = await asyncio.to_thread(_db_fingerprint, inputs.db)
+            if inputs == self._inputs():
+                res = await self._call(self._build_call(inputs, dry_run=True))
+                if res.get("ok"):
+                    end_sha = await asyncio.to_thread(_db_fingerprint, inputs.db)
+        except (OSError, RuntimeError) as exc:
+            res = {"ok": False, "error": str(exc)}
+        finally:
+            self.busy = False
+        if res is None or inputs != self._inputs():
+            self._discard_preview("来源、参数或库路径已变化，请重新预览")
+            return
         self.elapsed = max(0.0, time.time() - started)
-        self.busy = False
         if not res.get("ok"):
             self.state = "failure"
             self.error = self._error_text(res)
@@ -345,6 +428,27 @@ class BibImportView:
             self._render()
             return
         payload = res.get("json") or {}
+        # 旧版/测试替身可能不回传 sha，但本地前后指纹仍能证明库未变。
+        # 生产引擎回传 sha 时继续以响应值为准，来源与库绑定不放松。
+        preview_sha = str(payload.get("db_sha256_before") or start_sha or "")
+        reply_db = str(payload.get("db") or "")
+        reply_db_matches = (not reply_db or os.path.normcase(os.path.abspath(reply_db))
+                            == os.path.normcase(inputs.db))
+        if preview_sha and (start_sha is None or end_sha != start_sha
+                            or payload.get("db_sha256_after", preview_sha) != preview_sha
+                            or not reply_db_matches):
+            self._discard_preview("库路径或指纹已变化，请重新预览")
+            return
+        if not preview_sha:
+            # 没有引擎回执且本地也无法取得指纹时，不能把结果标成可写入；
+            # 否则确认条会展示一份没有库绑定的预览。保留来源输入，要求重新检查路径。
+            self.payload = None
+            self.expect_sha = ""
+            self.state = "empty"
+            self.dirty_reason = "无法确认库指纹，请检查库路径后重新预览"
+            self._notify(self.dirty_reason)
+            self._render()
+            return
         summary = _summary_of(payload) or payload
         if _int(summary.get("entries")) == 0:
             self.state = "failure"
@@ -354,7 +458,8 @@ class BibImportView:
             self._render()
             return
         self.payload = payload
-        self.expect_sha = str(payload.get("db_sha256_before") or "")
+        self.expect_sha = preview_sha
+        self._preview_inputs = inputs
         self.dirty_reason = ""
         self.state = "ready"
         self.shown = 100
@@ -368,22 +473,37 @@ class BibImportView:
         if not self._can_confirm():
             return
         self.confirm_layer = True
-        self._render()
+        self._refresh_confirmation()
 
     def _cancel_confirm(self, e=None) -> None:
         self.confirm_layer = False
-        self.state = "cancelled" if False else self.state
-        self._render()
+        self._refresh_confirmation()
+
+    def _refresh_confirmation(self) -> None:
+        if self._confirmation_slot is not None:
+            slot = self._confirmation_slot
+            slot.content = self._confirm_layer() if self.confirm_layer else None
+            slot.visible = self.confirm_layer
+        self._update_page()
 
     async def _write(self) -> None:
         if self.busy or not self._can_confirm():
+            return
+        inputs = self._inputs()
+        # 兼容旧的已挂载状态恢复。正常预览路径总会记录快照，恢复态没有快照
+        # 时仍由引擎的 expect-db-sha256 闸保护写入。
+        if self._preview_inputs is not None and inputs != self._preview_inputs:
+            self._discard_preview("来源、参数或库路径已变化，请重新预览")
             return
         self.busy = True
         self.state = "running"
         self.confirm_layer = False
         self._render()
-        res = await self._call(self._build_call(dry_run=False,
-                                                expect_sha=self.expect_sha))
+        try:
+            res = await self._call(self._build_call(inputs, dry_run=False,
+                                                    expect_sha=self.expect_sha))
+        except (OSError, RuntimeError) as exc:
+            res = {"ok": False, "error": str(exc)}
         code = res.get("code")
         if not res.get("ok"):
             if self._sha_mismatch(res):
@@ -402,14 +522,9 @@ class BibImportView:
         payload = res.get("json") or {}
         self.result = payload
         self.payload = payload
-        # 兼容旧 payload（顶层 new/updated 的夹具/旧引擎输出）：嵌套层为空时退回顶层。
-        summary = _summary_of(payload) or payload
-        added = _int(summary.get("new"))
-        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
-        raw_skipped = summary.get("skipped")
-        skipped = (sum(_int(value) for value in raw_skipped.values())
-                   if isinstance(raw_skipped, dict) else _int(raw_skipped))
-        db = str(payload.get("db") or self._db())
+        counts = self._counts(payload)
+        added, updated, skipped = counts["new"], counts["updated"], counts["skipped"]
+        db = inputs.db
         self.expect_sha = str(payload.get("db_sha256_after")
                                or payload.get("db_sha256_before")
                                or self.expect_sha)
@@ -499,8 +614,9 @@ class BibImportView:
         return "引擎没有返回原因。"
 
     # ── 计数 / 行 ───────────────────────────────────────────────────
-    def _changes(self) -> list[dict]:
-        payload = self.payload or {}
+    def _changes(self, payload: dict | None = None) -> list[dict]:
+        if payload is None:
+            payload = self.payload or {}
         raw = payload.get("changes")
         if not isinstance(raw, list):
             return []
@@ -609,19 +725,16 @@ class BibImportView:
             bgcolor=p.surface_2,
             content=ft.Column(spacing=t.sp("half"), controls=details))
 
-    def _toggle_change(self, key: str) -> None:
-        self.expanded_change = "" if self.expanded_change == key else key
-        self._render()
-
-    def _counts(self) -> dict:
+    def _counts(self, payload: dict | None = None) -> dict:
         # G-5：两种 payload 的计数都在嵌套层（import-bib 在 report，import-dir 在
         # result.total），读顶层会永远显示 0 新增 0 更新。口径复用 bib_write 的
         # _summary_of，保证预览、确认条、成功横幅三处一致。
-        payload = self.payload or {}
+        if payload is None:
+            payload = self.payload or {}
         summary = _summary_of(payload) or payload
-        changes = self._changes()
+        changes = self._changes(payload)
         new = _int(summary.get("new"))
-        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
+        updated = _int(summary.get("updated")) + _int(summary.get("merged"))
         conflicts = _int(summary.get("conflicts"))
         raw_skipped = summary.get("skipped")
         skipped = (sum(_int(value) for value in raw_skipped.values())
@@ -641,8 +754,12 @@ class BibImportView:
                 "new": new, "updated": updated, "conflicts": conflicts,
                 "skipped": skipped}
 
-    def _rows(self) -> list[dict]:
-        rows = self._changes()
+    def _rows(self, rows: list[dict] | None = None) -> list[dict]:
+        if rows is None:
+            rows = self._changes()
+        if self.filter == "updated":
+            # 更新筛选也包含只合并来源的记录，行上仍保留「合并」标签。
+            return [row for row in rows if row["status"] in ("updated", "update", "merged")]
         if self.filter != "all":
             want = _STATUS_LABEL.get(self.filter, ("", ""))[0]
             rows = [row for row in rows if _STATUS_LABEL.get(row["status"], ("", ""))[0] == want]
@@ -667,12 +784,25 @@ class BibImportView:
         width = int(getattr(self._flet(), "width", 1160) or 1160)
         narrow = width <= S.NARROW_W
         params = self._params(narrow=narrow)
-        if not narrow:
+        if narrow:
+            # The narrow page has one bounded scroll owner.  Keeping the
+            # parameters and preview in the same list lets the footer stay
+            # fixed while the complete preview remains reachable.
+            layout = ft.ListView(
+                expand=True, spacing=t.sp("2"), padding=0,
+                scroll=C.scrollbar(t),
+                controls=[params, self._preview_col(narrow=True)],
+            )
+            layout._bib_narrow = True
+            layout._bib_left = params
+            layout._bib_preview = layout.controls[1]
+        else:
             params = ft.ListView(
                 expand=True, spacing=t.sp("2"), padding=0,
                 scroll=C.scrollbar(t), controls=list(params.controls))
-        layout = S.write_layout(t, params=params, preview=self._preview_col(),
-                                confirm=None, narrow=narrow)
+            layout = S.write_layout(t, params=params, preview=self._preview_col(),
+                                    confirm=None, narrow=False)
+        self._layout = layout
         # P1-7：确认条满宽常驻在页面底部，不再缩在右预览栏；窄屏同样通栏。
         self._confirm_holder = ft.Container(content=self._bottom())
         body = ft.Column(spacing=0, expand=True,
@@ -795,7 +925,17 @@ class BibImportView:
 
     def _open_params(self) -> None:
         self.params_open = True
-        self._render()
+        self._refresh_params()
+
+    def _refresh_params(self) -> None:
+        layout = self._layout
+        if isinstance(layout, ft.ListView):
+            params = self._params(narrow=True)
+            layout.controls[0] = params
+            layout._bib_left = params
+        elif isinstance(layout, ft.Row):
+            layout._bib_left.controls = self._params(narrow=False).controls
+        self._update_page()
 
     def _browse(self) -> None:
         """N01：调真实的文件选择服务（`app.browse_field`），选完回填并失效旧预览。
@@ -904,7 +1044,7 @@ class BibImportView:
             ]))
 
     # ── 渲染：右预览 ─────────────────────────────────────────────────
-    def _preview_col(self) -> ft.Control:
+    def _preview_col(self, *, narrow: bool = False) -> ft.Control:
         t = self.t
         controls: list[ft.Control] = [
             C.section_label("预览结果", t,
@@ -914,12 +1054,12 @@ class BibImportView:
         if self.state == "success":
             controls.append(self._success_banner())
             controls.append(ft.Container(height=t.px(8)))
-            controls.append(self._payload_block(dim=True))
+            controls.append(self._payload_block(dim=True, narrow=narrow))
         elif self.state == "nothing":
             controls.append(S.state_banner(
                 t, "empty", message=self.no_write_note or "没有需要写入的内容"))
             controls.append(ft.Container(height=t.px(8)))
-            controls.append(self._payload_block(dim=True))
+            controls.append(self._payload_block(dim=True, narrow=narrow))
         elif self.state in ("loading",):
             controls.append(S.state_banner(t, "loading", message="运行中"))
         elif self.state == "failure":
@@ -936,15 +1076,17 @@ class BibImportView:
                 t, "empty", message="尚未预览：选好来源后点「预览（不写库）」"))
         if self.payload is not None and self.state in ("ready", "stale", "running",
                                                        "cancelled"):
-            controls.append(self._payload_block())
-        if self.confirm_layer:
-            controls.append(ft.Container(height=t.px(8)))
-            controls.append(self._confirm_layer())
-        controls.append(ft.Container(expand=True))
+            controls.append(self._payload_block(narrow=narrow))
+        self._confirmation_slot = ft.Container(
+            padding=ft.Padding(0, t.px(8), 0, 0),
+            content=self._confirm_layer() if self.confirm_layer else None,
+            visible=self.confirm_layer)
+        controls.append(self._confirmation_slot)
+        controls.append(ft.Container(expand=not narrow))
         # 确认条由外层 _body 通栏挂在页面底部，右栏不再重复。
-        return ft.Column(spacing=0, expand=True, controls=controls)
+        return ft.Column(spacing=0, expand=not narrow, controls=controls)
 
-    def _payload_block(self, *, dim: bool = False) -> ft.Control:
+    def _payload_block(self, *, dim: bool = False, narrow: bool = False) -> ft.Control:
         t = self.t
         counts = self._counts()
         payload = self.payload or {}
@@ -957,47 +1099,30 @@ class BibImportView:
         ])
         meta = (f"库指纹 {sha or '—'} · 解析 {counts['entries']} 条 · "
                 f"耗时 {self.elapsed:.1f}s")
+
+        def make_chip(key: str, label: str) -> ft.Container:
+            return C.chip(f"{label} {self._chip_count(key)}", t, active=self.filter == key,
+                          on_click=lambda e: select_filter(key))
+
+        def select_filter(key: str) -> None:
+            previous = self.filter
+            if key == previous:
+                return
+            self.filter = key
+            for (chip_key, label), chip in zip(FILTERS, chips.controls):
+                if chip_key in (previous, key):
+                    styled = make_chip(chip_key, label)
+                    chip.bgcolor, chip.content = styled.bgcolor, styled.content
+            refresh_rows()
+            block.update()
+
         chips = ft.Row(spacing=t.sp("half"), controls=[
-            C.chip(f"{label} {self._chip_count(key)}", t, active=self.filter == key,
-                   on_click=lambda e, k=key: self._set_filter(k))
-            for key, label in FILTERS])
-        rows = self._rows()
-        body_rows = []
-        for row in rows[: self.shown]:
-            label, _tone = _STATUS_LABEL.get(row["status"], (row["status"] or "—", "muted"))
-            detail_id = (row["change_id"] or
-                         f"{row['key']}::{row['incoming_key']}::{row['line']}")
-            open_detail = self.expanded_change == detail_id
-            review = C.text_button("收起" if open_detail else "查看明细",
-                                   lambda e, k=detail_id: self._toggle_change(k), t)
-            title = row["title"] or "（无题名）"
-            body_rows.append(S.table_row(
-                t, [label, row["key"] or row["incoming_key"], title, review],
-                weights=[0.72, 1.2, 3.2, 1.0], mono=(1,),
-                align=["left", "left", "left", "right"],
-                selected=open_detail,
-                on_click=lambda e, k=detail_id: self._toggle_change(k)))
-            if open_detail:
-                body_rows.append(self._change_detail(row))
-        if not rows:
-            body_rows.append(S.empty_row(t, "没有变化记录"))
-        # ≤8 行走 shrink-wrap（滚轮归页体）；只有长变化列表才保留独立滚动，
-        # 此时常显条让“这里还能滚”可见。
-        scrolling = len(rows) > 8
-        table = ft.Column(spacing=0, expand=scrolling,
-                          scroll=C.scrollbar(t) if scrolling else None,
-                          controls=[
-                              S.table_header_row(t, ["状态", "key", "题名", "审阅"],
-                                                 weights=[0.72, 1.2, 3.2, 1.0],
-                                                 mono=(1,)),
-                              ft.Column(spacing=0, controls=body_rows),
-                          ])
-        table._bib_shrink = not scrolling
-        if len(rows) > self.shown:
-            table.controls.append(ft.Container(
-                height=t.px(36), alignment=ft.Alignment.CENTER_LEFT,
-                content=C.text_button(f"载入更多（还有 {len(rows) - self.shown} 条）",
-                                      lambda e: self._more(), t)))
+            make_chip(key, label) for key, label in FILTERS]) if not dim else ft.Container()
+        if dim:
+            results = ft.Container(expand=not narrow)
+        else:
+            table, refresh_rows = self._preview_table(narrow=narrow)
+            results = ft.Container(expand=not narrow, content=table)
         warnings = payload.get("warnings")
         warn_lines = [str(w) for w in warnings if str(w).strip()][:2] \
             if isinstance(warnings, list) else []
@@ -1005,15 +1130,89 @@ class BibImportView:
             ft.Container(opacity=0.55 if dim else 1.0, content=band),
             C.text(meta, t, "caption", t.palette.text_faint),
             ft.Container(height=t.px(4)),
-            chips if not dim else ft.Container(),
+            chips,
             ft.Container(height=t.px(4)),
-            ft.Container(expand=True,
-                         content=table if not dim else ft.Container()),
+            results,
         ]
         for line in warn_lines:
             controls.append(C.text(f"注意 · {line}", t, "caption", t.palette.warn,
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
-        return ft.Column(spacing=t.sp("half"), controls=controls)
+        block = ft.Column(spacing=t.sp("half"), controls=controls)
+        return block
+
+    def _preview_table(self, *, narrow: bool) -> tuple[ft.Column, Callable[[], None]]:
+        t = self.t
+        rows = self._changes()
+        visible_rows = self._rows(rows)
+        body = ft.Column(spacing=0)
+
+        def toggle_detail(key: str) -> None:
+            self.expanded_change = "" if self.expanded_change == key else key
+            # Keep both the narrow page scroller and the wide table scroller mounted.
+            body.controls = self._preview_rows(visible_rows, toggle_detail)
+            body.update()
+
+        # 宽窗按未筛选行数选择滚动布局。筛选只更新表体，短结果自然限制滚动范围。
+        scrolling = len(rows) > 8 and not narrow
+        table = ft.Column(spacing=0, expand=scrolling,
+                          scroll=C.scrollbar(t) if scrolling else None,
+                          controls=[
+                              S.table_header_row(t, ["状态", "key", "题名", "审阅"],
+                                                 weights=[0.72, 1.2, 3.2, 1.0],
+                                                 mono=(1,)),
+                              body,
+                          ])
+        table._bib_shrink = len(rows) <= 8
+
+        def more_footer() -> list[ft.Control]:
+            remaining = len(visible_rows) - self.shown
+            if remaining <= 0:
+                return []
+            return [ft.Container(
+                height=t.px(36), alignment=ft.Alignment.CENTER_LEFT,
+                content=C.text_button(f"载入更多（还有 {remaining} 条）",
+                                      load_more, t))]
+
+        def load_more(e) -> None:
+            old_shown = self.shown
+            self.shown += 100
+            body.controls.extend(self._preview_rows(visible_rows, toggle_detail,
+                                                    start=old_shown))
+            table.controls[2:] = more_footer()
+            table.update()
+
+        def refresh_rows() -> None:
+            nonlocal visible_rows
+            visible_rows = self._rows(rows)
+            body.controls = self._preview_rows(visible_rows, toggle_detail)
+            table.controls[2:] = more_footer()
+
+        body.controls = self._preview_rows(visible_rows, toggle_detail)
+        table.controls.extend(more_footer())
+        return table, refresh_rows
+
+    def _preview_rows(self, rows: list[dict], toggle_detail, *, start: int = 0) -> list[ft.Control]:
+        t = self.t
+        body_rows = []
+        for row in rows[start : self.shown]:
+            label, _tone = _STATUS_LABEL.get(row["status"], (row["status"] or "—", "muted"))
+            detail_id = (row["change_id"] or
+                         f"{row['key']}::{row['incoming_key']}::{row['line']}")
+            open_detail = self.expanded_change == detail_id
+            review = C.text_button("收起" if open_detail else "查看明细",
+                                   lambda e, k=detail_id: toggle_detail(k), t)
+            title = row["title"] or "（无题名）"
+            body_rows.append(S.table_row(
+                t, [label, row["key"] or row["incoming_key"], title, review],
+                weights=[0.72, 1.2, 3.2, 1.0], mono=(1,),
+                align=["left", "left", "left", "right"],
+                selected=open_detail,
+                on_click=lambda e, k=detail_id: toggle_detail(k)))
+            if open_detail:
+                body_rows.append(self._change_detail(row))
+        if not rows:
+            body_rows.append(S.empty_row(t, "没有变化记录"))
+        return body_rows
 
     def _chip_count(self, key: str) -> str:
         counts = self._counts()
@@ -1022,14 +1221,6 @@ class BibImportView:
         if key == "all":
             return str(len(self._changes()))
         return str(counts.get(count_key, 0))
-
-    def _set_filter(self, key: str) -> None:
-        self.filter = key
-        self._render()
-
-    def _more(self) -> None:
-        self.shown += 100
-        self._render()
 
     def _confirm_layer(self) -> ft.Control:
         t = self.t
@@ -1057,15 +1248,13 @@ class BibImportView:
 
     def _success_banner(self) -> ft.Control:
         t = self.t
-        summary = _summary_of(self.result or {}) or (self.result or {})
-        added = _int(summary.get("new"))
-        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
+        counts = self._counts(self.result or {})
         commit = self.commit or {}
         sha = _sha8(str(commit.get("sha") or ""))
         detail = (f"已提交 {sha} · 未推送" if commit.get("committed") and sha
                   else "已写入；未生成版本提交")
         result = S.result_banner(
-            t, title=f"已写入 {added} 新增 · {updated} 更新", detail=detail,
+            t, title=f"已写入 {counts['new']} 新增 · {counts['updated']} 更新", detail=detail,
             on_review=lambda e: self._goto_pending(),
             on_revert=self._revert_confirm if commit.get("committed") else None)
         version_link = C.secondary_button(

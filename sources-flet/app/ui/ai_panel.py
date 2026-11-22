@@ -813,8 +813,14 @@ class AiSettings:
         enabled = bool(e.control.value)
         self._save({"enabled": enabled})
         self.app.mark("ai_master", enabled=enabled)
+        connection = getattr(self.page, "connection_slot", None)
+        if connection is not None:
+            connection.content = None
+            self._safe_update(connection)
+        refresh_status = getattr(self.page, "refresh_status_rows", None)
+        if callable(refresh_status):
+            refresh_status()
         self.app.toast("AI 功能已" + ("开启" if enabled else "关闭（所有 AI 入口隐藏，零调用）"))
-        self.app.rebuild_shell()
 
     def _safe_update(self, *controls) -> None:
         for control in controls:

@@ -32,6 +32,40 @@ from ui.ia_map import NAV_GROUPS
 from ui.tokens import Tokens
 
 
+def test_redetect_engine_updates_chrome_without_remounting_page():
+    app = object.__new__(M.App)
+    app.t = Tokens()
+    app._version_info = {"engine_version": "1.8.0"}
+    app.app_version = "1.8.1"
+    app.engine_status = SimpleNamespace(ok=True)
+    app._sidebar_engine_slot = ft.Container()
+    app._toolbar_meta = ft.Text()
+    events = []
+    app._toolbar_spec = lambda: ("设置", "引擎就绪 · 本地只读", None)
+    app.status_bar = SimpleNamespace(set_meta=lambda value: events.append(("status", value)))
+    settings = ft.Column(scroll=ft.ScrollMode.AUTO)
+    app.content = ft.Container(content=settings)
+    app.pages = {
+        "home": SimpleNamespace(_refresh_band=lambda: events.append("home")),
+        "settings": SimpleNamespace(root=settings, refresh_engine_display=lambda: events.append("settings")),
+        "help": SimpleNamespace(root=None),
+        "single": SimpleNamespace(root=ft.Column(), refresh_running=lambda: events.append("single")),
+        "issue": SimpleNamespace(root=None),
+    }
+    app.refresh_engine_status = lambda: events.append("detect")
+    app.page = SimpleNamespace(update=lambda: events.append("update"))
+    app.toast = lambda value: events.append(value)
+    app.rebuild_shell = lambda: (_ for _ in ()).throw(AssertionError("remounted shell"))
+
+    app.redetect_engine()
+
+    assert app.content.content is app.pages["settings"].root is settings
+    assert app._toolbar_meta.value == "引擎就绪 · 本地只读"
+    assert _texts(app._sidebar_engine_slot) == ["引擎 1.8.0 · 就绪", "本地运行 · 1.8.1"]
+    assert events == ["detect", ("status", "本地只读 · v1.8.1"), "home", "settings",
+                      "single", "update", "引擎状态已刷新"]
+
+
 # ── 通用替身 / 遍历 ────────────────────────────────────────────────────────
 def _walk(control):
     """递归遍历 controls/content（够本文件的所有容器形状）。"""

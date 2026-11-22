@@ -10,6 +10,7 @@ import asyncio
 from types import SimpleNamespace
 
 import flet as ft
+import pytest
 
 from services import engine_bridge as EB
 from ui import bib_review as RV
@@ -226,3 +227,56 @@ def test_review_empty_and_narrow(monkeypatch):
     assert view._build_width < 1100
     assert not any(getattr(n, "scroll", None) == ft.ScrollMode.ALWAYS
                    for n in _walk(view.build()))
+
+
+@pytest.mark.parametrize("width", [1000, 1160])
+def test_review_same_page_updates_keep_scrollers_and_filter_focus(monkeypatch, width):
+    items = [dict(CONFLICTS["items"][0], record_key=f"anon{i:03d}", title=f"Sample {i}")
+             for i in range(110)]
+    host, view = _loaded(monkeypatch, {"items": items}, width=width)
+    tree = view.build()
+    host.view_slot = ft.Container(content=tree)
+    monkeypatch.setattr(host, "_render", lambda: pytest.fail("same-page host rebuild"))
+    form, result = tree._bib_body.content.controls
+    search = form._bib_filter_field
+    scrollbar = result.content
+    panel = next(n for n in _walk(tree) if getattr(n, "_bib_detail_panel", False))
+    detail_scroll = panel._bib_detail_body.content
+
+    # Use the mounted row/batch callbacks, without confirming a write.
+    def queue_rows():
+        return [n for n in _walk(scrollbar)
+                if isinstance(n, ft.Container) and n.height == host.t.px(32) and n.on_click]
+
+    queue_rows()[-2].on_click(None)
+    assert view.selected_key == view.rows[-2]["no"]
+    assert view.rows[-2]["key"] in " ".join(_texts(panel))
+    note = next(n for n in _walk(panel) if isinstance(n, ft.TextField))
+    for index in (-2, -1):
+        row = queue_rows()[index]
+        checkbox = next(n for n in _walk(row) if isinstance(n, ft.Checkbox))
+        checkbox.value = True
+        checkbox.on_change(SimpleNamespace(control=checkbox))
+    batch = next(n for n in _walk(scrollbar) if getattr(n, "content", None) == "暂存批选")
+    batch.on_click(None)
+    assert view.staged["kind"] == "batch"
+    confirm = next(n for n in _walk(scrollbar) if getattr(n, "_bib_confirm_bar", False))
+    assert not confirm._bib_confirm_btn.disabled
+    confirm._bib_repreview_btn.on_click(None)
+    assert view.staged is None
+
+    more = next(n for n in _walk(scrollbar) if getattr(n, "content", None) == "载入更多 · 还剩 10 条")
+    more.on_click(None)
+    assert len(view.rows) == 110
+    select = next(n for n in _walk(form) if isinstance(n, ft.PopupMenuButton))
+    select._pick("title")()
+    assert view.field_filter == "title" and len(view.rows) == 110
+    search.value = "anon0"
+    search.on_change(SimpleNamespace(control=search))
+    assert len(view.rows) == 100
+    assert host.view_slot.content is tree and result.content is scrollbar
+    assert panel._bib_detail_body.content is detail_scroll
+    assert any(node is detail_scroll for node in _walk(scrollbar))
+    assert any(node is note for node in _walk(panel))
+    assert host.page._bib_filter_state["field"] is search
+    assert any(node is search for node in _walk(tree))

@@ -83,7 +83,7 @@ def test_import_table_shrinks_when_short_and_scrolls_when_long() -> None:
     src = _src("bib_import.py")
     assert "scrolling = len(rows) > 8" in src
     assert "scroll=C.scrollbar(t) if scrolling else None" in src
-    assert "table._bib_shrink = not scrolling" in src
+    assert "table._bib_shrink = len(rows) <= 8" in src
 
 
 def test_wide_table_horizontal_bar_is_always_visible() -> None:

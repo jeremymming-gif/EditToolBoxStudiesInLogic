@@ -24,6 +24,7 @@ import inspect
 import json
 import os
 import uuid
+from collections.abc import Callable
 
 import flet as ft
 
@@ -655,6 +656,13 @@ def _load_bridge():
     return module
 
 
+def _refresh_workspace(view: BibAiAssistView) -> None:
+    """刷新同页工作区。其他入口仍走原宿主重绘。"""
+    refresh = getattr(view, "on_workspace_refresh", None)
+    if refresh is None or not refresh():
+        view._refresh()
+
+
 class BibAiAssistView:
     """AI 处理 Bib：选范围 → 出任务书 → 导入结果 → 预览 → 应用 / 撤销。"""
 
@@ -674,6 +682,7 @@ class BibAiAssistView:
                 f"收到 {type(page).__name__}。请传 SinglePage/BibHost 或显式适配器")
         self.page = page
         self._bridge = bridge
+        self.on_workspace_refresh: Callable[[], bool] | None = None
 
         # 两组独立选择（DESIGN §4）：execute 决定引擎做什么，accept 决定采纳什么。
         # `purpose` 由宿主传入（DESIGN §3.1 两个入口）：初排页给 "initial"，
@@ -1263,14 +1272,14 @@ class BibAiAssistView:
         def _handler(e) -> None:
             self.set_execute(key, bool(getattr(e.control, "value", False)))
             self._mark("bib_ai_scope_execute", key=key, value=self.execute[key])
-            self._refresh()
+            _refresh_workspace(self)
         return _handler
 
     def _on_accept(self, key: str):
         def _handler(e) -> None:
             self.set_accept(key, bool(getattr(e.control, "value", False)))
             self._mark("bib_ai_scope_accept", key=key, value=self.accept[key])
-            self._refresh()
+            _refresh_workspace(self)
         return _handler
 
     def _checkbox(self, label: str, value: bool, on_change, *, disabled: bool = False
@@ -1446,13 +1455,13 @@ class BibAiAssistView:
             value = str(getattr(e.control, "value", "") or "")
             if self.set_decision(conflict_id, value):
                 self._mark("bib_ai_decision", conflict_id=conflict_id, decision=value)
-                self._refresh()
+                _refresh_workspace(self)
         return _handler
 
     def _on_reset_decisions(self) -> None:
         self.reset_decisions()
         self._mark("bib_ai_decision_reset", conflicts=len(self.conflicts))
-        self._refresh()
+        _refresh_workspace(self)
 
     # ── 用途 / 通道 ────────────────────────────────────────────────────
     def set_purpose(self, purpose: str) -> None:
@@ -1476,7 +1485,7 @@ class BibAiAssistView:
 
     def _on_channel(self, e) -> None:
         self.set_channel(str(getattr(e.control, "value", "") or ""))
-        self._refresh()
+        _refresh_workspace(self)
 
     def _radio_group(self, options, value, on_change, key: str) -> ft.RadioGroup:
         t = self.t
@@ -1888,7 +1897,7 @@ class BibAiAssistView:
         if key in ("use_chat", "use_api"):
             self.set_channel("chat" if key == "use_chat" else "api")
             self._initial_open_stage = "waiting"
-            self._refresh()
+            _refresh_workspace(self)
             return
         if key == "restart":
             self._restart()
@@ -2039,7 +2048,7 @@ class BibAiAssistView:
         copied = self._copy("\n".join(paths), exact=True)
         self._compare_feedback = ("已复制两份对比副本的路径。" if copied else
                                   "剪贴板不可用，可从下方选取路径。")
-        self._refresh()
+        _refresh_workspace(self)
 
     def open_diff(self) -> None:
         """DESIGN §10 / 合同 §4.2：双文件 diff。**只展示**，不写用户文件、不绑应用。
@@ -3843,12 +3852,12 @@ class BibAiAssistView:
             work = self._work_dir_path()
             if not work:
                 self._fail("刷新状态", "请先生成任务书")
-                self._refresh()
+                _refresh_workspace(self)
                 return
             identity = self._initial_identity() if initial else None
             self.running = True
             self._initial_operation = "正在刷新任务状态…"
-            self._refresh()
+            _refresh_workspace(self)
             status = await self._read_status(work)
             if initial and not self._same_initial_task(identity):
                 return
@@ -3866,7 +3875,7 @@ class BibAiAssistView:
             elif status:
                 self._fail("刷新状态", "引擎未返回任务身份与阶段")
             self.running = False
-            self._refresh()
+            _refresh_workspace(self)
             return
         if not self._require("status_call", "run_call"):
             self._refresh()
@@ -3943,13 +3952,13 @@ class BibAiAssistView:
         fn = self._fn("taskbook_call")
         if not callable(fn):
             self._bridge_fail(["taskbook_call"])
-            self._refresh()
+            _refresh_workspace(self)
             return False
         self._check_parent_task()
         wd = self._work_dir_path()
         if not wd or (self._r3 and not self.task_id):
             self.error = "复制任务书全文失败：没有已登记的活动任务"
-            self._refresh()
+            _refresh_workspace(self)
             return False
 
         # 每一次点击都是一个新请求：递增序号让上一次尚未落地的复制作废。
@@ -3967,7 +3976,7 @@ class BibAiAssistView:
         except Exception as exc:  # noqa: BLE001 - 引擎/剪贴板异常如实失败
             self.error = f"复制任务书全文失败：{type(exc).__name__}: {exc}"
             self._mark("bib_ai_copy_task_failed", op="copy_task", error=self.error)
-            self._refresh()
+            _refresh_workspace(self)
             return False
 
         # 父页未重绘时也要检查它的输入，避免复制旧任务。
@@ -3979,7 +3988,7 @@ class BibAiAssistView:
             self.error = "复制任务书全文失败：任务/工作区已切换，旧结果作废"
             self._mark("bib_ai_copy_task_stale", op="copy_task", seq=seq,
                        current_seq=self.request_seq)
-            self._refresh()
+            _refresh_workspace(self)
             return False
 
         text = str(fields.get("text") or "")
@@ -3987,7 +3996,7 @@ class BibAiAssistView:
                 or (self._r3 and fields.get("task_id") != tid)):
             self.error = "复制任务书全文失败：引擎没有返回可复制的任务书全文"
             self._mark("bib_ai_copy_task_failed", op="copy_task", error=self.error)
-            self._refresh()
+            _refresh_workspace(self)
             return False
 
         if self._r3:
@@ -4002,20 +4011,20 @@ class BibAiAssistView:
                               "任务书仍可查看，请缩小范围后重新生成。")
                 self._mark("bib_ai_copy_task_blocked", task_id=tid,
                            count=scope["count"] if scope["known"] else None)
-                self._refresh()
+                _refresh_workspace(self)
                 return False
 
         if not self._copy(text, exact=True):
             self.error = "复制任务书全文失败：剪贴板不可用"
             self._mark("bib_ai_copy_task_failed", op="copy_task", error=self.error)
-            self._refresh()
+            _refresh_workspace(self)
             return False
 
         self._taskbook_cache = fields
         self.error = ""
         self._notify("已复制任务书全文")
         self._mark("bib_ai_copy_task", chars=len(text), task_id=tid, seq=seq)
-        self._refresh()
+        _refresh_workspace(self)
         return True
 
     async def _prefetch_taskbook(self) -> None:
@@ -4047,7 +4056,7 @@ class BibAiAssistView:
                 return
             self._taskbook_cache = fields
             self.taskbook_path = str(fields.get("path") or self.taskbook_path)
-            self._refresh()
+            _refresh_workspace(self)
 
     # ── 布局 ───────────────────────────────────────────────────────────
     def _workspace_width(self) -> float:
@@ -4424,25 +4433,35 @@ class BibAiAssistView:
         return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
                          controls=self._parts())
 
-    def body_only(self, *, compact: bool = False, pinned_actions: bool = False) -> ft.Control:
+    def body_only(self, *, compact: bool = False, pinned_actions: bool = False,
+                  previous: ft.Control | None = None) -> ft.Control:
         """无壳内容。生产宿主用有界工作区固定唯一动作条。
 
         默认不加滚动，兼容原有嵌入。``pinned_actions=True`` 返回 expand Column：
         唯一滚动内容在上、当前动作在下；宿主须给有界高度，并撤掉外层纵向滚动。
         ``compact`` 只控制兼容版路径字段；R3 两入口共享当前阶段与必要输入。
+        同一任务及展示阶段的原位刷新可传入 ``previous``，复用原滚动容器。
         """
         parts = self._parts(compact=compact)
         if pinned_actions and self._r3:
             action_bar = self._workspace_action_bar
             if action_bar is not None:
                 self._workspace_body.controls.remove(action_bar)
-            content = ft.Column(spacing=self.t.sp("1"), controls=parts,
-                                scroll=C.scrollbar(self.t), expand=True)
-            content._bib_ai_workspace_scroll = True
-            controls = [content]
-            if action_bar is not None:
-                controls.append(ft.Container(padding=self.t.sp("1"), content=action_bar))
-            return ft.Column(spacing=0, expand=True, controls=controls)
+            identity = (self._initial_stage(), self.task_id, self._work_dir_path())
+            if getattr(previous, "_bib_ai_workspace_identity", None) == identity:
+                workspace = previous
+                content = workspace.controls[0]
+                content.controls = parts
+            else:
+                workspace = ft.Column(spacing=0, expand=True)
+                workspace._bib_ai_workspace_identity = identity
+                content = ft.Column(spacing=self.t.sp("1"), controls=parts,
+                                    scroll=C.scrollbar(self.t), expand=True)
+                content._bib_ai_workspace_scroll = True
+            dock = ([ft.Container(padding=self.t.sp("1"), content=action_bar)]
+                    if action_bar is not None else [])
+            workspace.controls = [content, *dock]
+            return workspace
         return ft.Column(spacing=self.t.sp("1"), controls=parts)
 
     def build(self) -> ft.Control:

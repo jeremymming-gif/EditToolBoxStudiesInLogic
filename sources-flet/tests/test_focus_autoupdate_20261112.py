@@ -512,20 +512,21 @@ def test_suppression_failure_falls_back(monkeypatch):
     assert field._clearable_dirty is True
 
 # ── FIX2R2-3：待处理 / bib 编辑的定向刷新契约 ─────────────────────────────
-def test_review_typing_refreshes_only_results_not_filter() -> None:
-    """键入只重建结果区：不触发宿主整页 _render（否则含输入框的过滤器被重建 → 丢焦点）。"""
+def test_review_typing_refreshes_only_results_not_filter(monkeypatch) -> None:
+    """宽窗键入定向 patch 当前叶，原位更新已挂载队列的展示行。"""
     from ui import bib_review as RV
 
     class _Host:
         def __init__(self) -> None:
             self.t = Tokens("light")
             self.page = SimpleNamespace(width=1160, run_task=lambda fn: None,
-                                        update=lambda *a: None)
+                                        update=lambda *a: self.page_updates.append(a))
             self.app = SimpleNamespace(notes_repo="", window_w=1160,
                                        copy_text=lambda text: None)
             self.stats_data = {"db": "/tmp/lib/bibliography.jsonl",
                                "conflicts": {"records": 0, "total": 0}}
             self.render_calls = 0
+            self.page_updates = []
 
         def mark(self, event, **fields) -> None:
             pass
@@ -538,18 +539,57 @@ def test_review_typing_refreshes_only_results_not_filter() -> None:
 
     host = _Host()
     view = RV.ReviewView(host)
-    body_holder = _FakeControl(content=None)
-    count_text = _FakeControl(value="")
-    dock_text = _FakeControl(value="")
-    view._body_holder = body_holder
-    view._count_text = count_text
-    view._dock_text = dock_text
+    view.all_rows = RV.rows_from({"items": [
+        {"record_key": "anon_logic", "title": "逻辑"},
+        {"record_key": "anon_history", "title": "历史"},
+    ]})
+    view.total_conflicts = view.pending = len(view.all_rows)
+    view.loaded = True
+    view._apply_filters()
+    root = view.build()
+    host.view_slot = ft.Container(content=root)
+    filter_row, scroll_holder = root._bib_body.content.controls
+    search = filter_row._bib_filter_field
+    scroller = scroll_holder.content
+    dock = root._bib_dock
+    count_text, dock_text = view._count_text, view._dock_text
 
-    view._on_text(SimpleNamespace(control=SimpleNamespace(value="逻辑")))
+    def mounted_queue():
+        # 宽窗结果栏在外层滚动 Column 下，与详情面板并排。
+        layout = scroll_holder.content.controls[1]
+        assert isinstance(layout, ft.Row)
+        return layout.controls[0].content
+
+    def displayed_keys(queue):
+        return {cell.value for row in queue.controls
+                if isinstance(row, ft.Container) and row.on_click is not None
+                for cell in row.content.controls
+                if isinstance(cell, ft.Text) and cell.value.startswith("anon_")}
+
+    queue = mounted_queue()
+    assert isinstance(scroller.scroll, ft.Scrollbar)
+    assert queue.scroll is None
+    assert displayed_keys(queue) == {"anon_logic", "anon_history"}
+    assert queue.controls[-1].value == "显示 2 / 2 条待处理"
+    patched = []
+    monkeypatch.setattr(root, "update", lambda: patched.append(root))
+
+    search.value = "逻辑"
+    search.on_change(SimpleNamespace(control=search))
 
     assert view.text == "逻辑"
-    assert body_holder.update_calls == 1 and count_text.update_calls == 1
-    assert dock_text.update_calls == 1
+    assert host.view_slot.content is root
+    assert root._bib_body.content.controls[0] is filter_row
+    assert filter_row.content.controls[0] is search
+    assert root._bib_body.content.controls[1] is scroll_holder
+    assert scroll_holder.content is scroller
+    assert view._count_text is count_text and view._dock_text is dock_text
+    assert filter_row.content.controls[-1] is count_text
+    assert root._bib_dock is dock and dock.content is dock_text
+    assert mounted_queue() is queue
+    assert displayed_keys(queue) == {"anon_logic"}
+    assert queue.controls[-1].value == "显示 1 / 2 条待处理"
+    assert patched == [root] and host.page_updates == []
     assert host.render_calls == 0            # 不重建含输入框的过滤器 → 不丢焦点
 
 

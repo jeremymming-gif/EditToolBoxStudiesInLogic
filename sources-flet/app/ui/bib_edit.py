@@ -211,10 +211,22 @@ class BibEditView:
 
     def _render(self) -> None:
         if self._root is not None:
-            self._root.content = self._body()
-            replant = getattr(self.page, "_replant_nav", None)
-            if callable(replant):
-                replant()
+            if self.record is not self._built_record or self._is_narrow() != self._built_narrow:
+                self._root.content = self._body()
+                replant = getattr(self.page, "_replant_nav", None)
+                if callable(replant):
+                    replant()
+            else:
+                shell = self._root.content
+                body = shell._bib_body.content
+                body.controls[:3] = [self._key_row(), self._props_row(), self._hint_line()]
+                for pane, names in zip(self._field_panes, self._field_columns()):
+                    pane.controls = [self._field_cell(name) for name in names]
+                self._field_label.content = self._fields_label()
+                self._field_footnote.value = self._fields_footnote()
+                self._diff_holder.content = self._diff_col_body()
+                self._bottom_holder.content = self._bottom()
+                shell._bib_dock.content = self._dock()
         page = self._flet()
         update = getattr(page, "update", None)
         if callable(update):
@@ -562,10 +574,14 @@ class BibEditView:
         self._render()
 
     # ── 渲染 ─────────────────────────────────────────────────────────
+    def _is_narrow(self) -> bool:
+        width = int(getattr(self._flet(), "width", 1160) or 1160)
+        return width <= S.NARROW_W
+
     def _body(self) -> ft.Control:
         t = self.t
-        width = int(getattr(self._flet(), "width", 1160) or 1160)
-        narrow = width <= S.NARROW_W
+        self._built_record = self.record
+        self._built_narrow = narrow = self._is_narrow()
         if narrow:
             split: ft.Control = ft.Column(spacing=t.sp("1"), controls=[
                 ft.Container(height=t.px(340), content=self._fields_col()),
@@ -662,25 +678,33 @@ class BibEditView:
             C.text(f"字段 {len(self.original)} 个", t, "caption", t.palette.text_faint),
         ])
 
-    def _fields_col(self) -> ft.Control:
-        t = self.t
+    def _field_columns(self) -> tuple[list[str], list[str]]:
         names = self._field_names()
         half = (len(names) + 1) // 2
-        columns = [names[:half], names[half:]]
-        cols = [ft.Column(spacing=0, expand=True,
-                          controls=[self._field_cell(name) for name in names_in])
-                for names_in in columns]
-        footnote = ("还有字段，滚动查看" if len(names) > 12 else "")
+        return names[:half], names[half:]
+
+    def _fields_label(self) -> ft.Control:
+        return C.section_label("字段", self.t, note=f"{len(self._field_names())} 个")
+
+    def _fields_footnote(self) -> str:
+        return "还有字段，滚动查看" if len(self._field_names()) > 12 else " "
+
+    def _fields_col(self) -> ft.Control:
+        t = self.t
+        self._field_panes = [ft.Column(spacing=0, scroll=C.scrollbar(t),
+                                     width=t.px(240),
+                                     controls=[self._field_cell(name) for name in names])
+                             for names in self._field_columns()]
+        self._field_label = ft.Container(content=self._fields_label())
+        self._field_footnote = C.text(self._fields_footnote(), t, "caption",
+                                      t.palette.text_faint, max_lines=1)
         return ft.Column(spacing=t.sp("half"), controls=[
-            C.section_label("字段", t, note=f"{len(names)} 个"),
+            self._field_label,
             ft.Container(
                 height=t.px(330), content=ft.Row(
                     spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[ft.Column(spacing=0, scroll=C.scrollbar(t),
-                                        width=t.px(240), controls=cols[0].controls),
-                              ft.Column(spacing=0, scroll=C.scrollbar(t),
-                                        width=t.px(240), controls=cols[1].controls)])),
-            C.text(footnote or " ", t, "caption", t.palette.text_faint, max_lines=1),
+                    controls=self._field_panes)),
+            self._field_footnote,
         ])
 
     def _field_cell(self, name: str) -> ft.Control:
@@ -698,6 +722,10 @@ class BibEditView:
             ]))
 
     def _diff_col(self) -> ft.Control:
+        t = self.t
+        self._diff_column = ft.Column(spacing=t.sp("half"))
+        self._diff_table = ft.Container(height=t.px(210), content=ft.Column(
+            spacing=0, scroll=C.scrollbar(t)))
         self._diff_holder = ft.Container(content=self._diff_col_body())
         return self._diff_holder
 
@@ -732,12 +760,9 @@ class BibEditView:
                     weights=[1.0, 1.4, 1.6], mono=(0,)))
             if not body:
                 body.append(S.empty_row(t, "没有字段变化"))
-            controls.append(ft.Container(
-                height=t.px(210), content=ft.Column(
-                    spacing=0, scroll=C.scrollbar(t),
-                    controls=[S.table_header_row(t, ["字段", "原值", "新值"],
-                                                 weights=[1.0, 1.4, 1.6], mono=(0,))]
-                    + body)))
+            self._diff_table.content.controls = [S.table_header_row(
+                t, ["字段", "原值", "新值"], weights=[1.0, 1.4, 1.6], mono=(0,)), *body]
+            controls.append(self._diff_table)
             unchanged = max(0, total - len(rows))
             controls.append(ft.Container(height=t.px(30), alignment=ft.Alignment.CENTER_LEFT,
                                          content=C.text(
@@ -757,7 +782,8 @@ class BibEditView:
                                      content=C.text(
                                          "1 个文件 · 1 条提交",
                                          t, "caption", p.text_faint)))
-        return ft.Column(spacing=t.sp("half"), controls=controls)
+        self._diff_column.controls = controls
+        return self._diff_column
 
     def _confirm_layer(self) -> ft.Control:
         t = self.t

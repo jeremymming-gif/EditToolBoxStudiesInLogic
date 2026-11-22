@@ -10,6 +10,7 @@ import asyncio
 from types import SimpleNamespace
 
 import flet as ft
+import pytest
 
 from services import engine_bridge as EB
 from ui import bib_health as HV
@@ -169,6 +170,52 @@ def test_health_expand_shows_records(monkeypatch):
     assert "li2024analysis · title" in texts
     assert "共 135 项" in texts
     assert "查看全部" in texts
+
+
+@pytest.mark.parametrize("width", [1000, 1160])
+def test_health_same_page_updates_keep_scroller_and_filter_focus(monkeypatch, width):
+    host, view = _loaded(monkeypatch, width=width)
+    tree = view.build()
+    host.view_slot = ft.Container(content=tree)
+    monkeypatch.setattr(host, "_render", lambda: pytest.fail("same-page host rebuild"))
+    form, scrollbar = tree._bib_body.content.controls
+    search = form._bib_filter_field
+    table = view._table_scroll
+    assert table is not None
+
+    def find_row(code):
+        return next(n for n in _walk(scrollbar)
+                    if isinstance(n, ft.Container) and n.height == host.t.px(32)
+                    and n.on_click and HV.rule_label(code) in _texts(n))
+
+    find_row("near_duplicates").on_click(None)
+    assert view._table_scroll is table
+    assert "near_duplicates" in view.expanded
+    assert "共 12 项 · 最多展示 4 条" in _texts(scrollbar)
+    checkbox = next(n for n in _walk(find_row("near_duplicates")) if isinstance(n, ft.Checkbox))
+    checkbox.value = True
+    checkbox.on_change(SimpleNamespace(control=checkbox))
+    assert view.selected == {"near_duplicates"}
+    stage = next(n for n in _walk(scrollbar) if getattr(n, "content", None) == "确认标记")
+    stage.on_click(None)
+    assert view.staged and view._check_slot.content.disabled
+    confirm = next(n for n in _walk(scrollbar) if getattr(n, "_bib_confirm_bar", False))
+    confirm._bib_repreview_btn.on_click(None)
+    assert not view.staged and not view._check_slot.content.disabled
+
+    more = next(n for n in _walk(scrollbar) if getattr(n, "content", None) == "载入更多（3）")
+    more.on_click(None)
+    assert len(view.rows) == 12
+    search.value = "near_duplicates"
+    search.on_change(SimpleNamespace(control=search))
+    assert [row["code"] for row in view.rows] == ["near_duplicates"]
+    select = next(n for n in _walk(form) if isinstance(n, ft.PopupMenuButton))
+    select._pick("missing_title")()
+    assert view.rule_filter == "missing_title" and not view.rows
+    assert host.view_slot.content is tree
+    assert any(node is scrollbar for node in _walk(tree))
+    assert host.page._bib_filter_state["field"] is search
+    assert any(node is search for node in _walk(tree))
 
 
 def test_health_narrow_hides_sample_column(monkeypatch):

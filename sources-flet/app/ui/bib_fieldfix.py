@@ -255,6 +255,7 @@ class BibFieldFixView:
         self.commit: dict | None = None
         self.dirty_reason = ""
         self._root: ft.Container | None = None
+        self._table_scroll: ft.Column | None = None
         self._bottom_holder: ft.Container | None = None
         self.narrow = False
 
@@ -328,21 +329,29 @@ class BibFieldFixView:
 
     def _render(self) -> None:
         if self._root is not None:
-            self._root.content = self._body()
-            replant = getattr(self.page, "_replant_nav", None)
-            if callable(replant):
-                replant()
-        page = self._flet()
-        update = getattr(page, "update", None)
-        if callable(update):
-            try:
-                update()
-            except Exception:  # noqa: BLE001
-                pass
+            shell = self._root.content
+            narrow = int(getattr(self._flet(), "width", 1160) or 1160) <= S.NARROW_W
+            if narrow != self.narrow:
+                self._root.content = self._body()
+                replant = getattr(self.page, "_replant_nav", None)
+                if callable(replant):
+                    replant()
+            else:
+                # Keep the table's scroll controller across local state changes.
+                body = shell._bib_body.content
+                body.controls[:2] = [self._hint_line(), self._filter_row()]
+                self._table_scroll.controls = self._table_controls()
+                self._bottom_holder.content = self._bottom()
+                shell._bib_meta.value = self._meta()
+                shell._bib_dock.content = self._dock()
+        self._update_page()
 
     def _touch_bottom(self) -> None:
         if self._bottom_holder is not None:
             self._bottom_holder.content = self._bottom()
+        self._update_page()
+
+    def _update_page(self) -> None:
         page = self._flet()
         update = getattr(page, "update", None)
         if callable(update):
@@ -513,7 +522,10 @@ class BibFieldFixView:
 
     def _expand(self, row_id: str) -> None:
         self.expanded = None if self.expanded == row_id else row_id
-        self._render()
+        if self._table_scroll is not None:
+            # Keep the mounted Column and its client-side ScrollController alive.
+            self._table_scroll.controls = self._table_controls()
+        self._update_page()
 
     def _set_candidate(self, row_id: str, value: str) -> None:
         self.manual[row_id] = value
@@ -793,8 +805,6 @@ class BibFieldFixView:
         width = int(getattr(self._flet(), "width", 1160) or 1160)
         self.narrow = width <= S.NARROW_W
         self._bottom_holder = ft.Container(content=self._bottom())
-        meta = (f"{len(self.rows)} 条建议 · {len({r['field'] for r in self.rows})} 个字段 · "
-                f"扫描 {self.scanned_at or '—'}")
         body = ft.Column(spacing=0, expand=True, controls=[
             self._hint_line(),
             self._filter_row(),
@@ -802,9 +812,13 @@ class BibFieldFixView:
             self._bottom_holder,
         ])
         return S.page_shell(
-            t, title=TITLE, meta=meta, role_chip=S.role_chip(t, "write"),
+            t, title=TITLE, meta=self._meta(), role_chip=S.role_chip(t, "write"),
             action=C.secondary_button("重新扫描", lambda e: self._task(self._scan), t),
             body=body, dock=self._dock())
+
+    def _meta(self) -> str:
+        return (f"{len(self.rows)} 条建议 · {len({r['field'] for r in self.rows})} 个字段 · "
+                f"扫描 {self.scanned_at or '—'}")
 
     def _dock(self) -> ft.Control:
         t = self.t
@@ -911,6 +925,12 @@ class BibFieldFixView:
 
     def _table(self) -> ft.Control:
         t = self.t
+        self._table_scroll = ft.Column(
+            spacing=0, scroll=C.scrollbar(t), controls=self._table_controls())
+        return ft.Container(expand=True, content=self._table_scroll)
+
+    def _table_controls(self) -> list[ft.Control]:
+        t = self.t
         headers, weights, mono, align = self._columns()
         sort_index = {"key": 1, "field": 3, "confidence": 6, "source": 7}.get(
             self.sort_key, 1)
@@ -930,8 +950,7 @@ class BibFieldFixView:
                 controls.append(self._expanded_row(row))
         # 尾部安全留白：滚到底时最后一行与底部常驻条之间留 12 px，不再贴边。
         controls.append(ft.Container(height=t.px(TABLE_BOTTOM_PAD)))
-        return ft.Container(expand=True, content=ft.Column(
-            spacing=0, scroll=C.scrollbar(t), controls=controls))
+        return controls
 
     def _row_control(self, row: dict, mono) -> ft.Control:
         t = self.t
@@ -980,42 +999,64 @@ class BibFieldFixView:
         return control
 
     def _expanded_row(self, row: dict) -> ft.Control:
+        """Render the detail below a row without imposing a horizontal minimum.
+
+        The detail lives inside the table's vertical scroll view, so its height must
+        follow the content.  Keeping evidence, candidate text, editor, and actions
+        in a vertical flow also gives long values a real width on narrow windows.
+        """
         t = self.t
         p = t.palette
         evidence = [C.text(f"{row['key']} · {field_label(row['field'])}", t,
-                           role="body-strong"),
+                           role="body-strong", max_lines=None,
+                           overflow=ft.TextOverflow.VISIBLE),
                     C.text(row["reason"] or "引擎没有给出缺失原因", t, "small",
-                           p.text_muted),
+                           p.text_muted, max_lines=None,
+                           overflow=ft.TextOverflow.VISIBLE),
                     C.text(f"来源 {row['source'] or '—'} · 置信度 {confidence_of(row)}"
-                           , t, "caption", p.text_faint)]
+                           , t, "caption", p.text_faint, max_lines=None,
+                           overflow=ft.TextOverflow.VISIBLE)]
         candidate = row.get("candidate") or ""
         radios = ft.RadioGroup(
             value=self.manual.get(row["id"], candidate),
             on_change=lambda e, rid=row["id"]: self._set_candidate(rid, e.control.value),
-            content=ft.Column(spacing=0, controls=[
-                ft.Radio(value=candidate or "—", label=f"候选值：{candidate or '（无）'}"),
+            content=ft.Row(spacing=t.sp("half"), controls=[
+                ft.Radio(value=candidate or "—", label="使用候选值", disabled=not candidate),
+                C.text("候选值", t, "caption", p.text_muted),
             ]))
+        candidate_text = C.text_field(
+            t, value=candidate or "（无候选值）", expand=True, multiline=True,
+            min_lines=1, max_lines=None, read_only=True, clearable=False,
+            tooltip=candidate or None)
+        candidate_block = ft.Container(
+            expand=True, padding=ft.Padding(left=t.px(8), top=t.px(4),
+                                            right=t.px(8), bottom=t.px(4)),
+            border=ft.Border(left=ft.BorderSide(1, p.border)),
+            content=candidate_text)
         manual = C.floating_field(
-            t, f"手工覆盖 {field_label(row['field'])}", width=t.px(250),
+            t, f"手工覆盖 {field_label(row['field'])}", expand=True,
             value=self.manual.get(row["id"], ""),
             hint="留空 = 用候选值" if candidate else "手工填写",
             on_change=lambda e, rid=row["id"]: self._set_candidate(rid, e.control.value))
-        actions = ft.Row(spacing=t.sp("1"), controls=[
+        actions = ft.Row(spacing=t.sp("1"), wrap=True, controls=[
             C.secondary_button("应用此条", lambda e, rid=row["id"]: self._apply_single(rid),
                                t),
             C.text_button("跳过", lambda e, rid=row["id"]: self._skip(rid), t),
         ])
-        return ft.Container(
-            bgcolor=p.surface_2, height=t.px(176),
+        detail = ft.Column(spacing=t.sp("1"), controls=[
+            ft.Column(spacing=t.sp("half"), controls=evidence),
+            radios,
+            candidate_block,
+            manual,
+            actions,
+        ])
+        control = ft.Container(
+            bgcolor=p.surface_2,
             border=ft.Border(left=ft.BorderSide(2, p.accent),
                              bottom=ft.BorderSide(0.6, p.border)),
             padding=ft.Padding(left=t.px(16), top=t.px(8), right=t.px(12), bottom=t.px(8)),
-            content=ft.Column(spacing=t.sp("half"), controls=[
-                ft.Row(spacing=t.sp("1"), controls=[
-                    ft.Column(spacing=0, expand=True, controls=evidence),
-                    radios, manual]),
-                actions,
-            ]))
+            content=detail)
+        return control
 
     def _apply_single(self, row_id: str) -> None:
         self.checked = {row_id}

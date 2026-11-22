@@ -132,12 +132,14 @@ def test_band_still_refreshes_once_on_packaged_failure():
     bib = _PackagedFailingBib()
     home, app = _home(bib)
 
-    home.build()
+    root = home.ensure_built()
+    app.content.content = root
+    scroller = root.content
     _drain(app)
 
     assert app.page.updates == 1, "取回（失败）后应刷新一次数据带"
-    assert app.content.content is not None, "刷新后页面内容必须被换上新 root"
-    assert home.root is app.content.content
+    assert home.root is app.content.content is root
+    assert root.content is scroller
 
 
 def test_second_build_does_not_kick_again():
@@ -174,7 +176,9 @@ def test_successful_stats_still_refresh_band():
     bib = _HealthyBib()
     home, app = _home(bib)
 
-    home.build()
+    root = home.ensure_built()
+    app.content.content = root
+    scroller = root.content
     ran = _drain(app)
 
     assert ran == 1
@@ -183,6 +187,8 @@ def test_successful_stats_still_refresh_band():
     assert app.page.updates == 1, "取到数据后必须刷新数据带"
     # 数据带真的显示了条数（1234 → "1,234"）。
     assert "1,234" in _all_text(home.root)
+    assert home.root is app.content.content is root
+    assert root.content is scroller
 
 
 def test_stats_already_loaded_skips_kick_entirely():
@@ -219,6 +225,12 @@ def test_prefix_behaviour_kicks_forever(monkeypatch):
     bib = _PackagedFailingBib()
     home, app = _home(bib)
     monkeypatch.setattr(P.HomePage, "_kick_bib_stats", _prefix_kick)
+    def rebuild_old_band(self):
+        self.root = self.build()
+        self.app.content.content = self.root
+        self.app.page.update()
+
+    monkeypatch.setattr(P.HomePage, "_refresh_band", rebuild_old_band)
 
     home.build()
     with pytest.raises(AssertionError, match="自激未修"):

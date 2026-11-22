@@ -221,9 +221,27 @@ class NormalizeView:
             # 局部导入：与下方旧兼容方法里的 import 同名别名，保持单一入口。
             from ui import bib_ai_assist as BAA  # noqa: PLC0415
             self._ai_view = BAA.BibAiAssistView(self.page, purpose="library")
+            self._ai_view.on_workspace_refresh = self._refresh_ai_workspace
             # 写语义页头 chip：与 BAA 的 ROLE_CHIP 对齐，不依赖别人的字面量。
             self._ai_role_chip = BAA.ROLE_CHIP
         return self._ai_view
+
+    def _refresh_ai_workspace(self) -> bool:
+        """在已挂载的 Bib 页面内更新 AI 工作区，无需替换宿主的正文槽。"""
+        slot = getattr(self.page, "view_slot", None)
+        shell = getattr(self, "_shell", None)
+        if slot is None or shell is None:
+            return False
+        if slot.content is not shell:
+            # 异步任务可以在切页后返回。状态留待下次进入时由 build() 绘制。
+            return True
+        body_box = shell._bib_body
+        body_box.content = self._body(previous=body_box.content)
+        try:
+            body_box.update()
+        except RuntimeError:  # 宿主在构建静态控件树期间尚未挂载页面
+            pass
+        return True
 
     def _render(self) -> None:
         """BibHost / 本页状态变化后的幂等重绘入口。
@@ -238,7 +256,7 @@ class NormalizeView:
             try:
                 body_box = getattr(shell, "_bib_body", None)
                 if body_box is not None:
-                    body_box.content = self._body()
+                    body_box.content = self._body(previous=body_box.content)
                 dock_box = getattr(shell, "_bib_dock", None)
                 if dock_box is not None:
                     dock_box.content = self._dock()
@@ -632,11 +650,7 @@ class NormalizeView:
             return
         if self._ai_view is None:
             try:
-                from ui import bib_ai_assist as BAA  # 局部导入：收起时不拉进来
-                # 本页是「引用库 Bib」入口（库内条目核实/规范化），不是初排稿：
-                # 必须显式传 purpose，否则视图默认按 initial 显示「初排稿 .tex」，
-                # 会让人以为这条链路在改初排源稿（验收 §3.1-11③）。
-                self._ai_view = BAA.BibAiAssistView(self.page, purpose="library")
+                self._ensure_ai_view()
             except Exception as exc:  # noqa: BLE001 - 视图坏了不能连带坏本页
                 self.input_error = (f"AI 处理 Bib 打不开（{type(exc).__name__}: {exc}）"
                                     "；上面的 AI 辅助处理 Bib 仍可用。")
@@ -807,7 +821,7 @@ class NormalizeView:
             parts.append(stale)
         return parts
 
-    def _body(self) -> ft.Control:
+    def _body(self, *, previous: ft.Control | None = None) -> ft.Control:
         """共享视图负责单一滚动及固定动作，本层只提供有界页面空间。
 
         目标 Bib 与可选关联正文由 purpose=library 的共享工作区管理。
@@ -815,6 +829,8 @@ class NormalizeView:
         """
         self._build_width = self._design_width()
         view = self._ensure_ai_view()
+        if previous is not None:
+            return view.body_only(compact=True, pinned_actions=True, previous=previous)
         return view.body_only(compact=True, pinned_actions=True)
 
     def _dock(self) -> ft.Control | None:

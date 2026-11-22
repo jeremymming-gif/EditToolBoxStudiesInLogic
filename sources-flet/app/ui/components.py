@@ -1399,16 +1399,16 @@ def select_box(t: Tokens, label: str, *, value_text: str = "未指定",
         except Exception:  # noqa: BLE001
             pass
 
-    items: list[ft.PopupMenuItem] = []
-    for item_key, item_label in (options or []):
-        items.append(ft.PopupMenuItem(
+    def _items(choices) -> list[ft.PopupMenuItem]:
+        return [ft.PopupMenuItem(
             height=t.px(32),
             content=text(item_label, t, "body", p.text),
             on_click=(lambda e, k=item_key, v=item_label: _choose(k, v)),
-        ))
+        ) for item_key, item_label in choices]
+
     button = ft.PopupMenuButton(
         content=content,
-        items=items,
+        items=_items(options or ()),
         padding=0,
         height=t.px(48),           # 批 114 m03074：盒高显式 48，field_row 可据此对齐同行按钮
         menu_position=ft.PopupMenuPosition.UNDER,
@@ -1425,6 +1425,7 @@ def select_box(t: Tokens, label: str, *, value_text: str = "未指定",
     button._default_text = default_text
     button._sync_reset = _sync_reset
     button._choose = _choose
+    button._set_items = lambda choices: setattr(button, "items", _items(choices))
     return button
 
 

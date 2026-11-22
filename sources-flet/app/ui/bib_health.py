@@ -171,6 +171,8 @@ class HealthView:
         self.report_time = ""
         self._task_running = False
         self._build_width = 0.0
+        self._shell: ft.Container | None = None
+        self._table_scroll: ft.Column | None = None
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -184,6 +186,26 @@ class HealthView:
         return str(getattr(getattr(self.page, "app", None), "notes_repo", "") or "")
 
     def _refresh(self) -> None:
+        if self._shell is not None:
+            slot = getattr(self.page, "view_slot", None)
+            if slot is not None and slot.content is not self._shell:
+                return
+            # 保留正文滚动区、结果表滚动区和筛选输入；展开/勾选只替换表内行。
+            if self._table_scroll is not None:
+                self._table_scroll.controls = self._table_controls()
+            self._body_scroll.controls = self._body_controls(reuse_table=True)
+            rule_options = self._rule_choices()
+            if self._rule_options != rule_options:
+                self._rule_options = rule_options
+                self._rule_select.options = rule_options
+            self._check_slot.content = self._check_button()
+            self._shell._bib_meta.value = self._meta_line()
+            self._shell._bib_dock.content = self._dock()
+            try:
+                self._shell.update()
+            except RuntimeError:  # 未挂载（首帧或 headless）
+                pass
+            return
         render = getattr(self.page, "_render", None)
         if callable(render):
             render()
@@ -469,15 +491,18 @@ class HealthView:
         ]
         return S.summary_band(t, items)
 
+    def _rule_choices(self) -> list[tuple[str, str]]:
+        codes = [str(item.get("code") or "") for item in self.items]
+        return [("", "全部规则"), *((code, rule_label(code)) for code in codes)]
+
     def _filter(self) -> ft.Control:
         t = self.t
         field = C.text_field(t, value=self.text, hint_text="规则名或示例 key",
                              on_change=self._on_text, width=260)
         field._bib_search_field = True
-        rules = [("", "全部规则")] + [(item.get("code"), rule_label(str(item.get("code"))))
-                                      for item in self.items]
-        rule_select = C.select(t, value=self.rule_filter, options=rules,
-                               on_select=self._on_rule, width=110)
+        self._rule_options = self._rule_choices()
+        self._rule_select = C.select(t, value=self.rule_filter, options=self._rule_options,
+                                     on_select=self._on_rule, width=110)
         severity = C.select(t, value=self.severity_filter,
                             options=[("", "全部严重度"), ("警告", "警告"), ("提示", "提示")],
                             on_select=self._on_severity, width=SEVERITY_FILTER_W)
@@ -490,12 +515,13 @@ class HealthView:
                             visual_density=ft.VisualDensity.COMPACT, splash_radius=0),
                 C.text("只看可标记项", t, "caption", t.palette.text_muted),
             ]))
+        self._check_slot = ft.Container(content=self._check_button())
         return S.filter_row(
             t, search=field, on_search=self._on_text,
-            controls=[rule_select, severity, ackable],
-            count=self._check_button(), page=self.page.page, search_width=260)
+            controls=[self._rule_select, severity, ackable],
+            count=self._check_slot, page=self.page.page, search_width=260)
 
-    def _table(self) -> ft.Control:
+    def _table_controls(self) -> list[ft.Control]:
         t = self.t
         narrow = self._build_width < 1100
         columns = ["", "", "规则", "严重度", "记录数", "说明"]
@@ -568,7 +594,12 @@ class HealthView:
                 rows.append(self._expanded_row(item, narrow))
         if not rows:
             rows.append(S.empty_row(t, "没有待处理警告", height=32))
-        return ft.Column(spacing=0, controls=[header, *rows])
+        return [header, *rows]
+
+    def _table(self) -> ft.Column:
+        table = ft.Column(spacing=0, controls=self._table_controls())
+        self._table_scroll = table
+        return table
 
     def _expanded_row(self, item: dict, narrow: bool) -> ft.Control:
         t = self.t
@@ -659,9 +690,8 @@ class HealthView:
             rows.append(item)
         return rows
 
-    def _body(self) -> ft.Control:
+    def _body_controls(self, *, reuse_table: bool = False) -> list[ft.Control]:
         t = self.t
-        self._build_width = self._design_width()
         parts: list = []
         if self.error:
             parts.append(S.state_banner(
@@ -685,7 +715,8 @@ class HealthView:
                 next_label="重新体检", on_next=lambda e: self.check()))
         elif self.loaded:
             parts.append(self._band())
-        parts.append(self._table())
+        parts.append(self._table() if not reuse_table or self._table_scroll is None
+                     else self._table_scroll)
         parts.append(self._footer())
         batch = self._batch()
         if batch is not None:
@@ -693,8 +724,7 @@ class HealthView:
         confirm = self._confirm_bar()
         if confirm is not None:
             parts.append(confirm)
-        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
-                         controls=parts)
+        return parts
 
     def cancel(self) -> None:
         self.cancelled = True
@@ -729,20 +759,28 @@ class HealthView:
         return C.text(f"上次体检 {self.last_check or '—'} · 只读",
                       t, "caption", t.palette.text_faint)
 
+    def _meta_line(self) -> str:
+        if not self.loaded:
+            return "运行中"
+        return (f"{_num(self.counts.get('warnings'))} 条警告 · "
+                f"{len(self.items)} 类 · {_num(self.counts.get('errors'))} 错误")
+
     def build(self) -> ft.Control:
+        t = self.t
         self._build_width = self._design_width()
-        return S.page_shell(
-            self.t, title=TITLE,
-            meta=(f"{_num(self.counts.get('warnings'))} 条警告 · "
-                  f"{len(self.items)} 类 · {_num(self.counts.get('errors'))} 错误"
-                  if self.loaded else "运行中"),
+        self._body_scroll = ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t),
+                                      expand=True, controls=self._body_controls())
+        self._shell = S.page_shell(
+            t, title=TITLE,
+            meta=self._meta_line(),
             role_chip="readonly",
             action=C.secondary_button("生成报告", lambda e: self.make_report(), self.t,
                                       height=28),
             on_gear=lambda e: self._goto("settings"),
             body=ft.Column(spacing=0, expand=True,
-                           controls=[self._filter(), self._body()]),
+                           controls=[self._filter(), self._body_scroll]),
             dock=self._dock(), dock_height=S.DOCK_H)
+        return self._shell
 
     def _goto(self, view: str) -> None:
         setter = getattr(self.page, "set_view", None)

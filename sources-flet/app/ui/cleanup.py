@@ -384,6 +384,13 @@ class CleanupPanel:
         except Exception:  # noqa: BLE001 —— 未挂载（构建期/测试桩）
             pass
 
+    def _refresh_selection(self, scroller: ft.Column, state: dict) -> None:
+        scroller.controls = self._selection_rows(state, scroller)
+        try:
+            scroller.update()
+        except Exception:  # noqa: BLE001 —— 未挂载（构建期/测试桩）
+            pass
+
     def _result_controls(self) -> list:
         t = self.page.t
         root = self.root
@@ -428,6 +435,12 @@ class CleanupPanel:
 
     def _selection_controls(self, state: dict) -> list:
         t = self.page.t
+        scroller = ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t))
+        scroller.controls = self._selection_rows(state, scroller)
+        return [C.section_label("本期候选", t), C.hairline(t), scroller]
+
+    def _selection_rows(self, state: dict, scroller: ft.Column) -> list:
+        t = self.page.t
         entries = state["entries"]
         selected = state["selected"]
         root = state["root"]
@@ -441,7 +454,7 @@ class CleanupPanel:
                 return
             state["selected"] = (set() if all_selected
                                   else {item["path"] for item in entries})
-            self._refresh_result()
+            self._refresh_selection(scroller, state)
 
         rows: list = [
             ft.Checkbox(label="全选本次候选", value=None if partial else all_selected,
@@ -460,7 +473,7 @@ class CleanupPanel:
                 else:
                     current.discard(selected_path)
                 state["selected"] = current
-                self._refresh_result()
+                self._refresh_selection(scroller, state)
 
             rows.append(ft.Checkbox(label=_entry_text(item), value=path in selected,
                                     on_change=set_one))
@@ -492,8 +505,7 @@ class CleanupPanel:
             ft.FilledButton(content=f"将 {len(selected)} 项移入回收区",
                             disabled=not selected, on_click=confirm),
         ]))
-        return [C.section_label("本期候选", t), C.hairline(t),
-                ft.Column(rows, spacing=t.sp("1"), scroll=C.scrollbar(t))]
+        return rows
 
     def _empty(self, title: str, desc: str = "") -> ft.Control:
         t = self.page.t

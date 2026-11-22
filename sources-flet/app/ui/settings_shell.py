@@ -172,9 +172,7 @@ def on_key(app, event) -> None:
     elif action == "search":
         app.open_search_palette()
     elif action == "refresh":
-        app.refresh_engine_status()
-        app.rebuild_shell()
-        app.toast("引擎状态已刷新")
+        app.redetect_engine()
     elif action == "run":
         _run_current(app)
     elif action == "stop":

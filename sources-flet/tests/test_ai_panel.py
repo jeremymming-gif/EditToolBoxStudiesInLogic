@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import flet as ft
 import pytest
@@ -100,6 +101,19 @@ class FakePage:
 
     def field(self, key):
         return self.fields.get(key, "")
+
+
+def test_ai_master_toggle_persists_without_rebuilding_shell():
+    page = FakePage(FakeStore())
+    page.connection_slot = ft.Container(content=ft.Text("旧连接检查"))
+    panel = AIP.AiSettings(page)
+    panel.build()
+    panel._on_enabled(SimpleNamespace(control=SimpleNamespace(value=True)))
+
+    assert AI.from_store(page.app.store)["enabled"] is True
+    assert page.app.persisted == 1
+    assert page.app.rebuilt == 0
+    assert page.connection_slot.content is None
 
 
 class _Field:

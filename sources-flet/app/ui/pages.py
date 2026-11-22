@@ -264,8 +264,9 @@ class HomePage(BasePage):
     # ── 四区块 ─────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
         t = self.t
+        self._band_slot = ft.Container(content=self._band())
         panel = C.page_body(
-            self._band(),
+            self._band_slot,
             self._section("继续上次", trailing=self._trailing("全部记录", "single")),
             self._continue_rows(),
             self._section("工作入口", note="单篇 → 整期 → 引用库"),
@@ -285,7 +286,7 @@ class HomePage(BasePage):
 
         `_bib_kick_done` 是一次性闸门（批 117 R4）：`stats_data is not None` 只在取数
         **成功**时成立，而打包态 `_load_stats` 恒失败（引擎子进程起不来）→ stats_data
-        永远 None → `_refresh_band()` 里的 `self.root = self.build()` 又走到这里 → 每轮
+        永远 None → 旧版 `_refresh_band()` 重建页面时又走到这里 → 每轮
         再 kick，实测 106 次 / 11.9 秒自激到 `RuntimeError: An attempt to fetch destroyed
         session.`。闸门与取数成败解耦：每次页面生命周期只 kick 一次，失败就停在「引用库 —」。
         """
@@ -305,11 +306,13 @@ class HomePage(BasePage):
         self.page.run_task(_load)
 
     def _refresh_band(self) -> None:
-        if getattr(self.app, "current_page_key", "") != self.key:
+        slot = getattr(self, "_band_slot", None)
+        if slot is None:
             return
+        slot.content = self._band()
+        if getattr(self.app, "current_page_key", "") != self.key:
+            return  # 未挂载时保留新值，导航返回时显示。
         try:
-            self.root = self.build()
-            self.app.content.content = self.root
             self.app.page.update()
         except Exception as exc:  # noqa: BLE001
             self.app.mark("home_band_refresh_error", error=f"{type(exc).__name__}: {exc}")
@@ -1267,16 +1270,26 @@ class SinglePage(BasePage):
     def _editor_select(self) -> ft.Control:
         t = self.t
         current = (self.app.store.get("form.convert_editor", "") or "").strip()
-        options = [("", "未指定")]
-        options += [(name, name) for name in self._editor_options()]
-        options += [("__custom__", "自定义…"), ("__manage__", "编辑名单…")]
         box = C.select_box(
-            t, "责编", value_text=current or "未指定", options=options,
+            t, "责编", value_text=current or "未指定", options=self._editor_menu_items(),
             on_select=self._on_editor_select, expand=True,
             reset=True, reset_text="未指定", on_reset=self._reset_editor,
         )
         self._editor_box = box
         return box
+
+    def _editor_menu_items(self) -> list[tuple[str, str]]:
+        return [("", "未指定"), *((name, name) for name in self._editor_options()),
+                ("__custom__", "自定义…"), ("__manage__", "编辑名单…")]
+
+    def _refresh_editor_options(self) -> None:
+        box = getattr(self, "_editor_box", None)
+        if box is None:
+            return
+        box._set_items(self._editor_menu_items())
+        current = (self.app.store.get("form.convert_editor", "") or "").strip()
+        self._set_editor_box_text(current or "未指定")
+        self._safe_update(box)
 
     def _reset_editor_value(self) -> None:
         self.app.store.set("form.convert_editor", "")
@@ -1334,7 +1347,7 @@ class SinglePage(BasePage):
                 self.app.store.set("form.editor_options", options)
             self.app.store.set("form.convert_editor", value)
             self.app.mark("editor_added", value=value)
-            self._set_editor_box_text(value)
+            self._refresh_editor_options()
             _close()
 
         page.show_dialog(ft.AlertDialog(
@@ -1362,7 +1375,7 @@ class SinglePage(BasePage):
             self.app.store.set("form.editor_options", names)
             self.app.mark("editor_options_saved", count=len(names))
             _close()
-            self.app.rebuild_shell()
+            self._refresh_editor_options()
 
         page.show_dialog(ft.AlertDialog(
             modal=True,
@@ -4736,6 +4749,22 @@ class SettingsPage(BasePage):
         """每次导航回设置页都重取状态（I-2）。"""
         self.refresh_status_rows()
 
+    def _engine_note(self) -> ft.Row:
+        engine = self.app.engine_status
+        return C.inline_note(
+            f"引擎{'就绪' if engine.ok else '未就绪'} · {engine.version or '版本未知'}",
+            self.t, "ok" if engine.ok else "warn")
+
+    def refresh_engine_display(self) -> None:
+        self.refresh_status_rows()
+        note = getattr(self, "_engine_status_note", None)
+        if note is not None:
+            note.controls = self._engine_note().controls
+        version = getattr(self, "_about_version", None)
+        if version is not None:
+            version.value = self.app.app_version
+            version.tooltip = self.app.app_version
+
     def _save_settings(self) -> None:
         """「立即保存」：保存成功才刷新状态行（I-2）。"""
         if self.app.save_settings(toast=True):
@@ -4743,7 +4772,6 @@ class SettingsPage(BasePage):
 
     def build(self) -> ft.Control:
         t = self.t
-        engine = self.app.engine_status
         self._status_value_ctls = {}
         engine_row_controls: list = []
         for label, value, mono in self._status_rows():
@@ -4753,9 +4781,7 @@ class SettingsPage(BasePage):
                 self._status_value_ctls[label] = ctl
             engine_row_controls.append(row)
         # 软件设置按通用、AI、引用库三类组织；组内仍沿用既有偏好控件。
-        engine_line = C.inline_note(
-            f"引擎{'就绪' if engine.ok else '未就绪'} · {engine.version or '版本未知'}",
-            t, "ok" if engine.ok else "warn")
+        self._engine_status_note = self._engine_note()
         engine_rows = C.block(
             *engine_row_controls,
             ft.Row(spacing=t.sp("1"), controls=[
@@ -4803,8 +4829,9 @@ class SettingsPage(BasePage):
             t=t, gap="1",
         )
 
+        about_version = C.kv_row(t, "应用版本", self.app.app_version, mono=True)
+        self._about_version = about_version.value_ctl
         about_rows = [
-            ("应用版本", self.app.app_version),
             ("Flet / Python", f"{self.app.flet_version} · {self.app.python_version}"),
             ("窗口 / DPI", f"{self.app.window_w}×{self.app.window_h} @ {self.app.dpi} ({self.app.dpi / 96:.0%})"),
             ("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
@@ -4813,8 +4840,8 @@ class SettingsPage(BasePage):
         about = C.block(
             C.section_label("关于", t),
             C.hairline(t),
-            *[C.kv_row(t, label, value, mono=label == "应用版本")
-              for label, value in about_rows],
+            about_version,
+            *[C.kv_row(t, label, value) for label, value in about_rows],
             t=t, gap="1",
         )
 
@@ -4832,7 +4859,7 @@ class SettingsPage(BasePage):
         page = C.page_body(
             header,
             self._group("通用", t,
-                        engine_line,
+                        self._engine_status_note,
                         self._flat(envcheck, "环境检查"),
                         engine_rows,
                         appearance,
@@ -4983,9 +5010,7 @@ class SettingsPage(BasePage):
         self.app.set_zoom(value)
 
     def _rescan(self) -> None:
-        self.app.refresh_engine_status()
-        self.app.rebuild_shell()
-        self.app.toast("引擎状态已刷新")
+        self.app.redetect_engine()
 
     def _browse_engine(self) -> None:
         ref = self.fields.get("engine_override")

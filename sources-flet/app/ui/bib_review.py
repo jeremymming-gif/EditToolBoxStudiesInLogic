@@ -117,10 +117,7 @@ class ReviewView:
         self.limit = 100
         self._task_running = False
         self._build_width = 0.0
-        # 输入筛选时只更新结果区：重建含输入框的过滤器会让客户端重建 TextField、丢焦点。
-        self._body_holder: ft.Container | None = None
-        self._count_text: ft.Text | None = None
-        self._dock_text: ft.Text | None = None
+        self._shell: ft.Container | None = None
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -134,6 +131,12 @@ class ReviewView:
         return str((getattr(self.page, "stats_data", None) or {}).get("db") or "")
 
     def _refresh(self) -> None:
+        if self._shell is not None:
+            slot = getattr(self.page, "view_slot", None)
+            if slot is not None and slot.content is not self._shell:
+                return
+            self._refresh_results()
+            return
         render = getattr(self.page, "_render", None)
         if callable(render):
             render()
@@ -267,35 +270,30 @@ class ReviewView:
     def _on_text(self, e) -> None:
         self.text = str(getattr(e.control, "value", "") or "")
         self._apply_filters()
-        self._refresh_results()
+        self._refresh()
 
     def _refresh_results(self) -> None:
-        """只重建结果区（队列/详情/底部条），不动含输入框的过滤器。
-
-        真机复现（FIX2R2-3）：待处理搜索框键入首字母后，原来的 _refresh() 会让
-        宿主重建整个视图（含搜索框），客户端重建 TextField → 焦点被夺走，后续按键
-        变成纯键盘事件。这里改为定向刷新结果容器；输入框保持挂载，焦点不丢。
-        """
-        if self._body_holder is None:
-            self._refresh()          # 尚未 build（理论上不会走到）：退回旧路径
-            return
-        self._body_holder.content = self._body()
-        targets: list = [self._body_holder]
-        if self._count_text is not None:
-            self._count_text.value = self._pending_line()
-            targets.append(self._count_text)
-        if self._dock_text is not None:
-            self._dock_text.value = self._dock_line()
-            targets.append(self._dock_text)
-        failed = True
-        for control in targets:
-            try:
-                control.update()
-                failed = False
-            except Exception:  # noqa: BLE001 - 未挂载时退回旧路径
-                continue
-        if failed:
-            self._refresh()
+        """原位刷新队列内容，保留筛选输入和结果、详情滚动区。"""
+        self._status_slot.controls = self._banners()
+        self._status_slot.visible = bool(self._status_slot.controls)
+        self._queue_slot.content.controls = self._queue_controls()
+        selected = self._selected_row()
+        if selected is not self._detail_row_data:
+            fresh = self._detail()
+            body = self._detail_view._bib_detail_body
+            new_body = fresh._bib_detail_body
+            body.content.controls = new_body.content.controls
+            self._detail_view.content.controls = [body if child is new_body else child
+                                                  for child in fresh.content.controls]
+            self._detail_row_data = selected
+        self._body_scroll.controls = self._body_controls()
+        self._count_text.value = self._pending_line()
+        self._dock_text.value = self._dock_line()
+        self._shell._bib_meta.value = self._meta_line()
+        try:
+            self._shell.update()
+        except RuntimeError:  # 未挂载（首帧或 headless）
+            pass
 
     def _on_field(self, e) -> None:
         key = str(getattr(e, "data", "") or "")
@@ -562,7 +560,11 @@ class ReviewView:
             width = float(getattr(getattr(self.page, "app", None), "window_w", 0) or 0)
         return width / max(self.t.k, 1e-6)
 
-    def _queue(self) -> ft.Control:
+    def _queue(self) -> ft.Column:
+        """构造待处理队列，保留旧测试和叶页兼容入口。"""
+        return ft.Column(spacing=0, controls=self._queue_controls())
+
+    def _queue_controls(self) -> list[ft.Control]:
         t = self.t
         weight = [28, 42, 142, 112, 116, 66]
         header = ft.Container(
@@ -612,7 +614,7 @@ class ReviewView:
                                         lambda e: self.load_more(), t, height=28))
         footer.append(C.text(f"显示 {len(self.rows)} / {self._counts()['pending']} 条待处理",
                              t, "caption", t.palette.text_faint))
-        return ft.Column(spacing=0, controls=[header, *rows, *footer])
+        return [header, *rows, *footer]
 
     def _detail(self) -> ft.Control:
         t = self.t
@@ -620,7 +622,7 @@ class ReviewView:
         if row is None:
             return S.detail_panel(
                 t, title="冲突详情", meta="选一行看字段；默认不自动选中。",
-                body=ft.Column(spacing=t.sp("1"), controls=[
+                body=ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), controls=[
                     C.empty_line("未选择冲突", t),
                     C.text("一行一条冲突；同一记录可能有多条。", t,
                            "caption", t.palette.text_faint, max_lines=3),
@@ -735,10 +737,8 @@ class ReviewView:
                             count=self._count_text,
                             page=self.page.page, search_width=220)
 
-    def _body(self) -> ft.Control:
+    def _banners(self) -> list[ft.Control]:
         t = self.t
-        self._build_width = self._design_width()
-        narrow = self._build_width < 1100
         parts: list = []
         if self.error:
             parts.append(S.state_banner(t, "failure", message=self.error,
@@ -753,24 +753,34 @@ class ReviewView:
             parts.append(S.state_banner(t, "cancelled", message="已取消，未写入。"))
         if self.loading and not self.loaded:
             parts.append(S.state_banner(t, "loading", message="运行中"))
-        if self.error:
-            pass
-        queue = self._queue()
-        if narrow:
-            parts.extend([queue, self._detail()])
-        else:
-            parts.append(ft.Row(expand=True, spacing=0,
-                                vertical_alignment=ft.CrossAxisAlignment.START,
-                                controls=[ft.Container(expand=True, content=queue),
-                                          self._detail()]))
+        return parts
+
+    def _body_controls(self) -> list[ft.Control]:
+        parts = [self._status_slot, *self._review_layout]
         batch = self._batch()
         if batch is not None:
             parts.append(batch)
         confirm = self._confirm_bar()
         if confirm is not None:
             parts.append(confirm)
-        return ft.Column(spacing=t.sp("1"), expand=True,
-                         scroll=C.scrollbar(t), controls=parts)
+        return parts
+
+    def _body(self) -> ft.Column:
+        t = self.t
+        narrow = self._build_width < 1100
+        banners = self._banners()
+        self._status_slot = ft.Column(spacing=t.sp("1"), controls=banners,
+                                      visible=bool(banners))
+        queue = self._queue()
+        self._queue_slot = ft.Container(content=queue, expand=not narrow)
+        self._detail_view = self._detail()
+        self._detail_row_data = self._selected_row()
+        columns = [self._queue_slot, self._detail_view]
+        self._review_layout = columns if narrow else [ft.Row(
+            expand=True, spacing=0, vertical_alignment=ft.CrossAxisAlignment.START,
+            controls=columns)]
+        return ft.Column(spacing=t.sp("1"), expand=True, scroll=C.scrollbar(t),
+                         controls=self._body_controls())
 
     def _copy(self, text: str) -> None:
         fn = getattr(getattr(self.page, "app", None), "copy_text", None)
@@ -793,19 +803,22 @@ class ReviewView:
                                  self.t.palette.text_faint)
         return self._dock_text
 
+    def _meta_line(self) -> str:
+        return self._pending_line() if self.loaded else "运行中"
+
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
         filter_row = self._filter()
-        self._body_holder = ft.Container(content=self._body(), expand=True)
-        return S.page_shell(
+        self._body_scroll = self._body()
+        self._shell = S.page_shell(
             self.t, title=TITLE,
-            meta=(self._pending_line()
-                  if self.loaded else "运行中"),
+            meta=self._meta_line(),
             role_chip="write", action=None,
             on_gear=lambda e: self._goto("settings"),
             body=ft.Column(spacing=0, expand=True, controls=[
-                filter_row, self._body_holder]),
+                filter_row, ft.Container(content=self._body_scroll, expand=True)]),
             dock=self._dock(), dock_height=S.DOCK_H)
+        return self._shell
 
     def _goto(self, view: str) -> None:
         setter = getattr(self.page, "set_view", None)

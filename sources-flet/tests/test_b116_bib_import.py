@@ -117,6 +117,7 @@ PREVIEW = {
 
 def _install(monkeypatch, *, preview=None, write=None, commits=None):
     calls: list[EB.EngineCall] = []
+    monkeypatch.setattr(BI, "_db_fingerprint", lambda _path: "a" * 64)
 
     def fake_read(call, notes=""):
         calls.append(call)
@@ -254,9 +255,25 @@ def test_preview_argv_is_dry_run_without_sha(tmp_path, monkeypatch):
     assert "--dry-run" in args
     assert "--expect-db-sha256" not in args
     assert "--unverified" in args
+    assert args[args.index("--db") + 1] == str(Path(host.stats_data["db"]).resolve())
     assert view.state == "ready"
     assert view.expect_sha == "a" * 64
     assert view._counts()["conflicts"] == 3
+
+
+def test_preview_uses_stats_path_when_engine_stats_has_no_db_key(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    host = _Host(db)
+    host.stats_data = {"path": db}
+    view = BI.BibImportView(host)
+    view.path = str(tmp_path / "in.bib")
+    calls = _install(monkeypatch)
+
+    asyncio.run(view._preview())
+
+    args = args_of(calls[0])
+    assert args[args.index("--db") + 1] == str(Path(db).resolve())
+    assert view.state == "ready"
 
 
 def test_preview_filter_counts_follow_payload_and_map_conflict_key(tmp_path):
@@ -358,6 +375,258 @@ def test_desktop_import_body_has_independent_scrollable_params_and_fixed_confirm
     assert view._confirm_holder in _walk(root)
 
 
+@pytest.mark.parametrize("row_count, shrink", [(6, True), (12, False)])
+def test_narrow_import_uses_one_page_scroller_for_preview_rows(tmp_path, row_count, shrink):
+    host = _Host(_db(tmp_path))
+    host.page.width = 1000
+    view = BI.BibImportView(host)
+    view.state = "ready"
+    view.payload = {
+        "entries": row_count,
+        "new": row_count,
+        "updated": 0,
+        "conflicts": 0,
+        "skipped": 0,
+        "changes": [
+            {"key": f"anon{i:02d}", "status": "new", "title": f"题名 {i}"}
+            for i in range(row_count)
+        ],
+    }
+
+    root = view.build()
+    layout = next(node for node in _walk(root)
+                  if getattr(node, "_bib_narrow", False))
+    assert isinstance(layout, ft.ListView)
+    assert isinstance(layout.scroll, ft.Scrollbar)
+    assert layout._bib_preview.expand is False
+
+    tables = [node for node in _walk(layout._bib_preview)
+              if getattr(node, "_bib_shrink", None) is not None]
+    assert len(tables) == 1
+    assert tables[0]._bib_shrink is shrink
+    assert tables[0].scroll is None
+    assert view._confirm_holder in _walk(root)
+
+
+@pytest.mark.parametrize("width, updated", [(1000, 0), (1000, 3), (1160, 3)])
+def test_preview_filter_updates_results_without_rebuilding_scroll_owner(
+        tmp_path, monkeypatch, width, updated):
+    host = _Host(_db(tmp_path))
+    host.page.width = width
+    view = BI.BibImportView(host)
+    view.state = "ready"
+    new_keys = [f"preview{i}" for i in range(6)]
+    existing_keys = [f"synthetic{i}" for i in range(6)]
+    view.payload = {
+        "report": {"entries": 12, "new": 6, "updated": updated,
+                   "merged": 6 - updated, "conflicts": 0, "skipped": {}},
+        "changes": [
+            {"key": key, "status": "new"} for key in new_keys
+        ] + [
+            {"key": key, "status": "updated" if i < updated else "merged"}
+            for i, key in enumerate(existing_keys)
+        ],
+    }
+    root = view.build()
+    body = root.content
+    layout = next(node for node in _walk(root) if hasattr(node, "_bib_left"))
+    scroll_owner = layout if layout._bib_narrow else layout._bib_left
+    assert isinstance(scroll_owner, ft.ListView)
+    preview = layout._bib_preview
+    result_table = next(node for node in _walk(preview)
+                        if hasattr(node, "_bib_shrink"))
+    confirm = view._confirm_holder
+    chip_labels = ["全部 12", "新增 6", "更新 6", "冲突 0", "跳过 0"]
+    chips = next(node for node in _walk(preview)
+                 if isinstance(node, ft.Row) and _labels(node) == chip_labels)
+    buttons = tuple(chips.controls)
+    block = next(node for node in _walk(preview)
+                 if any(child is chips for child in getattr(node, "controls", ())))
+    chrome = tuple(block.controls)
+    updates = []
+    monkeypatch.setattr(block, "update", lambda: updates.append(block))
+
+    cases = [(1, new_keys), (2, existing_keys), (3, []), (4, []),
+             (0, new_keys + existing_keys)]
+    for index, keys in cases:
+        buttons[index].on_click(None)
+        assert view.filter == BI.FILTERS[index][0]
+        assert root.content is body
+        assert any(node is scroll_owner for node in _walk(root))
+        assert any(node is result_table for node in _walk(root))
+        assert any(node is confirm for node in _walk(root))
+        assert all(old is new for old, new in zip(chrome, block.controls, strict=True))
+        assert all(old is new for old, new in zip(buttons, chips.controls, strict=True))
+        assert _labels(chips) == chip_labels
+        assert [button.bgcolor is not None for button in buttons] == [
+            i == index for i in range(len(buttons))]
+        labels = _labels(preview)
+        assert [key for key in labels if key in new_keys + existing_keys] == keys
+        assert ("没有变化记录" in labels) == (not keys)
+        if index == 2:
+            assert labels.count("更新") == updated + 1  # includes the summary label
+            assert labels.count("合并") == 6 - updated
+
+    buttons[0].on_click(None)  # reselecting the active filter is a no-op
+    assert updates == [block] * len(cases)
+    assert host.page.updates == 0
+
+
+@pytest.mark.parametrize("width, filtered", [
+    (1000, True), (1000, False), (1160, False),
+], ids=["narrow-filtered-6", "narrow-all-12", "wide-all-12"])
+def test_preview_detail_keeps_page_and_table_mounted(tmp_path, monkeypatch, width, filtered):
+    host = _Host(_db(tmp_path))
+    host.page.width = width
+    view = BI.BibImportView(host)
+    view.state = "ready"
+    keys = [f"anon{i:02d}" for i in range(12)]
+    view.payload = {
+        "report": {"entries": 12, "new": 6, "updated": 6},
+        "changes": [
+            {"key": key, "title": f"题名 {key}", "incoming_key": f"input-{key}",
+             "status": "new" if i < 6 else "updated",
+             "field_diff": {"title": {"old": f"old-{key}", "new": f"new-{key}"}}}
+            for i, key in enumerate(keys)
+        ],
+    }
+    root = view.build()
+    body = root.content
+    layout = next(node for node in _walk(body) if hasattr(node, "_bib_preview"))
+    preview = layout._bib_preview
+    confirm = view._confirm_holder
+    confirm_bar = confirm.content
+    chip_labels = ["全部 12", "新增 6", "更新 6", "冲突 0", "跳过 0"]
+    chips = next(node for node in _walk(preview)
+                 if isinstance(node, ft.Row) and _labels(node) == chip_labels)
+    if filtered:
+        filter_block = next(node for node in _walk(preview)
+                            if any(child is chips for child in getattr(node, "controls", ())))
+        monkeypatch.setattr(filter_block, "update", lambda: None)
+        chips.controls[2].on_click(None)
+        keys = keys[6:]
+    chip_colors = [chip.bgcolor for chip in chips.controls]
+    table = next(node for node in _walk(preview) if hasattr(node, "_bib_shrink"))
+    table_header, rows = table.controls
+    scroll_owner = layout if width == 1000 else table
+    scrollbar = scroll_owner.scroll
+    assert isinstance(scrollbar, ft.Scrollbar)
+    assert (table.scroll is None) == (width == 1000)
+
+    row_updates = []
+    monkeypatch.setattr(rows, "update", lambda: row_updates.append(rows))
+
+    def row_for(key):
+        return next(row for row in rows.controls if callable(getattr(row, "on_click", None))
+                    and key in _labels(row))
+
+    def detail_button(key, label):
+        return next(node for node in _walk(row_for(key))
+                    if isinstance(node, ft.TextButton) and _button_label(node) == label)
+
+    def assert_preview(open_key):
+        assert root.content is body, "detail click replaced the page body"
+        mounted = _walk(body)
+        for control in (layout, preview, confirm, confirm_bar, chips, table, scroll_owner):
+            assert any(node is control for node in mounted)
+        assert confirm.content is confirm_bar
+        assert _labels(chips) == chip_labels
+        assert [chip.bgcolor for chip in chips.controls] == chip_colors
+        assert table.controls[0] is table_header
+        assert table.controls[1] is rows
+        assert scroll_owner.scroll is scrollbar
+        labels = _labels(rows)
+        assert [label for label in labels if label in keys] == keys
+        assert labels.count("收起") == (1 if open_key else 0)
+        assert labels.count("查看明细") == len(keys) - (1 if open_key else 0)
+        assert [label for label in labels if label.startswith("库键 ")] == (
+            [f"库键 {open_key} · 输入键 input-{open_key}"] if open_key else [])
+        assert len(rows.controls) == len(keys) + (1 if open_key else 0)
+        if open_key:
+            selected_row = row_for(open_key)
+            index = next(i for i, row in enumerate(rows.controls) if row is selected_row)
+            detail_labels = _labels(rows.controls[index + 1])
+            assert f"old-{open_key}" in detail_labels
+            assert f"new-{open_key}" in detail_labels
+        assert host.page.updates == 0
+
+    assert_preview(None)
+    row_for(keys[-2]).on_click(None)
+    assert_preview(keys[-2])
+    detail_button(keys[-1], "查看明细").on_click(None)
+    assert_preview(keys[-1])
+    detail_button(keys[-1], "收起").on_click(None)
+    assert_preview(None)
+    assert row_updates == [rows] * 3
+
+
+@pytest.mark.parametrize("width", [1000, 1160])
+def test_options_pagination_and_confirmation_keep_scroll_owners(tmp_path, monkeypatch, width):
+    db = _db(tmp_path)
+    host = _Host(db)
+    host.page.width = width
+    view = BI.BibImportView(host)
+    view.path = "/tmp/synthetic.bib"
+    view.state = "ready"
+    view.expect_sha = "a" * 64
+    view.payload = {**PREVIEW, "entries": 205, "new": 205, "updated": 0,
+                    "conflicts": 0, "skipped": 0, "changes": [
+                        {"key": f"sample{i:03}", "status": "new"} for i in range(205)]}
+    root = view.build()
+    layout = next(node for node in _walk(root) if hasattr(node, "_bib_left"))
+    preview = layout._bib_preview
+    params_scroll = layout if layout._bib_narrow else layout._bib_left
+    table = next(node for node in _walk(preview) if hasattr(node, "_bib_shrink"))
+    confirm = view._confirm_holder
+    updates = []
+    monkeypatch.setattr(table, "update", lambda: updates.append(table))
+
+    def check_mounted():
+        for control in (layout, params_scroll, preview, table, confirm):
+            assert any(node is control for node in _walk(root))
+
+    def button(label):
+        return next(node for node in _walk(root)
+                    if callable(getattr(node, "on_click", None)) and _button_label(node) == label)
+
+    if layout._bib_narrow:
+        button("编辑参数…").on_click(None)
+        check_mounted()
+    button("来源信息与选项 ▸").on_click(None)
+    assert "来源追溯（可选）" in _labels(layout._bib_left)
+    check_mounted()
+    button("来源信息与选项 ▾").on_click(None)
+    assert "来源追溯（可选）" not in _labels(layout._bib_left)
+    check_mounted()
+
+    assert "sample099" in _labels(table) and "sample100" not in _labels(table)
+    first_row = table.controls[1].controls[0]
+    button("载入更多（还有 105 条）").on_click(None)
+    check_mounted()
+    assert "sample199" in _labels(table) and "sample200" not in _labels(table)
+    button("载入更多（还有 5 条）").on_click(None)
+    check_mounted()
+    assert "sample204" in _labels(table) and view.shown == 300
+    assert table.controls[1].controls[0] is first_row
+    assert not any("载入更多" in label for label in _labels(table))
+    assert updates == [table, table]
+
+    confirm.content._bib_confirm_btn.on_click(None)
+    check_mounted()
+    assert view.confirm_layer and "确认写入引用库？" in _labels(preview)
+    button("取消").on_click(None)
+    check_mounted()
+    assert not view.confirm_layer and "确认写入引用库？" not in _labels(preview)
+    assert view.state == "ready" and view._can_confirm()
+
+    confirm.content._bib_confirm_btn.on_click(None)
+    view._on_issue(type("Event", (), {"control": ft.TextField(value="anonymous-issue")})())
+    check_mounted()
+    assert not view.confirm_layer and "确认写入引用库？" not in _labels(preview)
+    assert confirm.content._bib_confirm_btn.disabled and not view._can_confirm()
+    assert not host.tasks and Path(db).read_bytes() == b""
+
+
 def test_write_passes_preview_sha_and_commits_once(tmp_path, monkeypatch):
     host = _Host(_db(tmp_path))
     view = BI.BibImportView(host)
@@ -373,6 +642,26 @@ def test_write_passes_preview_sha_and_commits_once(tmp_path, monkeypatch):
     assert len(commits) == 1 and "入藏" in commits[0][1]
     assert view.state == "success"
     assert view.commit and view.commit["committed"] is True
+
+
+def test_preview_and_write_use_updated_plus_merged_count(tmp_path, monkeypatch):
+    host = _Host(_db(tmp_path))
+    view = BI.BibImportView(host)
+    view.path = str(tmp_path / "in.bib")
+    preview = {"report": {"entries": 18, "new": 2, "updated": 9,
+                           "merged": 9, "conflicts": 0, "skipped": 0},
+               "changes": [{"key": "one", "status": "updated"}],
+               "db_sha256_before": "a" * 64}
+    write = {"report": {"entries": 18, "new": 2, "updated": 9,
+                         "merged": 9, "conflicts": 0, "skipped": 0},
+             "changes": [{"key": "one", "status": "updated"}],
+             "db_sha256_after": "b" * 64}
+    _install(monkeypatch, preview=preview, write=write)
+    asyncio.run(view._preview())
+    assert view._counts()["updated"] == 18
+    asyncio.run(view._write())
+    assert "18 条更新" in host.app.toasts[-1]
+    assert any("18 更新" in label for label in _labels(view._success_banner()))
 
 
 def test_import_success_result_links_to_version_sync(tmp_path):
@@ -415,6 +704,34 @@ def test_sha_mismatch_marks_stale_and_does_not_commit(tmp_path, monkeypatch):
     assert not view._can_confirm()
     assert any(event == "bib_import_write" and fields.get("ok") is False
                for event, fields in host.events)
+
+
+def test_missing_reply_sha_with_changed_local_db_is_discarded(tmp_path, monkeypatch):
+    host = _Host(_db(tmp_path))
+    view = BI.BibImportView(host)
+    view.path = str(tmp_path / "in.bib")
+    _install(monkeypatch, preview={"report": {"entries": 1, "new": 1},
+                                  "changes": [{"key": "x", "status": "new"}]})
+    fingerprints = iter(["a" * 64, "b" * 64])
+    monkeypatch.setattr(BI, "_db_fingerprint", lambda _path: next(fingerprints))
+    asyncio.run(view._preview())
+    assert view.payload is None
+    assert view.state == "empty"
+    assert not view._can_confirm()
+
+
+def test_missing_reply_and_unavailable_local_sha_cannot_be_ready(tmp_path, monkeypatch):
+    host = _Host(_db(tmp_path))
+    view = BI.BibImportView(host)
+    view.path = str(tmp_path / "in.bib")
+    _install(monkeypatch, preview={"report": {"entries": 1, "new": 1},
+                                  "changes": [{"key": "x", "status": "new"}]})
+    monkeypatch.setattr(BI, "_db_fingerprint", lambda _path: None)
+    asyncio.run(view._preview())
+    assert view.payload is None
+    assert view.state == "empty"
+    assert not view._can_confirm()
+    assert "库指纹" in view.dirty_reason
 
 
 def test_param_change_invalidates_preview(tmp_path, monkeypatch):
