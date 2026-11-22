@@ -30,6 +30,7 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 # StreamReader 默认单行上限 64KiB，超过会抛 ValueError 并让 GUI 误判 failed。
 # 统一放大到 16MiB；实际读取再用 read(64KiB) 分块兜底，见 run_call。
 STREAM_LIMIT = 16 * 1024 * 1024
+R3_VERIFY_MAX = 120
 
 _MAC_TOOL_DIRS = (
     "/Library/TeX/texbin",
@@ -573,14 +574,19 @@ def convert_call(
     args = ["--source", source, "--out", out]
     _append_flag(args, "--compile", compile_pdf)
     _append_flag(args, "--clean", clean)
-    if verify_plan:
-        args.append("--verify-plan")
-    elif verify_refs:
-        args.append("--verify-refs")
-    if verify_refs or verify_plan:
-        _append_opt(args, "--verify-max", verify_max)
-        _append_flag(args, "--verify-all-refs", verify_all_refs)
-        _append_flag(args, "--no-bibdb", no_bibdb)
+    if ai_taskbook_version == 3:
+        # R3 owns its citation scope. Ignore legacy global verify_* values and pass
+        # only the fixed per-operation cap consumed by R3 request_options.
+        _append_opt(args, "--verify-max", R3_VERIFY_MAX)
+    else:
+        if verify_plan:
+            args.append("--verify-plan")
+        elif verify_refs:
+            args.append("--verify-refs")
+        if verify_refs or verify_plan:
+            _append_opt(args, "--verify-max", verify_max)
+            _append_flag(args, "--verify-all-refs", verify_all_refs)
+            _append_flag(args, "--no-bibdb", no_bibdb)
     _append_flag(args, "--source-pdf", source_pdf)
     for flag, value in (
         ("--bib", bib), ("--metadata", metadata), ("--author", author), ("--name", name),
@@ -641,6 +647,17 @@ def _budget_arg(value):
         return max(0, int(text, 10))
     except ValueError:
         return None
+
+
+def r3_ai_budget_args(ai: dict | None) -> list[str]:
+    """Return the existing AI token budgets as CLI args for the R3 prepare call."""
+    from . import ai_prefs
+
+    article_budget, batch_budget = ai_prefs.r3_budget_limits(ai)
+    args: list[str] = []
+    args.extend(("--ai-budget-tokens", str(article_budget)))
+    args.extend(("--ai-batch-budget-tokens", str(batch_budget)))
+    return args
 
 
 def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
@@ -831,10 +848,15 @@ def ai_prepare_call(
 
 
 def ai_request_call(*, work_dir: str, taskbook: str = "", reply_out: str = "",
-                    timeout: int = 0, json_output: bool = False) -> EngineCall:
+                    timeout: int = 0, json_output: bool = False,
+                    taskbook_sha256: str = "") -> EngineCall:
     """直连 API 取结果（`request`）：与 Chat 通道走同一套后续解析，不自动采纳。"""
     args = _aiw_args(work_dir, "request")
     _append_opt(args, "--taskbook", str(taskbook or "").strip())
+    digest = str(taskbook_sha256 or "").strip().lower()
+    if digest and not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("任务书 SHA256 必须是 64 位十六进制值")
+    _append_opt(args, "--taskbook-sha256", digest)
     _append_opt(args, "--reply-out", str(reply_out or "").strip())
     if timeout and int(timeout) > 0:
         _append_opt(args, "--timeout", str(int(timeout)))
@@ -1276,17 +1298,18 @@ def bibdb_query_call(
 QUERY_MODES = ("key", "doi", "title")
 QUERY_MODE_LABELS = {"key": "key", "doi": "DOI", "title": "题名"}
 QUERY_FIELDS = ("author", "editor", "title", "booktitle", "journal",
-                "publisher", "year", "doi", "alias", "any")
+                "publisher", "year", "doi", "key", "alias", "any")
 QUERY_FIELD_LABELS = {
     "author": "作者", "editor": "编者", "title": "题名", "booktitle": "书名",
     "journal": "期刊", "publisher": "出版社", "year": "年份", "doi": "DOI",
-    "alias": "别名", "any": "任意",
+    "key": "key", "alias": "别名", "any": "任意",
 }
 QUERY_MATCH_MODES = ("contains", "prefix", "exact", "fuzzy")
 QUERY_MATCH_LABELS = {"contains": "包含", "prefix": "前缀", "exact": "精确", "fuzzy": "模糊"}
-QUERY_SORTS = ("relevance", "year", "author")
-QUERY_SORT_LABELS = {"relevance": "相关度", "year": "年份", "author": "作者"}
-QUERY_NO_FUZZY = ("year", "doi", "alias")
+QUERY_SORTS = ("relevance", "year", "author", "title")
+QUERY_SORT_LABELS = {"relevance": "相关度", "year": "年份", "author": "作者",
+                     "title": "题名"}
+QUERY_NO_FUZZY = ("year", "doi", "key", "alias")
 
 
 def _limit_value(raw, *, default: int = 20) -> int:
@@ -1354,6 +1377,7 @@ def bibdb_query_advanced_call(
     *,
     terms: list[tuple[str, str, str]] | list[dict],
     sort: str = "relevance",
+    sort_desc: bool | None = None,
     limit: int | str = 20,
     offset: int | None = None,
     strict: bool = False,
@@ -1380,15 +1404,17 @@ def bibdb_query_advanced_call(
     if not rows:
         raise ValueError("高级检索至少要填一行检索条件。")
     if sort not in QUERY_SORTS:
-        raise ValueError(f"未知的排序方式：{sort}（只认 relevance/year/author）")
+        raise ValueError(f"未知的排序方式：{sort}（只认 relevance/year/author/title）")
     args = ["query-advanced"]
     for field, value, mode in rows:
         if field not in QUERY_FIELDS:
-            raise ValueError(f"未知的检索字段：{field}（只认 10 个字段）")
+            raise ValueError(f"未知的检索字段：{field}（只认 11 个字段）")
         if mode not in QUERY_MATCH_MODES:
             raise ValueError(f"未知的匹配方式：{mode}（只认 contains/prefix/exact/fuzzy）")
         args += [f"--{field}", value, "--mode", f"{field}={mode}"]
     args += ["--sort", sort, "--limit", str(_limit_value(limit, default=20))]
+    if sort_desc is not None and sort != "relevance":
+        args.append("--sort-desc" if sort_desc else "--sort-asc")
     _append_offset(args, offset)
     args.append("--strict" if strict else "--min-score=0.75")
     _append_flag(args, "--bibtex", bibtex)

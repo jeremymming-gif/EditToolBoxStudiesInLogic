@@ -122,9 +122,16 @@ if [ "$MODE" = quick ]; then
     fi
   done
 else
+  # Canonical full-suite membership is every regular tests/test_*.py file.
+  # gen_docs.runner_test_files() uses the same filename glob; fail closed if the
+  # checkout is incomplete instead of treating an empty collection as green.
   for f in tests/test_*.py; do
     [ -f "$f" ] && FILES+=("$f")
   done
+fi
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "❌ 测试套件集合为空：Engine/tests/test_*.py 未匹配任何文件" >&2
+  exit 2
 fi
 
 # 日志留在临时目录：全绿就删掉，有红就留着并把路径打给用户（不然还得手工重跑才知道红在哪）

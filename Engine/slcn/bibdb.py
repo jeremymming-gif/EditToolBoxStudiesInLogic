@@ -60,6 +60,8 @@ r"""编辑部引用库（`bib_db`）：把「已核实的参考文献」沉淀�
   4. 内容完全相同的不同 key → 合并为一条，另一个 key 若全库唯一则进 `aliases`；
   5. 未核实条目被已核实内容命中 → 升级为 `verified`（并保留旧字段快照）；
   6. `force=True`（CLI `--force`）才允许覆盖已核实条目，且旧字段全量进 `conflicts`。
+  7. 未见过的 key 按 DOI 命中唯一记录时沿用该记录的冲突判定；命中多条记录时跳过
+     并列出候选 key，不自动选择或新增。
 
 查询（为什么按这个优先级）
 --------------------------
@@ -1290,6 +1292,7 @@ class ImportReport:
         self.findings = 0           # bibparse 报的语法发现数（不阻断导入，如实计数）
         self.skipped: Counter[str] = Counter()
         self.warnings: list[str] = []
+        self.change_rows: list[dict] = []
 
     def add_result(self, result: UpsertResult) -> None:
         if result.status == "skipped":
@@ -1313,6 +1316,7 @@ class ImportReport:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         self.skipped.update(other.skipped)
         self.warnings.extend(other.warnings)
+        self.change_rows.extend(other.change_rows)
 
     def summary(self) -> dict:
         return {
@@ -1343,7 +1347,7 @@ SEARCH_FIELDS: tuple[str, ...] = (
 #: 文本字段的四种匹配模式（默认 `contains`）
 SEARCH_MODES: tuple[str, ...] = ("contains", "prefix", "exact", "fuzzy")
 #: 排序方式（spec §2.6）
-SEARCH_SORTS: tuple[str, ...] = ("relevance", "year", "author")
+SEARCH_SORTS: tuple[str, ...] = ("relevance", "year", "author", "title")
 #: 模糊检索默认下限与 `--strict` 的下限（旧 `query_title` 的 0.90 不放宽）
 SEARCH_MIN_SCORE_DEFAULT = 0.75
 SEARCH_MIN_SCORE_STRICT = 0.90
@@ -1467,6 +1471,7 @@ class SearchSpec:
     limit: int = 20
     min_score: float = SEARCH_MIN_SCORE_DEFAULT
     offset: int = 0
+    sort_desc: bool | None = None
 
     def __post_init__(self) -> None:
         terms = tuple(self.terms)
@@ -2477,12 +2482,42 @@ class Store:
         sha = content_sha256(entry_type, fields)
         source = _clean_source(source, now)
 
+        # 未见过的 key 若 DOI 命中多条记录，不能让后续内容命中或新建分支替人选定。
+        incoming_doi = normalize_doi(fields.get("doi") or "") or _doi_from_url(
+            fields.get("url"))
+        if key not in self._by_key and incoming_doi:
+            doi_hit_keys = []
+            for candidate in self._by_key.values():
+                candidate_fields = (candidate.get("fields")
+                                    if isinstance(candidate.get("fields"), dict) else {})
+                candidate_doi = normalize_doi(candidate_fields.get("doi") or "") \
+                    or _doi_from_url(candidate_fields.get("url"))
+                if candidate_doi == incoming_doi:
+                    doi_hit_keys.append(self._key_of(candidate))
+            if len(doi_hit_keys) > 1:
+                candidates = "、".join(sorted(doi_hit_keys))
+                return UpsertResult(
+                    "skipped", reason=(f"DOI {incoming_doi} 命中多条现有记录，"
+                                       f"无法自动判断：{candidates}"))
+
         # ① 同内容 → 并来源（幂等；也吸收「不同期不同 key 指同一作品」的重复）
         content_hit = self._by_content.get(sha)
         if content_hit is not None:
             return self._merge_into(content_hit, source, verified, now)
         # ② 同 key → 冲突 / 覆盖 / key 撞车
         existing = self._by_key.get(key)
+        if existing is None:
+            if incoming_doi:
+                doi_hits = []
+                for candidate in self._by_key.values():
+                    candidate_fields = (candidate.get("fields")
+                                        if isinstance(candidate.get("fields"), dict) else {})
+                    candidate_doi = normalize_doi(candidate_fields.get("doi") or "") \
+                        or _doi_from_url(candidate_fields.get("url"))
+                    if candidate_doi == incoming_doi:
+                        doi_hits.append(candidate)
+                if len(doi_hits) == 1:
+                    existing = doi_hits[0]
         if existing is not None:
             return self._upsert_existing(existing, entry_type, fields, sha,
                                          source, verified, force, now)
@@ -2562,7 +2597,12 @@ class Store:
             self.dirty = True
             return UpsertResult("updated", record["key"])
 
-        if not works_match(record.get("fields") or {}, fields):
+        old_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        old_doi = normalize_doi(old_fields.get("doi") or "") or _doi_from_url(
+            old_fields.get("url"))
+        new_doi = normalize_doi(fields.get("doi") or "") or _doi_from_url(
+            fields.get("url"))
+        if not works_match(old_fields, fields) and not (old_doi and old_doi == new_doi):
             # 同 key 但**不是同一作品**（paper-local key 撞车）→ 各留各的
             return self._disambiguate(self._key_of(record), entry_type, fields, sha,
                                       source, verified, now)
@@ -2604,19 +2644,46 @@ class Store:
         report.findings = len(findings)
         now = _now_iso()
         base_source = _clean_source(source, now)
+        source_id = "|".join(str(base_source.get(name) or "")
+                             for name in ("issue", "slug", "file")) or "bib"
         seen_keys: set[str] = set()
+
+        def add_parse_skip(entry, *, code: str, reason: str, key: str = "") -> None:
+            report.skipped[reason] += 1
+            report.change_rows.append({
+                "change_id": f"{source_id}:line:{entry.line}:{code}",
+                "line": entry.line,
+                "skip_code": code,
+                "key": "",
+                "incoming_key": key,
+                "identity": "",
+                "status": "skipped",
+                "reason": reason,
+                "verified": False,
+                "title": str(entry.fields.get("title") or ""),
+                "author": str(entry.fields.get("author")
+                               or entry.fields.get("editor") or ""),
+                "year": str(entry.fields.get("year") or ""),
+                "sources_added": 0,
+                "conflicts_added": 0,
+                "conflict_fields": [],
+                "field_diff": {},
+            })
+
         for entry in entries:
-            if entry.broken:
-                report.skipped["条目结构损坏（花括号/引号不配平）"] += 1
-                continue
             key = (entry.key or "").strip()
             if not key:
-                report.skipped["没有 key"] += 1
+                add_parse_skip(entry, code="missing_key", reason="没有 key")
+                continue
+            if entry.broken:
+                add_parse_skip(entry, code="malformed_entry",
+                               reason="条目结构损坏（花括号/引号不配平）", key=key)
                 continue
             if key in seen_keys:
                 # BibTeX 语义：同一份 bib 里重复的 key 只有第一条生效（往期 bib 里确实有
                 # 这种情况，如 2024年第3期(76)/06 的 reference.bib 拼接了两版）。
-                report.skipped["同一份 bib 里 key 重复"] += 1
+                add_parse_skip(entry, code="duplicate_key",
+                               reason="同一份 bib 里 key 重复", key=key)
                 continue
             seen_keys.add(key)
             sha = content_sha256(entry.etype, entry.fields)
@@ -2624,14 +2691,80 @@ class Store:
             entry_source["key"] = key
             entry_source["entry_sha256"] = sha
             record, processed_sha = self._processed_sha(entry_source)
-            if record is not None and processed_sha == sha and not force:
-                # 这条来源上一轮已经按**同样的内容**处理过（重跑种子库的常态）：
-                # 直接记「已存在」并跳过，不再触碰库 —— 保证同输入重跑逐字节相同。
+            pending_same_conflict = bool(record is not None and any(
+                isinstance(conflict, dict)
+                and conflict.get("incoming_sha256") == sha
+                and conflict_is_pending(conflict)
+                for conflict in record.get("conflicts") or []
+            ))
+            if record is not None and processed_sha == sha and not force \
+                    and not pending_same_conflict:
+                # 这条来源上一轮已按同样内容处理，通常静默并入以保持种子导入幂等。
+                # 但待裁决冲突必须继续出现在预览明细中，不能被「已处理」快路径隐藏。
                 report.add_result(UpsertResult("merged", str(record.get("key") or "")))
                 continue
             result = self.import_entry(key, entry.etype, entry.fields, entry_source,
                                        verified=verified, force=force, now=now)
             report.add_result(result)
+            incoming_doi = normalize_doi(entry.fields.get("doi") or "") \
+                or _doi_from_url(entry.fields.get("url"))
+            if result.status == "skipped":
+                report.change_rows.append({
+                    "change_id": f"{source_id}:line:{entry.line}:upsert_skipped",
+                    "line": entry.line,
+                    "skip_code": "upsert_skipped",
+                    "key": result.key or key,
+                    "incoming_key": key,
+                    "identity": f"doi:{incoming_doi}" if incoming_doi else "",
+                    "status": "skipped",
+                    "reason": result.reason,
+                    "verified": False,
+                    "title": str(entry.fields.get("title") or ""),
+                    "author": str(entry.fields.get("author")
+                                   or entry.fields.get("editor") or ""),
+                    "year": str(entry.fields.get("year") or ""),
+                    "sources_added": 0,
+                    "conflicts_added": 0,
+                    "conflict_fields": [],
+                    "field_diff": {},
+                })
+            if result.status in {"new", "updated", "conflict"} or (
+                    result.status == "merged" and result.sources_added):
+                record = self.get(result.key)
+                fields = (record.get("fields") if isinstance(record, dict)
+                          and isinstance(record.get("fields"), dict) else {})
+                conflict_fields: list[str] = []
+                field_diff: dict[str, dict] = {}
+                if result.status == "conflict" and record is not None:
+                    for conflict in reversed(record.get("conflicts") or []):
+                        if (isinstance(conflict, dict)
+                                and conflict.get("incoming_sha256") == sha):
+                            stored_diff = conflict.get("field_diff")
+                            if isinstance(stored_diff, dict):
+                                field_diff = {
+                                    str(name): {
+                                        "existing": values.get("existing"),
+                                        "incoming": values.get("incoming"),
+                                    }
+                                    for name, values in stored_diff.items()
+                                    if isinstance(values, dict)
+                                }
+                            conflict_fields = sorted(field_diff)
+                            break
+                report.change_rows.append({
+                    "key": result.key,
+                    "incoming_key": key,
+                    "identity": f"doi:{incoming_doi}" if incoming_doi else "",
+                    "status": result.status,
+                    "verified": bool(record and record.get("verified") is True),
+                    "title": str(fields.get("title") or ""),
+                    "author": str(fields.get("author") or fields.get("editor") or ""),
+                    "year": str(fields.get("year") or ""),
+                    "sources_added": result.sources_added,
+                    "conflicts_added": int(bool(result.conflict)),
+                    "conflict_fields": conflict_fields,
+                    "field_diff": field_diff,
+                })
         return report
 
     # -- 查询 ---------------------------------------------------------------
@@ -3072,7 +3205,26 @@ class Store:
             else:
                 total += 1
                 hits.append(_search_hit(record, sum(scores) / len(scores), matched))
-        hits.sort(key=lambda hit: _search_sort_key(hit, spec.sort, strictness))
+        if spec.sort == "relevance":
+            hits.sort(key=lambda hit: _search_sort_key(hit, spec.sort, strictness))
+        else:
+            def sort_value(hit: dict):
+                fields = (hit["record"].get("fields")
+                          if isinstance(hit["record"].get("fields"), dict) else {})
+                if spec.sort == "title":
+                    return normalize_search_text(fields.get("title") or "")
+                if spec.sort == "year":
+                    year = hit.get("year") or ""
+                    return int(year) if str(year).isdigit() else None
+                return normalize_search_text(first_author_surname(
+                    fields.get("author") or fields.get("editor") or ""))
+
+            present = [hit for hit in hits if sort_value(hit) not in (None, "")]
+            missing = [hit for hit in hits if sort_value(hit) in (None, "")]
+            present.sort(key=lambda hit: str(hit.get("key") or ""))
+            descending = spec.sort_desc if spec.sort_desc is not None else spec.sort == "year"
+            present.sort(key=sort_value, reverse=descending)
+            hits = present + missing
         page = hits[spec.offset:spec.offset + spec.limit]
         count = len(page)
         result = {

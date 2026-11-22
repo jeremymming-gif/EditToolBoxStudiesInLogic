@@ -44,6 +44,14 @@ SHORTCUTS = [
     {"keys": "Ctrl+1…5", "action": "page", "label": "切换页面（第 1–5 页）"},
 ]
 PAGE_KEYS = ("home", "single", "issue", "bib", "settings", "help")
+SETTINGS_CATEGORIES = ("通用", "AI", "引用库")
+
+
+def settings_category_note(category: str, note: str) -> str:
+    """给设置卡片说明标明所属类别，类别名称与软件设置 IA 保持一致。"""
+    if category not in SETTINGS_CATEGORIES:
+        raise ValueError(f"未知设置类别：{category}")
+    return f"{category}设置 · {note}"
 
 
 # ── 全局日志 ─────────────────────────────────────────────────────────────
@@ -348,7 +356,8 @@ def envcheck_card(page) -> ft.Control:
     t = page.t
     first_run = not bool(page.app.store.get("env_check_done", False))
     rows: list = [
-        C.section_title("环境检查", t, note="只读检查本机环境（不写文件）"),
+        C.section_title("环境检查", t,
+                        note=settings_category_note("通用", "只读检查本机环境（不写文件）")),
         ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.secondary_button("运行环境检查",
                                lambda e: page.page.run_task(page._envcheck_task), t,
@@ -393,7 +402,8 @@ def tray_card(page) -> ft.Control:
     switch = C.switch(t, value=bool(getattr(app, "tray_enabled", False)),
                       disabled=not winplat.IS_WIN, on_change=_toggle)
     return C.card(ft.Column(spacing=t.sp("2"), controls=[
-        C.section_title("窗口与托盘", t, note="仅 Windows"),
+        C.section_title("窗口与托盘", t,
+                        note=settings_category_note("通用", "仅 Windows")),
         ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.text("关闭窗口时最小化到托盘", t, "body"),
             ft.Container(expand=True),
@@ -475,9 +485,8 @@ def _settings_summary(store) -> str:
         "bib_view": data.get("bib_view"),
         "options": {key: bool(value) for key, value in options.items()
                     if isinstance(key, str) and isinstance(value, bool)},
-        "bibdb": {key: bibdb[key] for key in
-                  ("verify_max", "verify_plan", "verify_all_refs", "lookup_enabled")
-                  if key in bibdb},
+        "bibdb": {"lookup_enabled": bibdb["lookup_enabled"]}
+        if "lookup_enabled" in bibdb else {},
         "ai": {
             "enabled": bool(ai.get("enabled")),
             "key_set": bool(str(ai.get("key") or "").strip()),
@@ -486,7 +495,6 @@ def _settings_summary(store) -> str:
             "thinking": bool(ai.get("thinking")),
             "article_budget_tokens": ai.get("article_budget_tokens"),
             "batch_budget_tokens": ai.get("batch_budget_tokens"),
-            "verify_max": ai.get("verify_max"),
         },
     }
     return json.dumps(summary, ensure_ascii=False, indent=2)
@@ -665,7 +673,9 @@ def _export(page) -> None:
 def diagnostics_card(page) -> ft.Control:
     t = page.t
     rows: list = [
-        C.section_title("诊断包", t, note="默认只含版本与状态；附加内容需勾选并预览"),
+        C.section_title("诊断包", t,
+                        note=settings_category_note(
+                            "通用", "默认只含版本与状态；附加内容需勾选并预览")),
         _kv("设置文件", str(page.app.store.path), t),
         _kv("诊断目录", str(diagnosis_dir(page.app)), t),
         _kv("日志", f"内存最近 {log_buffer(page.app).count()} 行（上限 {LOG_LIMIT}）", t),
@@ -710,7 +720,9 @@ def logs_card(page) -> ft.Control:
                                 height=t.px(180), padding=0)
     page.log_slot = ft.Container(content=page.log_list)
     controls = [
-        C.section_title("日志", t, note=f"内存最近 {LOG_LIMIT} 行；导出诊断包可留档"),
+        C.section_title("日志", t,
+                        note=settings_category_note(
+                            "通用", f"内存最近 {LOG_LIMIT} 行；导出诊断包可留档")),
         # 单行工具条：标签内联，下拉与按钮同为 control_h 高（用户 m02816：不许高矮不齐）。
         ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.text("级别", t, "caption", t.palette.text_muted),
@@ -859,7 +871,8 @@ def probe_ai_api(base: str, key: str, model: str, timeout: float = 15.0) -> tupl
 def proxy_card(page) -> ft.Control:
     t = page.t
     rows: list = [
-        C.section_title("网络代理", t, note="跟随系统环境变量；改后重启外壳"),
+        C.section_title("网络代理", t,
+                        note=settings_category_note("AI", "跟随系统环境变量；改后重启外壳")),
         *[_kv(row["name"], row["value"], t) for row in proxy_rows()],
         ft.Row(spacing=t.sp("1"), controls=[
             C.secondary_button("测试 AI 连接", lambda e: test_connection(page), t,
@@ -939,7 +952,8 @@ def button_palette_row(page) -> ft.Control:
 def advanced_card(page) -> ft.Control:
     t = page.t
     rows: list = [
-        C.section_title("高级", t),
+        C.section_title("高级", t,
+                        note=settings_category_note("通用", "路径与本机设置文件维护")),
         C.option_row("首次环境检查已完成", "兼容旧版；失败不阻塞启动", t,
                      icon="CHECK_CIRCLE_OUTLINE",
                      checked=bool(page.app.store.get("env_check_done", False)),

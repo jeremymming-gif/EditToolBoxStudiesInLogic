@@ -273,14 +273,15 @@ def test_bridge_offset_rejects_bad_values():
 # ── 同条件续页：offset 链 0 → 100 → 200，limit 恒为 100 ────────────────
 def test_load_more_uses_offset_chain_same_condition(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
 
     asyncio.run(view._run())
     assert view._loaded == 100 and view._total == LIB_TOTAL
     assert view._has_more is True and view._db_sha == SHA_A
     assert view._cond == view._cond_snapshot()
     assert view.rows[0]["key"] == "k000"
+    view._build_width = view._design_width()
+    assert any(getattr(node, "_bib_list", False) for node in _walk(view._table()))
     texts = _texts(view.build())
     assert "已载入 100 / 共 250 条" in texts
     assert "载入更多" in texts
@@ -289,6 +290,7 @@ def test_load_more_uses_offset_chain_same_condition(monkeypatch):
     _run_tasks(host)
     assert view._loaded == 200 and len(view._items) == 200 == len(view.hits)
     assert view._cond == view._cond_snapshot()
+    assert any(getattr(node, "_bib_list", False) for node in _walk(view._table()))
     assert "已载入 200 / 共 250 条" in _texts(view.build())
 
     view.load_more()
@@ -309,17 +311,33 @@ def test_load_more_uses_offset_chain_same_condition(monkeypatch):
     assert host.page.tasks == [] and len(fake.calls) == 3
 
 
+def test_165_result_final_page_keeps_list_view_and_updates_footer(monkeypatch):
+    _, host, view = _prepared(monkeypatch, total=165)
+    view.adv_values["title"] = "分页"
+    asyncio.run(view._run())
+    view._build_width = view._design_width()
+    assert any(getattr(node, "_bib_list", False) for node in _walk(view._table()))
+    assert "已载入 100 / 共 165 条" in _texts(view.build())
+
+    view.load_more()
+    _run_tasks(host)
+    assert view._loaded == 165 and view._has_more is False
+    tree = view.build()
+    assert any(getattr(node, "_bib_list", False) for node in _walk(view._table()))
+    assert "已全部载入（共 165 条）" in _texts(tree)
+    assert "载入更多" not in _texts(tree)
+
+
 # ── 条件变化：清空已载入/选择，再走首查 offset=0 ──────────────────────
 def test_condition_change_resets_paging_and_selection(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     _load_pages(host, view, 2)
     assert view._loaded == 200
     view.selected_key = "k150"
 
     fake.total = 30
-    view._on_text(SimpleNamespace(control=SimpleNamespace(value="新条件")))
+    view._on_advanced_field("title", SimpleNamespace(control=SimpleNamespace(value="新条件")))
     assert view._loaded == 0 and view._items == [] and view.rows == []
     assert view.loaded is False and view._has_more is False
     assert view.selected_key is None and view._cond is None
@@ -330,10 +348,9 @@ def test_condition_change_resets_paging_and_selection(monkeypatch):
     assert "已全部载入（共 30 条）" in _texts(view.build())
 
 
-def test_mode_and_sort_change_reset_paging(monkeypatch):
+def test_sort_and_identifier_conditions_reset_paging(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     _load_pages(host, view, 2)
     assert view._loaded == 200
 
@@ -345,20 +362,22 @@ def test_mode_and_sort_change_reset_paging(monkeypatch):
     assert view._loaded == 100
     assert fake.calls[-1][fake.calls[-1].index("--offset") + 1] == "0"
 
-    view._on_mode(SimpleNamespace(data="key"))
+    view.adv_values["title"] = ""
+    view.adv_values["key"] = "k007"
+    view.query()
     assert view._loaded == 0 and view._items == [] and view.loaded is False
-    assert host.page.tasks, "方式变化应重置分页并触发新首查"
+    assert host.page.tasks, "条件变化后可直接执行新的首查"
     _run_tasks(host)
     last = fake.calls[-1]
-    assert "--key" in last and "--offset" not in last
-    assert view._loaded == 0 and view.loaded is True  # key "分页" 无命中
+    assert last[0] == "query-advanced" and "--key" in last
+    assert last[last.index("--offset") + 1] == "0"
+    assert view._loaded == 100 and view.loaded is True
 
 
 # ── 迟到结果 / 取消：按世代丢弃，可重跑不串结果 ────────────────────────
 def test_cancel_discards_late_result_and_allows_rerun(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
 
     def cancel_in_flight() -> None:
         fake.on_call = None
@@ -378,8 +397,7 @@ def test_cancel_discards_late_result_and_allows_rerun(monkeypatch):
 
 def test_late_result_after_condition_change_is_dropped(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
 
     def reset_in_flight() -> None:
         fake.on_call = None
@@ -396,8 +414,7 @@ def test_late_result_after_condition_change_is_dropped(monkeypatch):
 # ── 库在分页之间变化：拒绝合并 + 提示 + 刷新入口 ──────────────────────
 def test_sha_change_refuses_merge_with_refresh_entry(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     asyncio.run(view._run())
     assert view._loaded == 100 and view._db_sha == SHA_A
 
@@ -424,8 +441,7 @@ def test_sha_change_refuses_merge_with_refresh_entry(monkeypatch):
 
 def test_page_offset_mismatch_is_rejected(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     asyncio.run(view._run())
 
     fake.page_offset = 150  # 引擎返回的页 offset 与已载入 100 不一致
@@ -438,21 +454,22 @@ def test_page_offset_mismatch_is_rejected(monkeypatch):
 
 
 # ── key/doi 单条定位：没有 page、不翻页 ───────────────────────────────
-def test_single_lookup_has_no_paging(monkeypatch):
+def test_exact_key_uses_unified_advanced_paging_contract(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "key"
-    view.text = "k007"
+    view.adv_values["key"] = "k007"
     asyncio.run(view._run())
-    assert "--offset" not in fake.calls[-1]
-    assert view._loaded == 1 and view._total == 1
-    assert view.total_matched == 1 and view._has_more is False
+    assert fake.calls[-1][0] == "query-advanced"
+    assert "--key" in fake.calls[-1]
+    assert fake.calls[-1][fake.calls[-1].index("--offset") + 1] == "0"
+    assert view._loaded == 100 and view._total == LIB_TOTAL
+    assert view._has_more is True
     assert view.selected_key is None
     texts = _texts(view.build())
-    assert "已全部载入（共 1 条）" in texts
-    assert "载入更多" not in texts
+    assert "已载入 100 / 共 250 条" in texts
+    assert "载入更多" in texts
 
     view.load_more()
-    assert host.page.tasks == [] and len(fake.calls) == 1
+    assert host.page.tasks and len(fake.calls) == 1
 
 
 # ── 高级检索：page 分页、排序变化重置并换 --sort ──────────────────────
@@ -487,8 +504,7 @@ def test_advanced_query_pages_and_sort_resets(monkeypatch):
 # ── 第 201 条：跨页选中 / 引擎 bibtex / 按 key 转编辑 ─────────────────
 def test_201st_row_uses_engine_identity(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     _load_pages(host, view, 3)
     assert len(view.rows) == 250
 
@@ -515,8 +531,7 @@ def test_201st_row_uses_engine_identity(monkeypatch):
 
 def test_copy_bibtex_fetches_from_engine_when_hit_lacks_it(monkeypatch):
     fake, host, view = _prepared(monkeypatch)
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     _load_pages(host, view, 3)
 
     hit = dict(_hit(201))
@@ -543,8 +558,7 @@ def test_query_copy_and_paging_never_write(monkeypatch):
     for name in WRITE_NAMES:
         monkeypatch.setattr(EB, name, _recorder(name))
 
-    view.mode = "title"
-    view.text = "分页"
+    view.adv_values["title"] = "分页"
     _load_pages(host, view, 2)
     view._row_clicked(view.rows[150])
     hit = view._selected_hit()

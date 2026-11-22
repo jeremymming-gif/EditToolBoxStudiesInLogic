@@ -389,9 +389,11 @@ def test_360_filter_row_wraps_without_fixed_widths():
     assert field.expand is True and field.width is None
     assert isinstance(box.content, ft.Column)
     rows = list(box.content.controls)
-    assert len(rows) == 3 and all(isinstance(row, ft.Row) for row in rows)
-    texts = _texts(box)
-    assert "重新查询" in texts and "高级检索" in texts
+    assert len(rows) >= 8
+    assert all(isinstance(row, ft.Row) for row in rows[1:7])
+    labels = [getattr(node, "content", None) for node in _walk(box)
+              if isinstance(node, (ft.FilledButton, ft.TextButton))]
+    assert "重新查询" in labels and "增加条件" in labels
 
 
 def test_wide_layout_keeps_single_row_and_360_detail():
@@ -399,7 +401,7 @@ def test_wide_layout_keeps_single_row_and_360_detail():
     _select(view)
     field = getattr(view._filter(), "_bib_filter_field", None)
     assert isinstance(field, ft.TextField)
-    assert field.width == 352 and not field.expand
+    assert field.width is None and field.expand is True
     body = view._body()
     panels = [node for node in _walk(body)
               if getattr(node, "_bib_detail_panel", False)]

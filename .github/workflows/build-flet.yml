@@ -173,7 +173,9 @@ jobs:
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$h  $($_.Name)"
           }
-          $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
+          # 用 LF 和无 BOM 的 UTF-8，保留中文文件名并兼容 shasum。
+          $manifest = ($lines -join "`n") + "`n"
+          $manifest | Set-Content -Encoding utf8NoBOM -NoNewline "$pkg/sha256.txt"
           $zip = "EditToolBox-$V-Windows-x64.zip"
           Compress-Archive -Path "$pkg/*" -DestinationPath $zip -Force
           $zhash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
@@ -278,6 +280,10 @@ jobs:
           test -n "$APPDIR"
           PLIST="$APPDIR/Contents/Info.plist"
           PB=/usr/libexec/PlistBuddy
+          # 外层应用标识使用固定 ASCII 值，保留中文应用名。
+          BUNDLE_ID=io.github.jeremymming-gif.edittoolboxstudiesinlogic
+          $PB -c "Set :CFBundleIdentifier $BUNDLE_ID" "$PLIST" 2>/dev/null \
+            || $PB -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$PLIST"
           # 重复双击不要开出第二个实例
           $PB -c "Add :LSMultipleInstancesProhibited bool true" "$PLIST" 2>/dev/null \
             || $PB -c "Set :LSMultipleInstancesProhibited true" "$PLIST"
@@ -286,7 +292,7 @@ jobs:
             $PB -c "Set :$key $V" "$PLIST" 2>/dev/null \
               || $PB -c "Add :$key string $V" "$PLIST"
           done
-          plutil -p "$PLIST" | grep -E 'LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
+          plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
 
       - name: macOS 重签封条（launcher + 外层 ad-hoc，不 --deep）
         if: matrix.platform == 'macos'

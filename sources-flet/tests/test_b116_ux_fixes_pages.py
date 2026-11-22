@@ -75,7 +75,7 @@ def test_issue_log_reserve_follows_dock_and_drag():
 
 
 # ── 3. 清理确认：完整路径 + 灰底灰字禁用 + 520 宽 ─────────────────────
-def test_cleanup_single_entry_has_no_confirm_ui():
+def test_cleanup_single_entry_scans_before_showing_confirmation():
     app = _FakeApp()
     page = P.IssuePage(app)
     page.build()
@@ -85,7 +85,7 @@ def test_cleanup_single_entry_has_no_confirm_ui():
                         "count": 18, "ts": "2026-11-04 11:04:00"}
     shown: list = []
     app.page.show_dialog = lambda d: shown.append(d)
-    assert page._primary_label("cleantemp") == "清理临时文件"
+    assert page._primary_label("cleantemp") == "扫描本期"
     page._primary_action("cleantemp")
     assert shown == [], "不再有 520 危险确认框/输入「清理」"
     assert page._cleanup.phase == "scanning"
@@ -99,8 +99,8 @@ def test_cleanup_single_entry_has_no_confirm_ui():
         return out
 
     texts = _all_texts(page._cleanup.params())
-    assert any("自动校验 + 回收" in value for value in texts), texts
-    assert any("不再影响本入口" in value for value in texts), texts
+    assert any("扫描不会移动文件" in value for value in texts), texts
+    assert len(texts) == 1, texts
 
 
 def test_danger_button_disabled_style_is_gray_not_red():

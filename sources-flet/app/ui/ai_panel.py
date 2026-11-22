@@ -711,7 +711,6 @@ class AiSettings:
                          on_change=lambda e: self._save({"thinking": bool(e.control.value)})),
             self._budget_row("article_budget_tokens", "单篇预算 tokens", ai),
             self._budget_row("batch_budget_tokens", "批量预算 tokens", ai),
-            self._budget_row("verify_max", "单篇核实条数（0 = 不限）", ai),
             C.text("预算在发请求前检查：超限即退出（退出码 2），不会发起请求。",
                    t, "caption", p.text_faint),
         ]

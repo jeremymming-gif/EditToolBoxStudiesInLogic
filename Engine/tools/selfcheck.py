@@ -139,15 +139,17 @@ def full_test_preflight() -> tuple[bool, list[str], dict]:
     return not missing, missing, inputs
 
 
-def check_tests(level: str, env_extra: dict[str, str] | None = None) -> None:
+def check_tests(level: str, env_extra: dict[str, str] | None = None) -> bool:
     rc, out = run(["bash", os.path.join(ENGINE, "tools", "run_engine_tests.sh"), level],
                   env_extra=env_extra)
     tail = [ln for ln in out.splitlines() if "汇总" in ln or "❌" in ln or "✅" in ln]
     if rc == 0:
         print(f"PASS  引擎套件（{level}）：{tail[-1].strip() if tail else 'rc=0'}")
+        return True
     else:
         FAILS.append(f"引擎套件（{level}）红：{tail[-2:] if tail else out[-500:]}")
         print(f"FAIL  引擎套件（{level}）")
+        return False
 
 
 def check_docs(strict_tests: bool = False,
@@ -430,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     check_imports()
     nested = os.environ.get("SLCN_SELFCHECK_NESTED") == "1"
     full_blocked = False
+    full_runner_failed = False
     evidence_dir = None
     evidence_env = {"SLCN_TEST_RESULT_MANIFEST": "", "SLCN_TEST_INPUTS_SHA256": ""}
     if args.full and not args.skip_tests and not nested:
@@ -459,7 +462,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if not args.skip_tests and not nested and not full_blocked:
-            check_tests("full" if args.full else "quick", env_extra=evidence_env)
+            tests_passed = check_tests("full" if args.full else "quick", env_extra=evidence_env)
+            full_runner_failed = args.full and not tests_passed
         elif not args.skip_tests and nested:
             SKIPS.append("引擎套件（嵌套调用时跳过，防递归）")
             print("SKIP  引擎套件（嵌套调用，防递归）")
@@ -468,7 +472,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         try:
             if not args.skip_docs and not nested and not full_blocked:
-                check_docs(strict_tests=_strict_docs, env_extra=evidence_env)
+                if full_runner_failed:
+                    check_docs(strict_tests=False, env_extra=evidence_env)
+                    print("NOT_RUN  严格测试计数未执行（full runner 已失败；避免重复运行长套件）")
+                else:
+                    check_docs(strict_tests=_strict_docs, env_extra=evidence_env)
             elif not args.skip_docs and nested:
                 SKIPS.append("文档看门狗（嵌套调用时跳过）")
                 print("SKIP  文档看门狗（嵌套调用，防递归）")

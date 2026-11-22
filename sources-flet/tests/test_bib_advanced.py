@@ -74,11 +74,25 @@ def test_advanced_skips_blank_rows_and_rejects_all_blank(engine):
         EB.bibdb_query_advanced_call(terms=[{"field": "author", "value": " ", "mode": "contains"}])
 
 
+def test_advanced_accepts_title_sort_and_direction(engine):
+    args = args_of(EB.bibdb_query_advanced_call(
+        terms=[("title", "x", "contains")], sort="title", sort_desc=True))
+    assert args[args.index("--sort") + 1] == "title"
+    assert "--sort-desc" in args
+    asc = args_of(EB.bibdb_query_advanced_call(
+        terms=[("title", "x", "contains")], sort="title", sort_desc=False))
+    assert "--sort-asc" in asc
+
+
 def test_advanced_rejects_bad_field_mode_sort(engine):
     with pytest.raises(ValueError, match="未知的排序方式"):
-        EB.bibdb_query_advanced_call(terms=[("title", "x", "contains")], sort="title")
+        EB.bibdb_query_advanced_call(terms=[("title", "x", "contains")], sort="typo")
+    key_call = EB.bibdb_query_advanced_call(terms=[("key", "Fine1975", "exact")])
+    assert "--key" in args_of(key_call)
+    alias_call = EB.bibdb_query_advanced_call(terms=[("alias", "Fine1975", "exact")])
+    assert "--alias" in args_of(alias_call)
     with pytest.raises(ValueError, match="未知的检索字段"):
-        EB.bibdb_query_advanced_call(terms=[("key", "Fine1975", "exact")])
+        EB.bibdb_query_advanced_call(terms=[("not-a-field", "x", "exact")])
     with pytest.raises(ValueError, match="未知的匹配方式"):
         EB.bibdb_query_advanced_call(terms=[("title", "x", "regex")])
 

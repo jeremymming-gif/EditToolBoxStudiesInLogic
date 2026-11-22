@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 # ── 直连 API 默认值（与任务书 P6-2 R2 一致） ────────────────────────────
 DEFAULT_BASE = "https://api.deepseek.com/v1"
@@ -24,6 +25,19 @@ DEFAULT_PROTOCOL = "chat"
 PROTOCOLS = ("chat", "responses")
 DEFAULT_ARTICLE_BUDGET = 30000
 DEFAULT_BATCH_BUDGET = 1000000
+# Keep the R3 UI boundary aligned with Engine/slcn/refmark.py.
+R3_VERIFY_MAX = 120
+_R3_PENDING_RE = re.compile(r"待核条目\s*(\d+)\s*条")
+_R3_AUTHORITATIVE_PENDING_RE = re.compile(
+    r"(?m)^- 可用材料：待核条目\s*(\d+)\s*条(?:[，。]|$)"
+)
+_R3_FILLABLE_HEADING_RE = re.compile(
+    r"(?m)^####\s+(.+?)\s+·\s+确认为同一来源后可按原键交回完整条目\s*$"
+)
+_R3_UNCERTAIN_MARKERS = (
+    "判不出对应的条目键", "未识别部分", "无法识别可核引用",
+    "编号→条目映射判不出/判不全", "未取得正文，无法识别可核引用",
+)
 
 # ── 协同暂存（与 Engine/slcn/coop.py 同口径；旧 Tk 壳文件属历史） ──────
 STATE_NAME = "_AI协同状态.json"
@@ -98,14 +112,51 @@ def from_store(store) -> dict:
 
 
 def save(store, patch: dict) -> dict:
-    """只写白名单键；返回落盘后的完整 AI 段。"""
-    current = from_store(store)
+    """只更新明确提供的 AI 键；未知和旧字段保持原样。"""
+    current = raw_from_store(store)
     for key, value in (patch or {}).items():
         if key in AI_DEFAULTS:
             current[key] = value
-    normalized = normalize(current)
-    store.set("ai", normalized)
-    return normalized
+    store.set("ai", current)
+    return normalize(current)
+
+
+def raw_from_store(store) -> dict:
+    """读取未经预算钳制的 AI 段，供必须 fail-closed 的 R3 闸门使用。"""
+    raw = store.get("ai", {}) if store is not None else {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def r3_budget_limits(ai: dict | None) -> tuple[int, int]:
+    """严格解析 R3 token 预算；显式 0 仍表示不限，坏值与负值拒绝。"""
+    values = ai if isinstance(ai, dict) else {}
+    article = parse_budget(
+        values.get("article_budget_tokens", DEFAULT_ARTICLE_BUDGET),
+        label="单篇预算",
+    )
+    batch = parse_budget(
+        values.get("batch_budget_tokens", DEFAULT_BATCH_BUDGET),
+        label="批次预算",
+    )
+    return article, batch
+
+
+def r3_request_settings(ai: dict | None) -> dict:
+    """Project only live R3 API settings; legacy verify preferences are excluded."""
+    raw = ai if isinstance(ai, dict) else {}
+    article_budget, batch_budget = r3_budget_limits(raw)
+    normalized = normalize({key: raw[key] for key in AI_DEFAULTS
+                            if key in raw and key != "verify_max"})
+    return {
+        "enabled": normalized["enabled"],
+        "key": normalized["key"],
+        "base": normalized["base"],
+        "model": normalized["model"],
+        "protocol": normalized["protocol"],
+        "thinking": normalized["thinking"],
+        "article_budget_tokens": article_budget,
+        "batch_budget_tokens": batch_budget,
+    }
 
 
 def mask_key(key: str) -> str:
@@ -134,6 +185,69 @@ def parse_budget(raw, *, label: str = "预算") -> int:
     if value < 0:
         raise ValueError(f"{label}必须 ≥ 0（0 = 不限）")
     return value
+
+
+def r3_task_scope(taskbook: str) -> dict:
+    """从引擎任务书提取 R3 的实际委派条数与范围警告。
+
+    主体条数取任务书「待核条目」计数；正文引用缺条只计入明确授权可补的条目。
+    缺少可识别计数时返回未知，调用方不得将其解释为零或全库。
+    """
+    text = str(taskbook or "")
+    authoritative = _R3_AUTHORITATIVE_PENDING_RE.findall(text)
+    mentions = [int(value) for value in _R3_PENDING_RE.findall(text)]
+    fillable = _R3_FILLABLE_HEADING_RE.findall(text)
+    if (len(authoritative) != 1 or len(mentions) == 0
+            or any(value != int(authoritative[0]) for value in mentions)
+            or len(set(fillable)) != len(fillable)):
+        return {"known": False, "count": None, "uncertain": True,
+                "warning": "任务书待核条数存在缺失或矛盾；为避免范围扩大，已阻止请求。"}
+    count = int(authoritative[0]) + len(fillable)
+    uncertain = any(marker in text for marker in _R3_UNCERTAIN_MARKERS)
+    warning = ("正文引用范围存在未识别部分；任务仅按任务书列出的已识别条目执行，"
+               "不会扩大到未引用的 Bib 条目。" if uncertain else "")
+    return {"known": True, "count": count, "uncertain": uncertain,
+            "warning": warning}
+
+
+def r3_budget_estimate(taskbook: str, ai: dict | None,
+                       *, request_env: dict | None = None) -> dict:
+    """按实际请求环境估算预算；不封顶时不伪造有限输出/总量上界。"""
+    article_budget, batch_budget = r3_budget_limits(ai)
+    system = "请按编辑任务书返回数据。没有实际查证的外部信息应标为部分执行或未执行。"
+    prompt_tokens = max(1, (len(system) + 2) // 3) + max(1, (len(str(taskbook or "")) + 2) // 3)
+    env = os.environ if request_env is None else request_env
+    raw_limit = env.get("SLCN_LLM_MAX_TOKENS")
+    if raw_limit is None:
+        completion_tokens, limit_source = 2048, "引擎默认上限（未设置）"
+    elif not str(raw_limit).strip():
+        completion_tokens, limit_source = None, "环境显式不封顶（空值）"
+    else:
+        try:
+            parsed_limit = int(str(raw_limit).strip(), 10)
+        except ValueError:
+            completion_tokens, limit_source = 2048, "坏值按引擎默认上限处理"
+        else:
+            if parsed_limit <= 0:
+                completion_tokens, limit_source = None, "环境显式不封顶（≤ 0）"
+            else:
+                completion_tokens, limit_source = parsed_limit, "环境覆盖上限"
+    total_tokens = (prompt_tokens + completion_tokens
+                    if completion_tokens is not None else None)
+    finite_budget = any(limit > 0 for limit in (article_budget, batch_budget))
+    budget_verifiable = total_tokens is not None
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "output_limit_source": limit_source,
+        "budget_verifiable": budget_verifiable,
+        "article_budget_tokens": article_budget,
+        "batch_budget_tokens": batch_budget,
+        "over_budget": (any(limit > 0 and total_tokens > limit for limit in (
+            article_budget, batch_budget)) if budget_verifiable else False),
+        "unbounded_with_finite_budget": not budget_verifiable and finite_budget,
+    }
 
 
 def channel_state(ai: dict | None) -> dict:

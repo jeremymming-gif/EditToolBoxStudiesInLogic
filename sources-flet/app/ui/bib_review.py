@@ -745,7 +745,10 @@ class ReviewView:
                                         next_label="复制错误",
                                         on_next=lambda e: self._copy(self.error)))
         if self.success:
-            parts.append(S.state_banner(t, "success", message=self.success))
+            parts.append(S.state_banner(
+                t, "success", message=self.success,
+                next_label="查看版本与同步",
+                on_next=lambda e: self.page.navigate_route("bib:version_sync")))
         if self.cancelled:
             parts.append(S.state_banner(t, "cancelled", message="已取消，未写入。"))
         if self.loading and not self.loaded:

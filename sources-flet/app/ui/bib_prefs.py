@@ -1,8 +1,8 @@
-"""引用库 · 设置（批 115 夜间重设计，BPAGES-B）。
+"""引用库偏好与状态页（批 115 夜间重设计，BPAGES-B）。
 
 契约：`evidence/b115-bib-redesign/pages/settings/spec.md`。本页不写库内容；
 正文铺满页壳（批 119 去固定宽，右侧不再留空白竖栏）、四组
-（01 库 / 02 核实 / 03 Git / 04 关于），只有「保存设置」是主色，
+（库状态 / 稳定偏好 / Git / 关于），
 提交/推送是次要动作，回退单独放在页尾危险区（56 高，生成新提交，不 push）。
 """
 from __future__ import annotations
@@ -23,18 +23,8 @@ VIEW_KEY = "settings"
 TITLE = "设置"
 ROLE = "readonly"
 
-VERIFY_KEYS = ("bibdb.verify_max", "bibdb.verify_plan",
-               "bibdb.verify_all_refs", "bibdb.lookup_enabled")
-SWITCHES = (("bibdb.verify_plan", "先算账（不花钱）"),
-            ("bibdb.verify_all_refs", "允许全量核实"),
-            ("bibdb.lookup_enabled", "先查引用库"))
-
-# 每个开关的真实语义（键名来自 settings_store；说明来自引擎 --help / bibdb 文档）。
-SWITCH_HINTS = {
-    "bibdb.verify_plan": "只算范围与费用，不检索、不调 AI。",
-    "bibdb.verify_all_refs": "越过 120 条上限；可能产生费用。",
-    "bibdb.lookup_enabled": "命中本地已核实库就跳过检索与费用。",
-}
+LOOKUP_KEY = "bibdb.lookup_enabled"
+LOOKUP_HINT = "命中本地已核实库时跳过重复检索。"
 
 
 def _sha8(sha: str) -> str:
@@ -100,13 +90,10 @@ class BibPrefsView:
         self.git: dict = {}
         self.loaded_head = ""
         self.stale = False
-        self.verify_max = ""
-        self.switch_values = {key: False for key, _label in SWITCHES}
-        self.saved_max = ""
-        self.saved_switches = dict(self.switch_values)
+        self.lookup_enabled = True
+        self.saved_lookup_enabled = True
         self.receipt = ""
         self.receipt_tone = "success"
-        self.verify_error = ""
         self._root: ft.Container | None = None
 
     # ── 宿主小工具 ───────────────────────────────────────────────────
@@ -221,15 +208,8 @@ class BibPrefsView:
 
     # ── 读取 ─────────────────────────────────────────────────────────
     def _load_form(self) -> None:
-        raw = self._store_get("bibdb.verify_max", "")
-        self.verify_max = "" if raw in (None, "") else str(raw)
-        if self.verify_max in ("0", "0.0"):
-            self.verify_max = "0"
-        for key, _label in SWITCHES:
-            default = key == "bibdb.lookup_enabled"
-            self.switch_values[key] = bool(self._store_get(key, default))
-        self.saved_max = self.verify_max
-        self.saved_switches = dict(self.switch_values)
+        self.lookup_enabled = bool(self._store_get(LOOKUP_KEY, True))
+        self.saved_lookup_enabled = self.lookup_enabled
 
     async def _load(self) -> None:
         self.busy = True
@@ -365,42 +345,25 @@ class BibPrefsView:
             rows.append(C.inline_note(
                 "库文件不存在；先导入或检查路径。", t, tone="warn",
                 action=C.text_button("去入藏", lambda e: self._goto("import"), t)))
-        return ft.Column(spacing=0, controls=[
-            C.section_label("01 库", t), C.hairline(t), *rows])
-
-    # ── 02 核实 ──────────────────────────────────────────────────────
-    def _group_verify(self) -> ft.Control:
-        t = self.t
-        field = C.floating_field(
-            t, "核实上限", value=self.verify_max, width=t.px(200),
-            hint="留空 120 条；0 = 不限",
-            error=self.verify_error or None,
-            on_change=self._on_verify_change, on_submit=lambda e: self._save())
-        switches = [self._switch_row(key, label) for key, label in SWITCHES]
-        receipt = None
-        if self.receipt:
-            receipt = C.inline_note(self.receipt, t,
-                                    tone="success" if self.receipt_tone == "success"
-                                    else "warn")
-        save = C.primary_button("保存设置", lambda e: self._save(), t,
+        lookup = self._switch_row(LOOKUP_KEY, "先查引用库")
+        save = C.primary_button("保存偏好", lambda e: self._save(), t,
                                 disabled=not self._dirty())
-        return ft.Column(spacing=t.sp("1"), controls=[
-            C.section_label("02 核实", t), C.hairline(t),
-            ft.Row(spacing=t.sp("2"), controls=[field, save]),
-            *switches, *( [receipt] if receipt is not None else []),
+        receipt = C.inline_note(
+            self.receipt, t,
+            tone="success" if self.receipt_tone == "success" else "warn") \
+            if self.receipt else None
+        return ft.Column(spacing=0, controls=[
+            C.section_label("引用库设置", t), C.hairline(t), *rows, lookup,
+            ft.Row(controls=[ft.Container(expand=True), save]),
+            *([receipt] if receipt is not None else []),
         ])
 
     def _switch_row(self, key: str, label: str) -> ft.Control:
-        """页内 Row/Text 自绘标签：C.switch 的 label 只在 labels=True 时才渲染。
-
-        左侧两行（名称 + 一句人话说明）保证开关在 1160/1000 宽都有可见标签；
-        不传 label 给 C.switch，避免依赖 components.py 的 label 行为（写域禁止改
-        那里）。tooltip 暴露真实 settings 键，便于排障。
-        """
+        """引用库默认查库偏好；旧核实字段不由 GUI 读取或回显。"""
         t = self.t
         p = t.palette
-        switch = C.switch(t, value=bool(self.switch_values.get(key)),
-                          on_change=lambda e, k=key: self._on_switch(k, e))
+        switch = C.switch(t, value=self.lookup_enabled,
+                          on_change=self._on_lookup_change)
         switch.tooltip = key
         row = ft.Container(
             height=t.px(44),
@@ -411,7 +374,7 @@ class BibPrefsView:
                                ft.Column(spacing=0, expand=True, controls=[
                                    C.text(label, t, role="body-strong", color=p.text,
                                           max_lines=1),
-                                   C.text(SWITCH_HINTS.get(key, ""), t, "caption",
+                                   C.text(LOOKUP_HINT, t, "caption",
                                           p.text_muted, max_lines=2),
                                ]),
                                switch,
@@ -419,68 +382,19 @@ class BibPrefsView:
         row._bib_switch_row = key
         return row
 
-    def _on_verify_change(self, e) -> None:
-        self.verify_max = (e.control.value or "").strip()
-        self.verify_error = self._validate(self.verify_max)
-        self._render()
-
-    def _validate(self, value: str) -> str:
-        if value == "":
-            return ""
-        try:
-            number = int(value)
-        except ValueError:
-            return "请输入 0–10000 的整数"
-        if number < 0 or number > 10000:
-            return "请输入 0–10000 的整数"
-        return ""
-
-    def _on_switch(self, key: str, e) -> None:
-        value = bool(e.control.value)
-        if key == "bibdb.verify_all_refs" and value:
-            dialog = S.danger_confirm(
-                self._flet(), self.t, title="允许全量核实？",
-                message="会为未被正文引用的条目付费；按次计费。",
-                impact="按次计费 · 可随时关掉", confirm_label="仍然开启",
-                on_confirm=lambda e: self._force_switch(key, True))
-            if dialog is not None:
-                self.switch_values[key] = False
-                self._render()
-                return
-        self.switch_values[key] = value
-        self._render()
-
-    def _force_switch(self, key: str, value: bool) -> None:
-        self.switch_values[key] = value
+    def _on_lookup_change(self, e) -> None:
+        self.lookup_enabled = bool(e.control.value)
         self._render()
 
     def _dirty(self) -> bool:
-        if self._validate(self.verify_max):
-            return False
-        if self.verify_max != self.saved_max:
-            return True
-        return any(bool(self.switch_values.get(key)) != bool(self.saved_switches.get(key))
-                   for key, _label in SWITCHES)
+        return self.lookup_enabled != self.saved_lookup_enabled
 
     def _save(self) -> None:
         if not self._dirty():
             self._notify("没有改动")
             return
-        error = self._validate(self.verify_max)
-        if error:
-            self.verify_error = error
-            self._render()
-            return
-        value = "" if self.verify_max == "" else int(self.verify_max)
-        ok = True
-        if value == "":
-            ok = self._store_set("bibdb.verify_max", "") and ok
-        else:
-            ok = self._store_set("bibdb.verify_max", value) and ok
-        for key, _label in SWITCHES:
-            ok = self._store_set(key, bool(self.switch_values.get(key))) and ok
-        self.saved_max = self.verify_max
-        self.saved_switches = dict(self.switch_values)
+        ok = self._store_set(LOOKUP_KEY, self.lookup_enabled)
+        self.saved_lookup_enabled = self.lookup_enabled
         now = datetime.now().strftime("%H:%M")
         if ok:
             self.receipt = f"已保存 · {now} · settings.json"
@@ -489,7 +403,7 @@ class BibPrefsView:
         else:
             self.receipt = "未保存 · 设置存储不可用"
             self.receipt_tone = "warn"
-        self._mark("bib_prefs_save", ok=ok, value=self.verify_max)
+        self._mark("bib_prefs_save", ok=ok, lookup_enabled=self.lookup_enabled)
         self._render()
 
     # ── 03 Git ───────────────────────────────────────────────────────
@@ -681,8 +595,15 @@ class BibPrefsView:
         t = self.t
         version = getattr(self.app, "app_version", None) or VERSION.UNKNOWN_VERSION
         return ft.Container(content=C.text(
-            f"推送/回退只在此页 · {version} · settings.json", t, "caption", t.palette.text_faint,
+            f"版本操作请前往版本与同步 · {version} · settings.json",
+            t, "caption", t.palette.text_faint,
             max_lines=1))
+
+    def _version_link(self) -> ft.Control:
+        return C.secondary_button(
+            "打开版本与同步",
+            lambda e: self.page.navigate_route("bib:version_sync"),
+            self.t, icon="HISTORY")
 
     # ── 渲染 ─────────────────────────────────────────────────────────
     def _impact_bar(self) -> ft.Control:
@@ -709,7 +630,7 @@ class BibPrefsView:
                                              C.text("1 个文件 · 1 条新提交 · 不推送",
                                                     t, "caption", p.text, max_lines=2),
                                              C.text("只含 bibliography.jsonl；"
-                                                    "推送 / 回退只在设置页",
+                                                    "版本操作在版本与同步页",
                                                     t, "caption", p.text_muted,
                                                     max_lines=2),
                                          ]),
@@ -725,9 +646,7 @@ class BibPrefsView:
                 self._state_line(),
                 self._group_db(),
                 ft.Container(height=t.px(12)),
-                self._group_verify(),
-                ft.Container(height=t.px(12)),
-                self._group_git(),
+                self._version_link(),
                 ft.Container(height=t.px(12)),
                 self._footer(),
             ])

@@ -24,8 +24,10 @@ API Key 只从环境/配置读（`slcn.llm.config_from_env`），**永不进 arg
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 
 from . import ai_workflow as _w
@@ -190,9 +192,18 @@ def _op_request(a) -> dict:
         tb = (st.get("taskbook") or {}).get("path") or ""
     if not tb or not os.path.exists(tb):
         raise _w.WorkflowError("找不到任务书：先 prepare（出任务书），或用 --taskbook 指定。")
+    taskbook_text = _read(tb)
+    supplied_sha_arg = getattr(a, "taskbook_sha256", None)
+    if supplied_sha_arg is not None:
+        supplied_sha = str(supplied_sha_arg).strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", supplied_sha):
+            raise _w.WorkflowError("--taskbook-sha256 必须是 64 位十六进制 SHA-256。")
+        actual_sha = hashlib.sha256(taskbook_text.encode("utf-8")).hexdigest()
+        if supplied_sha.lower() != actual_sha:
+            raise _w.WorkflowError("任务书 SHA-256 与 --taskbook-sha256 不一致。")
     # API 配置只从环境/配置读；Key 绝不进 argv、任务书、日志。
     out = _w.request(work_dir=os.path.abspath(a.work_dir),
-                     taskbook_text=_read(tb), timeout=a.timeout,
+                     taskbook_text=taskbook_text, timeout=a.timeout,
                      reply_path=a.reply_out or "",
                      retry=bool(getattr(a, "retry", False)))
     return {"op": "request", **out}
@@ -358,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("request", help="直连 API 取结果（会产生费用；不自动采纳）")
     p.add_argument("--taskbook", default="", metavar="PATH", help="任务书路径（默认取 state 里那份）")
+    p.add_argument("--taskbook-sha256", default=None, metavar="SHA256",
+                   help="可选：发送前核对任务书文本的 SHA-256（UTF-8）")
     p.add_argument("--reply-out", default="", metavar="PATH", help="回填落盘路径（默认工作区内）")
     p.add_argument("--timeout", type=int, default=120, metavar="SEC")
     p.add_argument("--retry", action="store_true",

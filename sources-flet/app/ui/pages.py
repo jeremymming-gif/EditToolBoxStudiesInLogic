@@ -4752,9 +4752,7 @@ class SettingsPage(BasePage):
             if ctl is not None:
                 self._status_value_ctls[label] = ctl
             engine_row_controls.append(row)
-        # 批 115 P3-C2：12 张 C.card 长滚 → 4 组发丝分区（引擎与环境 / 外观 /
-        # 窗口与托盘 / 路径与关于）。组 = section_label + 1px 线，组内不再套卡片；
-        # settings_shell / ai_panel 的卡片用 _flat 去壳（那两个文件不在写域）。
+        # 软件设置按通用、AI、引用库三类组织；组内仍沿用既有偏好控件。
         engine_line = C.inline_note(
             f"引擎{'就绪' if engine.ok else '未就绪'} · {engine.version or '版本未知'}",
             t, "ok" if engine.ok else "warn")
@@ -4827,26 +4825,35 @@ class SettingsPage(BasePage):
         diagnostics = SHELL.diagnostics_card(self)
 
         header = C.page_header(
-            "设置", "外观、引擎、环境检查与诊断。", t,
+            "设置", "按通用、AI、引用库三类查看与维护偏好。", t,
             actions=[C.primary_button("立即保存", lambda e: self._save_settings(), t,
                                       icon="SAVE_OUTLINED")],
         )
-        # 批 112 A-06 的「环境检查首屏可见」保留：并入「引擎与环境」组首（inline_note
-        # 给出引擎状态/版本，下面就是「运行环境检查」与上次结果槽）。
         page = C.page_body(
             header,
-            self._group("引擎与环境", t,
+            self._group("通用", t,
                         engine_line,
                         self._flat(envcheck, "环境检查"),
                         engine_rows,
+                        appearance,
+                        self._flat(tray, "窗口与托盘"),
+                        self._flat(logs, "日志"),
+                        self._flat(diagnostics, "诊断包"),
+                        paths,
+                        self._flat(advanced, "高级"), about,
+                        note="跨流程的界面、环境、路径与本机默认行为"),
+            self._group("AI", t,
                         self._flat(AIP.AiSettings(self).build(), "AI"),
                         self._flat(proxy, "网络代理"),
-                        self._flat(logs, "日志"),
-                        self._flat(diagnostics, "诊断包")),
-            self._group("外观", t, appearance),
-            self._group("窗口与托盘", t, self._flat(tray, "窗口与托盘")),
-            self._group("路径与关于", t, paths,
-                        self._flat(advanced, "高级"), about),
+                        note="连接信息、模型、联网能力与请求预算"),
+            self._group("引用库", t,
+                        C.text("引用库路径、默认查库行为与库状态在引用库设置中维护。",
+                               t, "small", t.palette.text_muted),
+                        C.secondary_button(
+                            "打开引用库设置",
+                            lambda e: self.app.navigate("bib:settings", source="settings"),
+                            t, icon="MENU_BOOK"),
+                        note="只放稳定偏好与诊断信息；版本操作位于引用库工作页"),
             t=t, gap=12, panel=True,
         )
         return page

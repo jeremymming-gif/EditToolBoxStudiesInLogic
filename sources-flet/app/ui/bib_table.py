@@ -13,8 +13,8 @@
 - 表头 30、行 32，行底 0.6 发丝线，无竖线；选中整行 ``accent_soft``，hover
   ``surface_2``；排序箭头 8px。
 - 颜色只经 ``t.palette``；本文件没有十六进制色值；不使用裸 ``ft.*Button``。
-- ≤300 行用 ``Column(scroll=AUTO)``（全部构建，无虚拟化开销）；
-  >300 行用 ``ListView(on_scroll=...)``，滚到距底 24px 内自动 ``load_more``。
+- ≤100 行用 ``Column(scroll=AUTO)``；
+  >100 行用 ``ListView(on_scroll=...)``，滚到距底 24px 内自动 ``load_more``。
 
 首列与横向滚动（Flet 1.0.5 限制，已在 notes 说明）
 --------------------------------------------------
@@ -40,6 +40,7 @@ TABLE_HEADER_H = 30
 TABLE_ROW_H = 32
 DEFAULT_FIRST_COL_W = 280
 LOAD_MORE_H = 36
+LIST_VIEW_THRESHOLD = 100
 STICKY_FALLBACK_NOTE = "Flet 1.0.5 无原生 sticky：scroll_x 模式整表横滚，首列固定宽但不吸附"
 
 
@@ -89,8 +90,11 @@ class BibTable:
                  on_load_more: Callable[[int], None] | None = None,
                  on_change: Callable[[], None] | None = None,
                  row_key: str | None = None,
+                 sort_key: str | None = None,
+                 sort_desc: bool = False,
                  first_col_width: float = DEFAULT_FIRST_COL_W,
                  scroll_x: bool = False,
+                 force_list_view: bool = False,
                  height: float | None = None,
                  page=None) -> None:
         """收列定义与行数据；默认值即设计稿几何。"""
@@ -110,10 +114,11 @@ class BibTable:
         self.row_key = row_key
         self.first_col_width = first_col_width
         self.scroll_x = bool(scroll_x)
+        self.force_list_view = bool(force_list_view)
         self.height = height
         self.page = page
-        self._sort_key: str | None = None
-        self._sort_desc = False
+        self._sort_key = sort_key
+        self._sort_desc = bool(sort_desc)
         self._selected: tuple[str, Any] | None = None
         self._last_control: ft.Control | None = None
 
@@ -291,8 +296,8 @@ class BibTable:
                 pass
 
     def _scrolled(self, e) -> None:
-        """滚到距底 24px 内自动载入更多；只在 total>300 的 ListView 上挂。"""
-        if self.total <= 300 or not self.has_more:
+        """滚到距底 24px 内自动载入更多；只在大结果 ListView 上挂。"""
+        if self.total <= LIST_VIEW_THRESHOLD or not self.has_more:
             return
         pixels = float(getattr(e, "pixels", 0) or 0)
         viewport = float(getattr(e, "viewport_dimension", 0)
@@ -469,16 +474,15 @@ class BibTable:
     def build(self) -> ft.Control:
         """构建当前帧：表头 + 行区 + 载入更多；空数据仍保留表头。
 
-        行区按行数选容器：≤300 用 ``Column(scroll=AUTO)`` 全量构建；>300 用
-        ``ListView(on_scroll)``，滚动近底自动加 limit。这条阈值是设计稿的
-        “300 行以内不做虚拟化”，不是性能玄学——100 行首屏 + 300 行缓冲足够。
+        行区按行数选容器：≤100 用 ``Column(scroll=AUTO)``；>100 用
+        ``ListView(on_scroll)``，避免较大的查询结果进入长列布局。
         """
         t = self.t
         header = self._header()
         visible = self.visible_rows()
         rows = [self._row(r, i) for i, r in enumerate(visible)]
 
-        use_list = self.total > 300
+        use_list = self.force_list_view or self.total > LIST_VIEW_THRESHOLD
         if use_list:
             body = ft.ListView(expand=True, spacing=0, padding=0, controls=rows,
                                on_scroll=self._scrolled)

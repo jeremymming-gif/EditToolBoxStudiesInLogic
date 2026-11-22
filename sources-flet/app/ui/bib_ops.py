@@ -346,6 +346,7 @@ class _OpsView:
         self.notice = ""
         self.notice_tone = "info"
         self.commit: dict | None = None
+        self.version_link = False
 
     @property
     def t(self):
@@ -369,6 +370,7 @@ class _OpsView:
 
     def _toast(self, message: str, tone: str = "") -> None:
         self.notice, self.notice_tone = str(message or ""), (tone or "info")
+        self.version_link = self.commit is not None
         try:
             self.page.app.toast(str(message or ""))
         except Exception:  # noqa: BLE001  提示失败不影响主流程
@@ -422,7 +424,14 @@ class _OpsView:
     def _notice_bar(self) -> ft.Control | None:
         if not self.notice:
             return None
-        return C.notice_bar(self.notice, self.t, self.notice_tone)
+        notice = C.notice_bar(self.notice, self.t, self.notice_tone)
+        if not self.version_link:
+            return notice
+        return ft.Row(spacing=self.t.sp("1"), wrap=True,
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[notice, C.secondary_button(
+                          "查看版本与同步", lambda e: self.page.navigate_route(
+                              "bib:version_sync"), self.t, icon="HISTORY")])
 
     def _error_bar(self) -> ft.Control | None:
         if not self.error:

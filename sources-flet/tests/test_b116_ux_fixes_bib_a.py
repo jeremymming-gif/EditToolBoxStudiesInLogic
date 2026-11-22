@@ -15,6 +15,7 @@ import flet as ft
 import services.engine_bridge as EB
 from ui import bib_prefs as BP
 from ui import bib_review as RV
+from ui import bib_version_sync as VS
 from ui.tokens import Tokens
 
 
@@ -232,25 +233,27 @@ def _prefs(tmp_path, monkeypatch):
     return host, view, view.build()
 
 
+def _version_sync(tmp_path, monkeypatch):
+    host, _prefs_view, _prefs_root = _prefs(tmp_path, monkeypatch)
+    view = VS.BibVersionSyncView(host)
+    view.stats = host.stats_data
+    view.probe = BP.GIT.status(view._db(), notes_repo="")
+    view.loaded = True
+    return host, view, view.build()
+
+
 def test_settings_switches_have_visible_labels_and_semantics(tmp_path, monkeypatch):
     host, view, root = _prefs(tmp_path, monkeypatch)
     rows = _find(root, "_bib_switch_row")
-    assert [row._bib_switch_row for row in rows] == [key for key, _label in BP.SWITCHES]
+    assert [row._bib_switch_row for row in rows] == [BP.LOOKUP_KEY]
 
-    by_key = {row._bib_switch_row: row for row in rows}
-    for key, label in BP.SWITCHES:
-        row = by_key[key]
-        texts = _texts(row)
-        assert label in texts
-        assert BP.SWITCH_HINTS[key] in texts
-        switches = [node for node in _walk(row) if isinstance(node, ft.Switch)]
-        assert len(switches) == 1
-        assert switches[0].tooltip == key   # 真实 settings 键可悬停查看
-
-    plan_texts = _texts(by_key["bibdb.verify_plan"])
-    assert any("不检索" in text for text in plan_texts)
-    assert any("120" in text for text in _texts(by_key["bibdb.verify_all_refs"]))
-    assert any("跳过检索" in text for text in _texts(by_key["bibdb.lookup_enabled"]))
+    row = rows[0]
+    texts = _texts(row)
+    assert "先查引用库" in texts
+    assert BP.LOOKUP_HINT in texts
+    switches = [node for node in _walk(row) if isinstance(node, ft.Switch)]
+    assert len(switches) == 1
+    assert switches[0].tooltip == BP.LOOKUP_KEY
 
 
 def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch):
@@ -262,7 +265,7 @@ def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch
 
     expected = "1 个文件 · 1 条新提交 · 不推送"
     assert expected in _texts(bar)
-    assert any("推送 / 回退只在设置页" in text for text in _texts(bar))
+    assert any("版本操作在版本与同步页" in text for text in _texts(bar))
     assert not _find(scroll[0], "_bib_impact_bar")   # 不进滚动区，不会被裁
     assert scroll[0].expand is True
     # 批 118 D2：设置页长表单改常显条（Scrollbar 配置对象，不是 AUTO）。
@@ -276,16 +279,22 @@ def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch
             assert node.max_lines is None or node.max_lines >= 2
 
 
-def test_settings_git_heading_and_commit_tooltip(tmp_path, monkeypatch):
-    host, view, root = _prefs(tmp_path, monkeypatch)
-    texts = _texts(root)
-    assert "03 Git" in texts
-    assert "只提交本地" in texts
+def test_settings_git_actions_removed_and_status_kept_on_version_page(tmp_path, monkeypatch):
+    host, _prefs_view, settings_root = _prefs(tmp_path, monkeypatch)
+    settings_texts = _texts(settings_root)
+    assert "打开版本与同步" in settings_texts
+    assert not any(text in settings_texts for text in (
+        "Git 状态", "本地版本操作", "提交库改动…", "推送…", "回退到上一个库版本…",
+    ))
     # 批 119：设置页正文铺满页壳（旧 720 限宽已删），不再留右侧空栏。
-    assert not any(node.width == 720 for node in _walk(root)
+    assert not any(node.width == 720 for node in _walk(settings_root)
                    if isinstance(node, ft.Container))
 
-    # 最后提交 subject 被 32 高单行截断时，tooltip 必须是全文。
-    values = [node for node in _walk(root)
+    # Git 状态与最近提交现位于独立版本页；该行不设单行截断，全文直接可见。
+    _host, _version_view, version_root = _version_sync(tmp_path, monkeypatch)
+    version_texts = _texts(version_root)
+    assert "Git 状态" in version_texts
+    assert "分支" in version_texts and "dirty_db" in version_texts
+    values = [node for node in _walk(version_root)
               if isinstance(node, ft.Text) and "引用库：手动提交" in (node.value or "")]
-    assert values and all(node.tooltip == node.value for node in values)
+    assert values and all(node.max_lines is None for node in values)

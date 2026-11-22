@@ -110,7 +110,8 @@ def test_query_initial_state_readonly_and_one_primary():
     texts = _texts(tree)
     assert QV.VIEW_KEY == "query" and QV.ROLE == "readonly"
     assert texts.count("查库") == 1
-    assert "还没有查询" in texts and "输入 key、DOI 或题名；⌘F 聚焦。" in texts
+    assert "还没有查询" in texts and "在上方填写一个或多个条件，然后查询。" in texts
+    assert all(label in texts for label in ("key", "别名", "DOI", "作者", "题名", "年份"))
     assert "未选择记录" in texts
     assert "只读" in texts
     primaries = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
@@ -125,7 +126,6 @@ def test_query_empty_input_reports_error_without_disabling():
     tree = view.build()
     buttons = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
     assert buttons and not buttons[0].disabled
-    view.text = ""
     view.query()
     texts = _texts(view.build())
     assert QV.EMPTY_INPUT in texts
@@ -143,7 +143,7 @@ def test_query_uses_total_matched_and_limit_100(monkeypatch):
     host = _Host()
     view = QV.QueryView(host)
     view.activate()
-    view.text = "Fine1975"
+    view.adv_values["key"] = "Fine1975"
     asyncio.run(view._run())
     texts = _texts(view.build())
     assert view.total_matched == 3883 and view.count == 2
@@ -180,13 +180,13 @@ def test_query_narrow_keeps_three_columns_and_no_hscroll(monkeypatch):
     host.app.window_w = 1000
     view = QV.QueryView(host)
     view.activate()
-    view.text = "Fine1975"
+    view.adv_values["key"] = "Fine1975"
     asyncio.run(view._run())
     tree = view.build()
     texts = _texts(tree)
     assert view._build_width < 1100
     assert "题名" in texts and "年" in texts and "状态" in texts
-    assert "作者" not in texts and "来源" not in texts
+    assert "来源" not in texts
     assert not any(getattr(node, "scroll", None) for node in _walk(tree)
                    if isinstance(node, ft.Row))
 
@@ -199,7 +199,71 @@ def test_query_filter_row_and_detail_geometry(monkeypatch):
     view = QV.QueryView(host)
     view.activate()
     tree = view.build()
-    filters = [n for n in _walk(tree) if getattr(n, "_bib_filter_row", False)]
-    assert filters and filters[0].height == host.t.px(S.FILTER_ROW_H)
+    filters = [n for n in _walk(tree) if getattr(n, "_bib_query_form", False)]
+    assert filters
+    assert not host.page.dialogs
+    assert not any(isinstance(node, ft.AlertDialog) for node in _walk(tree))
     details = [n for n in _walk(tree) if getattr(n, "_bib_detail_panel", False)]
     assert details and details[0].width == host.t.px(QV.DETAIL_W)
+
+
+def test_match_mode_is_inline_with_input_and_alias_has_tooltip():
+    host = _Host()
+    view = QV.QueryView(host)
+    title = view._common_condition_field("title", "题名", "题名关键词")
+    input_row = title.controls[1]
+    assert isinstance(input_row, ft.Row)
+    assert len(input_row.controls) == 2
+    assert getattr(input_row.controls[0], "_bib_query_field", None) == "title"
+    alias = view._common_condition_field("alias", "别名", "按别名精确匹配")
+    label = alias.controls[0].controls[0]
+    assert "别名" in getattr(label, "value", "")
+    assert label.tooltip
+
+
+def test_title_sort_and_direction_are_sent_to_engine():
+    host = _Host()
+    view = QV.QueryView(host)
+    view.adv_values["title"] = "logic"
+    view._on_sort("title", False)
+    asc = list(view._call(offset=0).argv)
+    assert asc[asc.index("--sort") + 1] == "title"
+    assert "--sort-asc" in asc
+    view._on_sort("title", True)
+    desc = list(view._call(offset=0).argv)
+    assert "--sort-desc" in desc
+
+
+def test_sort_header_direction_survives_query_view_rebuild():
+    host = _Host()
+    view = QV.QueryView(host)
+    view.adv_values["title"] = "logic"
+    view.loaded = True
+    view._build_width = 1200
+    view.rows = [
+        {"title": "Alpha", "author": "A", "year": "2000", "key": "A"},
+        {"title": "Beta", "author": "B", "year": "2001", "key": "B"},
+    ]
+
+    def click_header(key: str):
+        tree = view._table()
+        header = next(node for node in _walk(tree)
+                      if getattr(node, "_bib_header", False))
+        cell = next(node for node in _walk(header)
+                    if getattr(node, "_bib_col_key", None) == key)
+        cell.on_click(SimpleNamespace())
+        return view._table()
+
+    for key in ("title", "title", "author", "author", "year", "year"):
+        tree = click_header(key)
+        expected = "desc" if view.sort_desc else "asc"
+        header = next(node for node in _walk(tree)
+                      if getattr(node, "_bib_header", False))
+        cell = next(node for node in _walk(header)
+                    if getattr(node, "_bib_col_key", None) == key)
+        assert cell._bib_sorted == expected
+
+        if key == view.sort_key and view.sort_desc:
+            assert "--sort-desc" in view._call(offset=0).argv
+        else:
+            assert "--sort-asc" in view._call(offset=0).argv

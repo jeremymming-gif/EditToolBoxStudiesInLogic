@@ -47,10 +47,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 # 第四十一批 O2：默认低成本（内部 gen_docs --check 不跑套件）；`--strict-tests` 切回老行为。
 # 保留 `--no-test-runs` 显式开关，让调用方（selfcheck quick）能自证"我知道自己在跳过重复套件"。
@@ -80,6 +83,8 @@ def _git_root() -> pathlib.Path:
 
 
 REPO = _git_root()                                  # 仓库根
+_MANUSCRIPTS_FIXTURE = pathlib.Path(tempfile.mkdtemp(prefix="slcn_docs_manuscripts_"))
+(_MANUSCRIPTS_FIXTURE / "2099年第1期(fixture)").mkdir(parents=True)
 # B-304/B300-06：别把解释器路径硬编码成 mac 的 Homebrew 路径 —— Windows 上那里没有文件，
 # 内部 gen_docs 子进程会 FileNotFoundError 把 (a) 项误红。mac 的 python3.14 跑本文件时
 # sys.executable 就是 /opt/homebrew/bin/python3.14，行为逐字节不变；老路径只作兜底。
@@ -123,6 +128,47 @@ def _dump_child(title: str, cmd: list[str], rc: int, out: str) -> None:
         print("      │ " + _ln)
 
 
+def _launch_gen_docs_check(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Run gen_docs with a snapshot of the caller environment, including strict identity."""
+    return subprocess.run(cmd, cwd=str(ENGINE), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=os.environ.copy())
+
+
+def _check_strict_launcher_environment() -> None:
+    """Prove strict launch preserves caller dataset identity without fixture leakage."""
+    keys = ("SLCN_MANUSCRIPTS", "SLCN_TEST_DATASET_ID")
+    prior = {key: os.environ.get(key) for key in keys}
+    captured: dict = {}
+    real_run = subprocess.run
+    sentinels = {
+        "SLCN_MANUSCRIPTS": str(_MANUSCRIPTS_FIXTURE / "inherited-sentinel"),
+        "SLCN_TEST_DATASET_ID": "fixture:strict-launch-inherited:v1",
+    }
+
+    def capture_run(*args, **kwargs):
+        captured.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(args[0], 0, "captured", "")
+
+    try:
+        os.environ.update(sentinels)
+        subprocess.run = capture_run
+        _launch_gen_docs_check(
+            [PY, str(ENGINE / "tools" / "gen_docs.py"), "--check", "--strict-tests"])
+    finally:
+        subprocess.run = real_run
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    check("(env) strict launcher 原样继承稿件根和 dataset id，未注入测试 fixture",
+          all(captured.get(key) == value for key, value in sentinels.items())
+          and captured.get("SLCN_MANUSCRIPTS") != str(_MANUSCRIPTS_FIXTURE)
+          and captured.get("SLCN_TEST_DATASET_ID") != "fixture:test_docs_consistency:v1")
+
+
+_check_strict_launcher_environment()
+
 # ── (a) AUTO 块不过期 ──────────────────────────────────────────────────────
 print("── (a) AUTO 块（tools/gen_docs.py --check）──")
 if _STRICT_TESTS:
@@ -147,6 +193,23 @@ try:
 except Exception as _e:  # noqa: BLE001  连探测都失败 → 按前提不全处理
     _complete, _missing = False, [f"探测异常 {type(_e).__name__}"]
 
+
+def _collect_synthetic_auto_inputs() -> dict:
+    """Collect hermetic cache-test inputs without changing the caller environment."""
+    keys = ("SLCN_MANUSCRIPTS", "SLCN_TEST_DATASET_ID")
+    prior = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ["SLCN_MANUSCRIPTS"] = str(_MANUSCRIPTS_FIXTURE)
+        os.environ["SLCN_TEST_DATASET_ID"] = "fixture:test_docs_consistency:v1"
+        return _G.collect_auto_inputs()
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 _GEN_DOCS = str(ENGINE / "tools" / "gen_docs.py")
 _MISSING_TXT = "、".join(_missing)
 
@@ -154,8 +217,7 @@ if _STRICT_TESTS:
     # 严格请求：**不**看 _complete 就调下游 —— 缺前提的判定权归下游（它负责说 BLOCKED + 原因），
     # 本测试只负责「非零就是红、并留原始证据」。也不追加 --no-test-runs（与 --strict-tests 互斥）。
     _strict_cmd = [PY, _GEN_DOCS, "--check", "--strict-tests"]
-    _ps = subprocess.run(_strict_cmd, cwd=str(ENGINE), capture_output=True,
-                         text=True, encoding="utf-8", errors="replace")
+    _ps = _launch_gen_docs_check(_strict_cmd)
     _sout = _ps.stdout + _ps.stderr
     if _ps.returncode == 0:
         check("(a) gen_docs.py --check --strict-tests 通过"
@@ -244,32 +306,39 @@ if not _complete and _STRICT_TESTS:
     blocked("(e) AUTO 输入冻结检查在严格档无法执行（本机缺 "
             f"{_MISSING_TXT or '前提'}）—— 严格请求不降级成 SKIP",
             "非严格档才允许跳过这一项")
-elif not _complete:
-    print("SKIP  (e) AUTO 输入冻结：本机前提不全（与 (a) 同因），跳过")
 else:
     try:
-        _inputs = _G.collect_auto_inputs()
+        # These are pure cache-contract assertions: use synthetic inputs even when
+        # the caller lacks an authorized manuscript root. Strict availability above
+        # remains based solely on the inherited caller environment.
+        _inputs = _collect_synthetic_auto_inputs()
+        _inputs["env_complete"] = True
         _need = {"corpus_csv_sha256", "corpus_tex_manifest_sha256", "audit_csv_sha256",
                  "audit_txt_sha256", "tests_manifest_sha256", "engine_py_sha256",
                  "env_complete", "manuscripts_fingerprint"}
         check("(e1) AUTO 输入清单字段齐全", _need <= set(_inputs),
               f"缺 {sorted(_need - set(_inputs))}")
         check("(e2) 输入指纹确定性（两次采集相同）",
-              _G.inputs_sha(_inputs) == _G.inputs_sha(_G.collect_auto_inputs()))
+              _G.inputs_sha(_inputs) == _G.inputs_sha(_collect_synthetic_auto_inputs()))
         _proj = {"schema": _G.AUTO_INPUTS_SCHEMA, "inputs": _inputs,
                  "test_rows": [["test_x", 1, 0]], "block_sha256": "0" * 64}
         check("(e3) engine/tests 未变 → 可复用测试计数缓存（写模式不整跑套件）",
               _G.cached_test_rows(_inputs, _proj) == [["test_x", 1, 0]])
+        _no_dataset_id = dict(_inputs, test_dataset_id_sha256="")
+        check("(e3a) 反例：稿件库存在但缺数据集身份 → 持久缓存拒绝复用",
+              not _G.persistent_cache_allowed(_no_dataset_id)
+              and _G.cached_test_rows(_no_dataset_id, _proj) is None)
         check("(e4) engine 变了 → 缓存失效（必须重跑套件）",
               _G.cached_test_rows(dict(_inputs, engine_py_sha256="deadbeef"), _proj) is None)
         check("(e5) 测试集变了 → 缓存失效（必须重跑套件）",
               _G.cached_test_rows(dict(_inputs, tests_manifest_sha256="cafe"), _proj) is None)
-        _h, _blk, _t = _G.split_block((ENGINE / "README.md").read_text(encoding="utf-8"))
+        _synthetic_test_rows = [["test_x", 1, 0, None]]
+        _blk = "\n".join(_G.render_test_section(_synthetic_test_rows))
         _blk_sha = hashlib.sha256(
             _G.normalize_for_check(_blk, lenient=False).encode("utf-8")).hexdigest()
-        _proj2 = dict(_proj, block_sha256=_blk_sha)
+        _proj2 = dict(_proj, test_rows=_synthetic_test_rows, block_sha256=_blk_sha)
         check("(e6) 输入指纹与块指纹都一致 → --check 快速通道命中（不跑套件）",
-              _G.fast_check_ok(_blk, _proj2, _inputs))
+              _G.fast_check_ok(_blk, _proj2, _inputs), "合成 AUTO 测试段；未读 README")
         check("(e7) 输入变了 → 快速通道不命中（回退到现算比对）",
               not _G.fast_check_ok(_blk, _proj2, dict(_inputs, engine_py_sha256="deadbeef")))
         check("(e8) 块被改过 → 快速通道不命中（文档漂移仍会被抓）",
@@ -545,4 +614,5 @@ if BLOCKED:
           f"这**不是**通过，请在前提齐全的机器上重跑）：")
     for _b in BLOCKED:
         print(f"  - {_b}")
+shutil.rmtree(_MANUSCRIPTS_FIXTURE, ignore_errors=True)
 sys.exit(1 if FAILS else 0)

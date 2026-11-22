@@ -35,6 +35,9 @@ TMP = Path(tempfile.mkdtemp(prefix="slcn_b110_"))
 # ⚠️ 必须在 import gen_docs 之前设：AUTO_INPUTS 在模块导入时读取环境变量。
 os.environ["SLCN_AUTO_INPUTS"] = str(TMP / "out" / "auto-inputs.json")
 os.environ["SLCN_RUN_RECORD"] = "0"      # 纯测试：不写 run manifest 证据
+os.environ["SLCN_TEST_DATASET_ID"] = "fixture:test_b74_gen_docs_write_once:v1"
+os.environ["SLCN_MANUSCRIPTS"] = str(TMP / "manuscripts")
+(TMP / "manuscripts" / "2099年第1期(fixture)").mkdir(parents=True)
 
 import gen_docs as G  # noqa: E402
 
@@ -188,6 +191,10 @@ _proj = G.load_auto_inputs()
 _inputs = G.collect_auto_inputs()
 check("③ 全绿缓存可复用（engine/tests/稿件库/环境未变 → 返回缓存行）",
       G.cached_test_rows(_inputs, _proj) == _proj.get("test_rows"))
+_no_dataset_id = dict(_inputs, test_dataset_id_sha256="")
+check("③ 反例：稿件库存在但缺数据集身份 → 持久缓存拒绝复用",
+      not G.persistent_cache_allowed(_no_dataset_id)
+      and G.cached_test_rows(_no_dataset_id, _proj) is None)
 check("③ engine 变 → 缓存失效（语义不变）",
       G.cached_test_rows(dict(_inputs, engine_py_sha256="deadbeef"), _proj) is None)
 check("③ 测试集变 → 缓存失效（语义不变）",

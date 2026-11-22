@@ -1,7 +1,8 @@
-"""批 116：设置页（正文铺满页壳 / 四组 / 危险区）定向测试。"""
+"""批 116：引用库偏好页与软件设置页的定向测试。"""
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 
 import flet as ft
@@ -9,7 +10,14 @@ import pytest
 
 import services.engine_bridge as EB
 from ui import bib_prefs as BP
+from ui.pages import SettingsPage
 from ui.tokens import Tokens
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_manuscripts_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLCN_MANUSCRIPTS", str(tmp_path / "no-manuscripts"))
+    monkeypatch.setenv("SLCN_TEST_DATASET_ID", "legacy-idea-8-synthetic-v1")
 
 
 class _App:
@@ -49,11 +57,15 @@ class _FletPage:
 class _Store:
     def __init__(self, data=None) -> None:
         self.data = dict(data or {})
+        self.reads: list[str] = []
+        self.writes: list[tuple[str, object]] = []
 
     def get(self, key, default=None):
+        self.reads.append(key)
         return self.data.get(key, default)
 
     def set(self, key, value) -> None:
+        self.writes.append((key, value))
         self.data[key] = value
 
 
@@ -172,16 +184,21 @@ def _view(tmp_path, **kwargs):
 
 
 # ── 布局 ──────────────────────────────────────────────────────────────
-def test_build_full_width_column_with_four_groups(tmp_path, monkeypatch):
+def test_build_full_width_library_preferences_without_legacy_verify_controls(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     _install(monkeypatch)
     asyncio.run(view._load())
     root = view.build()
     texts = _texts(root)
     assert texts.count("设置") == 1
-    assert any("01 库" == text for text in texts)
-    assert any("02 核实" == text for text in texts)
-    assert any("03 Git" == text for text in texts)
+    assert any("引用库设置" == text for text in texts)
+    assert "先查引用库" in texts
+    assert not any(text in {"核实上限", "先算账（不花钱）", "允许全量核实"}
+                   for text in texts)
+    assert "03 Git" not in texts
+    assert "提交…" not in _button_labels(root)
+    assert "推送…" not in _button_labels(root)
+    assert "打开版本与同步" in _button_labels(root)
     assert any("保存只改设置，不动库" in text for text in texts)
     # 批 119：去掉旧 720 限宽，正文铺满页壳，右侧不再留空白竖栏。
     widths = [c.width for c in _walk(root) if getattr(c, "width", None) == 720]
@@ -199,9 +216,15 @@ def test_only_save_is_primary(tmp_path, monkeypatch):
     asyncio.run(view._load())
     root = view.build()
     labels = _button_labels(root)
-    assert "保存设置" in labels
-    save = [c for c in _buttons(root) if _label(c) == "保存设置"][0]
+    assert "保存偏好" in labels
+    save = [c for c in _buttons(root) if _label(c) == "保存偏好"][0]
     assert save.disabled is True
+
+
+def test_software_settings_page_does_not_offer_bib_git_actions():
+    source = inspect.getsource(SettingsPage.build)
+    assert "提交…" not in source
+    assert "推送…" not in source
 
 
 # ── 读取 ──────────────────────────────────────────────────────────────
@@ -255,65 +278,77 @@ def test_missing_db_offers_import_link(tmp_path, monkeypatch):
     assert any("去入藏" in label for label in _button_labels(root))
 
 
-# ── 02 核实 ───────────────────────────────────────────────────────────
-def test_save_disabled_until_dirty(tmp_path, monkeypatch):
+# ── 稳定引用库偏好 / 旧键兼容 ──────────────────────────────────────────
+def test_save_disabled_until_lookup_preference_is_dirty(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     _install(monkeypatch)
     asyncio.run(view._load())
     assert view._dirty() is False
-    view.verify_max = "80"
+    view.lookup_enabled = False
     assert view._dirty() is True
     view._save()
-    assert host.store.get("bibdb.verify_max") == 80
+    assert host.store.data["bibdb.lookup_enabled"] is False
+    assert host.store.writes == [("bibdb.lookup_enabled", False)]
     assert view._dirty() is False
     assert "已保存" in view.receipt and "settings.json" in view.receipt
 
 
 def test_empty_verify_max_means_engine_default(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
+    host.store.data.update({"bibdb.verify_max": "", "bibdb.verify_plan": False,
+                           "bibdb.verify_all_refs": False})
     _install(monkeypatch)
     asyncio.run(view._load())
-    view.verify_max = ""
+    assert "bibdb.lookup_enabled" in host.store.reads
+    assert not ({"bibdb.verify_max", "bibdb.verify_plan", "bibdb.verify_all_refs"}
+                & set(host.store.reads))
     assert view._dirty() is False
-    view.verify_max = "120"
     view._save()
-    assert host.store.get("bibdb.verify_max") == 120
+    assert host.store.writes == []
+    assert host.store.data["bibdb.verify_max"] == ""
 
 
 def test_invalid_verify_value_blocks_save(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
+    host.store.data.update({"bibdb.verify_max": 99999, "bibdb.verify_plan": True,
+                           "bibdb.verify_all_refs": True})
     _install(monkeypatch)
     asyncio.run(view._load())
-    view.verify_max = "99999"
-    view.verify_error = view._validate(view.verify_max)
-    assert "0–10000" in view.verify_error
+    root = view.build()
+    texts = _texts(root)
+    assert not ({"bibdb.verify_max", "bibdb.verify_plan", "bibdb.verify_all_refs"}
+                & set(host.store.reads))
+    assert "99999" not in texts
+    assert "核实上限" not in texts
     assert view._dirty() is False
     view._save()
-    assert "bibdb.verify_max" not in host.store.data
+    assert host.store.writes == []
+    assert host.store.data["bibdb.verify_max"] == 99999
 
 
-def test_switch_toggle_is_dirty_and_saved(tmp_path, monkeypatch):
+def test_lookup_switch_toggle_is_dirty_and_saved(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     _install(monkeypatch)
     asyncio.run(view._load())
-    event = type("E", (), {"control": type("C", (), {"value": True})()})()
-    view._on_switch("bibdb.verify_plan", event)
-    assert view.switch_values["bibdb.verify_plan"] is True
+    event = type("E", (), {"control": type("C", (), {"value": False})()})()
+    view._on_lookup_change(event)
+    assert view.lookup_enabled is False
     assert view._dirty() is True
     view._save()
-    assert host.store.get("bibdb.verify_plan") is True
+    assert host.store.data["bibdb.lookup_enabled"] is False
+    assert host.store.writes == [("bibdb.lookup_enabled", False)]
 
 
 def test_verify_all_needs_second_confirm(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
+    host.store.data["bibdb.verify_all_refs"] = True
     _install(monkeypatch)
     asyncio.run(view._load())
-    event = type("E", (), {"control": type("C", (), {"value": True})()})()
-    view._on_switch("bibdb.verify_all_refs", event)
-    assert host.page.dialogs, "全量核实必须二次确认"
-    assert view.switch_values["bibdb.verify_all_refs"] is False
-    view._force_switch("bibdb.verify_all_refs", True)
-    assert view.switch_values["bibdb.verify_all_refs"] is True
+    root = view.build()
+    assert not host.page.dialogs
+    assert "允许全量核实" not in _texts(root)
+    assert "bibdb.verify_all_refs" not in host.store.reads
+    assert host.store.data["bibdb.verify_all_refs"] is True
 
 
 # ── 03 Git ────────────────────────────────────────────────────────────
@@ -322,9 +357,9 @@ def test_git_unavailable_disables_actions(tmp_path, monkeypatch):
     _install(monkeypatch, status={"ok": False, "error": "不是 git 仓库"})
     asyncio.run(view._load())
     root = view.build()
-    texts = _texts(root)
-    assert any("不可用" == text for text in texts)
-    assert any("不是 git 仓库" == text for text in texts)
+    assert "打开版本与同步" in _button_labels(root)
+    assert "提交…" not in _button_labels(root)
+    assert "推送…" not in _button_labels(root)
 
 
 def test_commit_confirm_copy_and_write(tmp_path, monkeypatch):
@@ -348,8 +383,8 @@ def test_push_disabled_when_nothing_ahead(tmp_path, monkeypatch):
     _install(monkeypatch, status={"ahead": 0})
     asyncio.run(view._load())
     root = view.build()
-    push = [c for c in _buttons(root) if "推送" in _label(c)]
-    assert push and push[0].disabled is True
+    assert "推送…" not in _button_labels(root)
+    assert "打开版本与同步" in _button_labels(root)
 
 
 def test_rollback_confirm_has_numbers_and_new_commit(tmp_path, monkeypatch):
@@ -388,5 +423,5 @@ def test_danger_zone_is_tail_and_holds_rollback(tmp_path, monkeypatch):
     root = view.build()
     zones = [c for c in _walk(root)
              if getattr(c, "bgcolor", None) == Tokens().palette.danger_soft]
-    assert zones, "页尾危险区必须存在"
-    assert zones[0].height == 56
+    assert not zones, "回退危险区应只出现在独立版本与同步页"
+    assert "回退本次写入" not in _button_labels(root)

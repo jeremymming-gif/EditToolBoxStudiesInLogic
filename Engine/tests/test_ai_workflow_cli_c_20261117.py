@@ -112,11 +112,56 @@ def _read(path: str) -> str:
         return f.read()
 
 
+def _test_taskbook_sha256(tmp_root: str) -> None:
+    """任务书摘要在 CLI dispatch 前核对；无摘要仍走旧调用路径。"""
+    import hashlib
+
+    taskbook_text = "任务书：α\r\n正文。\n"
+    taskbook_path = os.path.join(tmp_root, "digest-taskbook.md")
+    with open(taskbook_path, "w", encoding="utf-8", newline="") as f:
+        f.write(taskbook_text)
+    digest = hashlib.sha256(taskbook_text.encode("utf-8")).hexdigest()
+    calls = []
+    original_request = CLI._w.request
+
+    def fake_request(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "reply_path": "", "chars": 0}
+
+    CLI._w.request = fake_request
+    try:
+        base = ["--work-dir", tmp_root, "request", "--taskbook", taskbook_path]
+        rc, _out, err = _run(base + ["--taskbook-sha256", digest])
+        check("⑨h request 接受与解码后 UTF-8 文本匹配的 SHA-256",
+              rc == 0 and len(calls) == 1
+              and calls[-1].get("taskbook_text") == taskbook_text,
+              f"rc={rc} dispatches={len(calls)}")
+
+        for label, supplied in (("不匹配", "0" * 64),
+                                ("格式错误", "xyz"), ("空值", "")):
+            before = len(calls)
+            rc, _out, err = _run(base + ["--taskbook-sha256", supplied])
+            check(f"⑨i {label}的任务书 SHA-256 在 dispatch 前拒绝",
+                  rc == 2 and len(calls) == before and "SHA-256" in err,
+                  f"rc={rc} dispatch_delta={len(calls) - before}")
+
+        before = len(calls)
+        rc, _out, err = _run(base)
+        check("⑨j 不提供任务书摘要时保持旧 CLI request 行为",
+              rc == 0 and len(calls) == before + 1
+              and calls[-1].get("taskbook_text") == taskbook_text,
+              f"rc={rc} dispatch_delta={len(calls) - before}")
+    finally:
+        CLI._w.request = original_request
+
+
 def main() -> int:
     print("被测模块：", W.SCHEMA_VERSION, "| 状态文件：", W.STATE_NAME)
     tmp, bib, tex, reply = _workspace()
     ws = os.path.join(tmp, "ws")
     try:
+        _test_taskbook_sha256(tmp)
+
         # ── ① 门面一跳 ────────────────────────────────────────────────
         r = subprocess.run([PY, "-X", "utf8", os.path.join(_ENGINE, "convert.py"),
                             "--version"], capture_output=True, text=True, timeout=120,

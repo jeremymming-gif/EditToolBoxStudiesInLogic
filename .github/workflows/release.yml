@@ -200,6 +200,10 @@ jobs:
           test -n "$APPDIR"
           PLIST="$APPDIR/Contents/Info.plist"
           PB=/usr/libexec/PlistBuddy
+          # 外层应用标识使用固定 ASCII 值，保留中文应用名。
+          BUNDLE_ID=io.github.jeremymming-gif.edittoolboxstudiesinlogic
+          $PB -c "Set :CFBundleIdentifier $BUNDLE_ID" "$PLIST" 2>/dev/null \
+            || $PB -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$PLIST"
           # 重复双击不要开出第二个实例
           $PB -c "Add :LSMultipleInstancesProhibited bool true" "$PLIST" 2>/dev/null \
             || $PB -c "Set :LSMultipleInstancesProhibited true" "$PLIST"
@@ -208,7 +212,22 @@ jobs:
             $PB -c "Set :$key $V" "$PLIST" 2>/dev/null \
               || $PB -c "Add :$key string $V" "$PLIST"
           done
-          plutil -p "$PLIST" | grep -E 'LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
+          plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
+
+      - name: macOS 重签封条（launcher + 外层 ad-hoc，不 --deep）
+        run: |
+          set -euo pipefail
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR"
+          # Contents/MacOS 下的 launcher 脚本属嵌套代码，需先自签，否则外层签名报
+          # "code object is not signed at all ... In subcomponent: .../MacOS/SLCNEngine"。
+          codesign --force --sign - "$APPDIR/Contents/MacOS/SLCNEngine"
+          # PlistBuddy 改过 Info.plist 后 PyInstaller 的 ad-hoc 封条已失效：只重签外层。
+          # 绝不能加 --deep（会重新签内嵌 flet-client 并剥掉 file picker 需要的 entitlements）。
+          codesign --force --sign - "$APPDIR"
+          # 自检：deep+strict 必须 rc0（P09-PRE-005：封条破损 = 构建缺陷）
+          codesign --verify --deep --strict "$APPDIR"
+          codesign -dv "$APPDIR" 2>&1 | grep -E 'Signature|Identifier|TeamIdentifier' || true
 
       - name: 生成发布 zip（macOS，ditto 保留 .app 结构）
         run: |
@@ -240,6 +259,22 @@ jobs:
           echo "zip: $ZIP"
           echo "sha256: $ZHASH"
           printf '### macOS artifact\n\nzip: %s\nsha256: %s\n' "$ZIP" "$ZHASH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 解包校验发布 zip 签名（macOS）
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
+          ZIP="EditToolBox-$V-macOS-arm64.zip"
+          VERIFY_DIR=$(mktemp -d "$RUNNER_TEMP/slcn-macos-verify.XXXXXX")
+          trap 'rm -rf -- "$VERIFY_DIR"' EXIT
+          # 检查清理 AppleDouble 后的最终包能恢复 launcher 的签名属性。
+          ditto -x -k "$ZIP" "$VERIFY_DIR"
+          APPS=("$VERIFY_DIR"/pkg-mac/*.app)
+          if [ "${#APPS[@]}" -ne 1 ] || [ ! -d "${APPS[0]}" ]; then
+            echo "::error::macOS 发布 zip 应包含一个 .app"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "${APPS[0]}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -325,7 +360,9 @@ jobs:
           $sidecarRel = "SLCNEngine/SLCNEngine.exe"
           $sh = (Get-FileHash (Join-Path $pkg $sidecarRel) -Algorithm SHA256).Hash.ToLower()
           $lines += "$sh  $sidecarRel"
-          $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
+          # 用 LF 和无 BOM 的 UTF-8，保留中文文件名并兼容 shasum。
+          $manifest = ($lines -join "`n") + "`n"
+          $manifest | Set-Content -Encoding utf8NoBOM -NoNewline "$pkg/sha256.txt"
           Compress-Archive -Path "$pkg/*" -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
           $zhash = (Get-FileHash "EditToolBox-$V-Windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
           Write-Host "sha256: $zhash"
@@ -373,8 +410,8 @@ jobs:
           **Flet 单壳版**（v1.5.0 起默认产品线；旧 Tk（Windows）与 SwiftUI（macOS）版已冻结，
           仅保留源码作回退参考，不再发布）。Windows / macOS **免安装**包。
 
-          本版**未做代码签名、未做公证**（编辑部 2026-10-16 定案），首次打开会被系统拦一下
-          —— **不是文件坏了，也不是中毒**。
+          本版未做 Developer ID / Authenticode 签名或公证。macOS 包使用 ad-hoc 签名封条
+          （无 Team ID），Windows 程序未做 Authenticode 签名；首次打开可能出现系统提示。
 
           | 平台 | 会看到什么 | 怎么打开 |
           |---|---|---|
@@ -393,8 +430,8 @@ jobs:
           **下载哪个**
 
           - `EditToolBox-@V@-macOS-arm64.zip`（Apple 芯片）＋ 说明 `FIRST-OPEN-macOS.txt`
-          - `EditToolBox-@V@-Windows-x64.zip`（内含 `编辑部工具箱.exe` 与引擎 sidecar
-            `SLCNEngine.exe`，**必须放在同一个目录**）＋ 说明 `FIRST-OPEN-Windows.txt`
+          - `EditToolBox-@V@-Windows-x64.zip`（主程序 `编辑部工具箱.exe`，引擎入口
+            `SLCNEngine/SLCNEngine.exe`。**解压后请保留原目录结构**）＋ 说明 `FIRST-OPEN-Windows.txt`
           - `latest.json`：应用启动时比对它，**只提示、不自动替换**
 
           **运行环境**：「初排转换」编译 PDF 需要系统里有 TeX（`xelatex`/`biber`）；

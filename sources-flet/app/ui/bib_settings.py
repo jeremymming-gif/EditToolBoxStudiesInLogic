@@ -1,4 +1,4 @@
-"""引用库 · 设置（批 109 W1a + W1b R6）：库文件只读统计 + 核实成本闸门 + Git 版本层。
+"""引用库 · 设置（批 109 W1a + W1b R6）：稳定库设置、只读统计与版本状态入口。
 
 旧壳 Tk 的设置页（`bibdb_ui.py::BibDbSettingsPage`）只有核实成本闸门与笔记仓路径；Git
 版本层在旧壳「待处理」页。Flet 单壳把两件事并到「引用库 → 设置」：
@@ -7,10 +7,7 @@
   （--verify-all-refs，开时二次确认）/ 先查引用库（--no-bibdb）+ 当前生效值；值存在
   `settings.json` 的 `bibdb` 段（P2_SETTINGS 隔离，旧配置 `verifyMax` 等键兼容）；
 * 库文件：路径、是否存在、条目数（`bibdb.py stats --json`）、文件大小、打开库文件夹；
-* 版本层（复用 `services/bib_git.py`）：分支 / upstream / 未推送 / 脏否 / 最近 3 条提交；
-* 写操作一律二次确认，且**只动本地 git**：提交只含 `bib_db/bibliography.jsonl`；推送只推
-  「连续仅含 bib_db/ 文件」的前缀（遇其它提交整次拒绝，绝不 force）；回退 = checkout 上一
-  个提交的库文件 + 生成新提交（不 hard reset、不推送）。绝不自动 push / pull / 切分支。
+* Git 状态摘要和「版本与同步」工作页入口；commit / push / rollback 只在独立工作页执行。
 
 纯函数放上半部（文案与降级规则可单测）；控件由 `build()` 重建，状态留在视图对象上。
 """
@@ -241,8 +238,7 @@ class BibSettingsView:
         t = self.page.t
         if not self.loaded and not self.loading:
             self._run(self.ensure_loaded())
-        controls: list = [self._bibdb_card(), self._library_card(), self._git_card(),
-                          self._boundary_card()]
+        controls: list = [self._bibdb_card(), self._library_card(), self._version_summary()]
         controls += [C.notice_bar(message, t, tone) for tone, message in self.notices]
         return ft.Column(spacing=t.sp("2"), controls=controls)
 
@@ -388,121 +384,27 @@ class BibSettingsView:
             C.text("正在读取…" if self.loading else "", t, "small", t.palette.text_faint),
         ])
         return C.card(ft.Column(spacing=t.sp("half"), controls=[
-            C.section_title("引用库 · 设置", t, note="只读统计 + 版本层；写操作都要二次确认"),
+            C.section_title("引用库路径", t, note="只读统计"),
             *rows, buttons,
         ]), t)
 
-    def _git_card(self) -> ft.Control:
+    def _version_summary(self) -> ft.Control:
         t = self.page.t
         probe = self.probe or {}
         lines = probe_lines(probe)
-        controls: list = [C.section_title(
-            "Git 版本层", t, note="本地 git · 只提交 bib_db/bibliography.jsonl")]
-        controls += [C.text(line, t, "small", t.palette.text) for line in lines]
-        warnings = [str(item) for item in probe.get("warnings") or [] if str(item).strip()]
-        for warning in warnings[:3]:
-            controls.append(C.notice_bar(warning, t, "warn"))
-        if probe and not probe.get("ok") and probe.get("error"):
-            controls.append(C.notice_bar(f"版本层不可用：{probe['error']}", t, "warn"))
-        available = git_available(probe)
-        buttons = ft.Row(spacing=t.sp("1"), wrap=True,
-                         vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            C.secondary_button("刷新", lambda e: self._run(self.refresh()), t,
-                               disabled=self.busy),
-            C.primary_button("提交…", lambda e: self._ask_commit(), t, disabled=self.busy or not available),
-            C.secondary_button("推送…", lambda e: self._ask_push(), t, disabled=self.busy or not available),
-            C.secondary_button("回退到上一个提交…", lambda e: self._ask_rollback(), t,
-                               disabled=self.busy or not available),
-            C.text("处理中…" if self.busy else "", t, "small", t.palette.text_faint),
-        ])
-        controls.append(buttons)
+        controls: list = [C.section_title("版本状态摘要", t,
+                                          note="详细 Git 状态与本地操作在独立工作页")]
+        controls += [C.text(line, t, "small", t.palette.text) for line in lines[:3]]
+        if probe.get("conflict") or probe.get("merge") or probe.get("rebase"):
+            controls.append(C.notice_bar(lines[-1], t, "warn"))
+        elif not probe.get("ok") and probe.get("error"):
+            controls.append(C.notice_bar(f"版本层不可用：{probe['error']}", t, "error"))
+        controls.append(C.secondary_button(
+            "打开版本与同步", lambda e: self.page.navigate_route("bib:version_sync"), t,
+            icon="HISTORY"))
         return C.card(ft.Column(spacing=t.sp("half"), controls=controls), t)
-
-    def _boundary_card(self) -> ft.Control:
-        t = self.page.t
-        return C.card(ft.Column(spacing=t.sp("half"), controls=[
-            C.section_title("边界", t, note="本页不写引用库内容"),
-            C.text("提交 / 推送 / 回退都要二次确认；本页绝不自动 push、pull 或切分支。",
-                   t, "small", t.palette.text_muted),
-            C.text("回退 = 把库文件恢复到上一个提交再生成一条新提交；不 hard reset、不推送，"
-                   "其它文件不动。", t, "small", t.palette.text_muted),
-        ]), t)
 
     def _open_folder(self) -> None:
         db = str((self.stats or {}).get("db") or "")
         if db:
             self.page.app.open_path(os.path.dirname(db))
-
-    # -- 动作（全部二次确认）--------------------------------------------
-    def _git_guard(self) -> bool:
-        """版本层不可用 → 统一提示并刷新（提交/推送/回退共用，避免三份同文）。"""
-        if git_available(self.probe or {}):
-            return True
-        self._notice("error", "版本库不可用（未就绪，或有冲突/变基/合并）。先点「刷新」重试。")
-        self._refresh()
-        return False
-
-    def _ask_commit(self) -> None:
-        if self.busy:
-            return
-        if not self._git_guard():
-            return
-        C.confirm(self.page.page, self.page.t, title="提交引用库改动？",
-                  message=commit_confirm_text(self.probe or {}), confirm_label="提交",
-                  on_confirm=lambda: self._run(self._do_commit()))
-
-    def _ask_push(self) -> None:
-        if self.busy:
-            return
-        if not self._git_guard():
-            return
-        C.confirm(self.page.page, self.page.t, title="推送引用库提交？",
-                  message=push_confirm_text(self.probe or {}), confirm_label="推送",
-                  on_confirm=lambda: self._run(self._do_push()))
-
-    def _ask_rollback(self) -> None:
-        if self.busy:
-            return
-        if not self._git_guard():
-            return
-        C.confirm(self.page.page, self.page.t, title="回退引用库到上一个提交？",
-                  message=rollback_confirm_text(), confirm_label="回退",
-                  on_confirm=lambda: self._run(self._do_rollback()))
-
-    async def _do_commit(self) -> None:
-        self.busy = True
-        self._refresh()
-        try:
-            head = str((self.probe or {}).get("head") or "")
-            message = f"引用库：手动提交（设置页；sha {GIT.short_sha(head, 8)} 起）"
-            result = await asyncio.to_thread(GIT.commit_db, self._db(), message)
-            tone, text = commit_notice(result)
-        except Exception as exc:  # noqa: BLE001
-            tone, text = "error", f"提交失败：{exc}"
-        self.busy = False
-        self._notice(tone, text)
-        await self.ensure_loaded(force=True)
-
-    async def _do_push(self) -> None:
-        self.busy = True
-        self._refresh()
-        try:
-            result = await asyncio.to_thread(GIT.push, self._db(), notes_repo=self._notes())
-            tone, text = push_notice(result)
-        except Exception as exc:  # noqa: BLE001
-            tone, text = "error", f"推送失败：{exc}"
-        self.busy = False
-        self._notice(tone, text)
-        await self.ensure_loaded(force=True)
-
-    async def _do_rollback(self) -> None:
-        self.busy = True
-        self._refresh()
-        try:
-            result = await asyncio.to_thread(GIT.rollback, self._db(), notes_repo=self._notes())
-            tone, text = rollback_notice(result)
-        except Exception as exc:  # noqa: BLE001
-            tone, text = "error", f"回退失败：{exc}"
-        self.busy = False
-        self._notice(tone, text)
-        await self.ensure_loaded(force=True)

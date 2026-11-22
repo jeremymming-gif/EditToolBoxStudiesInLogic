@@ -317,12 +317,15 @@ S.run = _blocked_preflight_run
 S.scan_code_health = lambda: None
 S.check_cases = lambda: None
 S.check_app_bundle = lambda: None
+# The suite runner marks this process nested; this case must exercise a top-level --full call.
+_nested_value = os.environ.pop("SLCN_SELFCHECK_NESTED", None)
 try:
     _stdout = io.StringIO()
     with contextlib.redirect_stdout(_stdout):
         _blocked_rc = S.main(["--full"])
     check("③d1 full 前提缺失时 BLOCKED、不启动 full runner，并保留低成本文档检查",
           _blocked_rc != 0 and "BLOCKED  full 门禁未启动" in _stdout.getvalue()
+          and "SKIP  引擎套件（嵌套调用，防递归）" not in _stdout.getvalue()
           and any(any("test_docs_consistency.py" in part for part in cmd)
                   and "--no-test-runs" in cmd for cmd in _runs)
           and not any(any("run_engine_tests.sh" in part for part in cmd) for cmd in _runs),
@@ -332,6 +335,8 @@ finally:
     S.run = _orig_run
     S.scan_code_health, S.check_cases, S.check_app_bundle = _orig_health, _orig_cases, _orig_app
     S.FAILS[:], S.SKIPS[:] = _orig_selfcheck_fails, _orig_selfcheck_skips
+    if _nested_value is not None:
+        os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
 
 # ── ③e full 严格运行时前提必须在长套件前检查 ───────────────────────────────
 def _full_runtime_inputs():
@@ -416,6 +421,57 @@ finally:
     if _nested_value is not None:
         os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
 
+# ── ③e full runner 红：cheap docs 仍跑，但 strict 不得重启长套件 ────────────
+_red_inputs = _full_runtime_inputs()
+_red_runs = []
+_red_envs = []
+_saved_run = S.run
+_saved_env, _saved_imports = S.check_env, S.check_imports
+_saved_health, _saved_cases, _saved_app = S.scan_code_health, S.check_cases, S.check_app_bundle
+_saved_state = (list(S.FAILS), list(S.WARNS), list(S.SKIPS))
+_nested_value = os.environ.pop("SLCN_SELFCHECK_NESTED", None)
+_orig_collect_inputs = G.collect_auto_inputs
+_orig_identity = G.test_run_identity
+G.collect_auto_inputs = lambda: _red_inputs
+G.test_run_identity = lambda inputs: "c" * 64
+
+
+def _red_full_run(cmd, cwd=None, timeout=1800, env_extra=None):
+    _red_runs.append(list(cmd))
+    _red_envs.append(dict(env_extra) if env_extra else None)
+    if any("run_engine_tests.sh" in part for part in cmd):
+        return 7, "汇总：197 套件，红 7"
+    if any("test_docs_consistency.py" in part for part in cmd):
+        return 0, "失败 0 项（全部通过；低成本文档检查）"
+    return 99, "unexpected command"
+
+
+S.run = _red_full_run
+S.check_env = S.check_imports = lambda: None
+S.scan_code_health = S.check_cases = S.check_app_bundle = lambda: None
+try:
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = [], [], []
+    _stdout = io.StringIO()
+    with contextlib.redirect_stdout(_stdout):
+        _red_rc = S.main(["--full", "--no-cases", "--skip-app"])
+    _runner_cmds = [cmd for cmd in _red_runs if any("run_engine_tests.sh" in p for p in cmd)]
+    _docs_cmds = [cmd for cmd in _red_runs if any("test_docs_consistency.py" in p for p in cmd)]
+    check("③e full runner 红时不重启 strict，改跑低成本 docs 并将严格计数标为 NOT_RUN",
+          _red_rc != 0 and len(_runner_cmds) == 1 and len(_docs_cmds) == 1
+          and "--no-test-runs" in _docs_cmds[0] and "--strict-tests" not in _docs_cmds[0]
+          and "FAIL  引擎套件（full）" in _stdout.getvalue()
+          and "NOT_RUN  严格测试计数未执行（full runner 已失败" in _stdout.getvalue(),
+          _stdout.getvalue()[-500:] + str(_red_runs))
+finally:
+    G.collect_auto_inputs = _orig_collect_inputs
+    G.test_run_identity = _orig_identity
+    S.run = _saved_run
+    S.check_env, S.check_imports = _saved_env, _saved_imports
+    S.scan_code_health, S.check_cases, S.check_app_bundle = _saved_health, _saved_cases, _saved_app
+    S.FAILS[:], S.WARNS[:], S.SKIPS[:] = _saved_state
+    if _nested_value is not None:
+        os.environ["SLCN_SELFCHECK_NESTED"] = _nested_value
+
 # 成功路径也必须只采集一次；manifest identity 与严格文档检查复用同一份 inputs。
 _valid_inputs = _full_runtime_inputs()
 _collect_calls = []
@@ -455,6 +511,10 @@ try:
                        if any("test_docs_consistency.py" in part for part in cmd))
     check("③e full 通过时 inputs/runtime 只采集一次，并由 runner 与严格文档检查共同复用",
           _full_rc == 0 and len(_collect_calls) == 1 and _identity_inputs == [_valid_inputs]
+          and len([cmd for cmd in _runs
+                   if any("run_engine_tests.sh" in part for part in cmd)]) == 1
+          and "--strict-tests" in _runs[_docs_index]
+          and "--no-test-runs" not in _runs[_docs_index]
           and _run_envs[_runner_index] == _run_envs[_docs_index]
           and _run_envs[_runner_index]["SLCN_TEST_INPUTS_SHA256"] == "b" * 64,
           str(_run_envs))

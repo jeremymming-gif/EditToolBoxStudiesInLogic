@@ -1,13 +1,13 @@
-"""引用库 · 查库（批 115 夜间重设计 BPAGES-A，VIEW_KEY="query"；P06 加分页）。
+"""引用库 · 查库（统一结构化检索；P06 加分页）。
 
-只读检索页：key / DOI / 题名三种方式，首查 100 条；列表型查询（题名 / 高级检索）
+只读检索页：默认使用可组合条件检索，首查 100 条；查询结果
 按引擎 ``page`` 六字段（offset/limit/total_matched/has_more/next_offset/db_sha256）
 续页，单次 ``--limit`` 仍是 1–200，绝不靠放宽 limit 伪装「载入更多」。命中总数一律
 用引擎的 ``total_matched``（不是 ``len(hits)``）；库在分页之间变化时拒绝合并并提示
 按当前库重查。右侧 360 详情在 <1100 时折成表格下方的展开面板（面板占满剩余高度、正文内部
 滚动、动作行钉在底部；不横向滚动）；筛选行在 <820 时改折行排布，360 宽不裁切。
 
-所有引擎调用走 ``EB.bibdb_query_basic_call`` / ``EB.bibdb_query_advanced_call``，
+所有查库请求统一走 ``EB.bibdb_query_advanced_call``，
 通过 ``EB.read_json_command`` 执行；测试 monkeypatch 该函数或直接检查 argv。
 """
 
@@ -32,14 +32,31 @@ VIEW_KEY = "query"
 TITLE = "查库"
 ROLE = "readonly"
 
-MODES = (("key", "key"), ("doi", "DOI"), ("title", "题名"))
-MODE_LABELS = dict(MODES)
-HINTS = {
-    "key": "如 Fine1975",
-    "doi": "如 10.1007/s10992-020-09558-5",
-    "title": "如 逻辑研究（可模糊）",
+COMMON_QUERY_FIELDS = (
+    ("key", "key", "如 Fine1975"),
+    ("alias", "别名", "按别名精确匹配"),
+    ("doi", "DOI", "如 10.1007/s10992-020-09558-5"),
+    ("author", "作者", "姓名或作者片段"),
+    ("title", "题名", "题名关键词"),
+    ("year", "年份", "年份或范围，如 1990-2000"),
+)
+QUERY_FIELD_LABELS = {
+    "editor": "编者", "booktitle": "书名", "journal": "期刊",
+    "publisher": "出版社", "any": "任意字段",
 }
-EMPTY_INPUT = "输入要查的内容：key、DOI 或题名。"
+QUERY_FIELD_MODES = {
+    "key": "exact", "alias": "exact", "doi": "exact", "year": "exact",
+    "author": "contains", "editor": "contains", "title": "contains",
+    "booktitle": "contains", "journal": "contains", "publisher": "contains",
+    "any": "contains",
+}
+QUERY_MATCH_OPTIONS = {
+    field: [(mode, EB.QUERY_MATCH_LABELS[mode])
+            for mode in EB.QUERY_MATCH_MODES
+            if mode != "fuzzy" or field not in EB.QUERY_NO_FUZZY]
+    for field in EB.QUERY_FIELDS
+}
+EMPTY_INPUT = "至少填写一项检索条件。"
 NO_RESULT = "没有匹配的记录"
 NO_RESULT_HINT = "试试放宽年份，或只按题名检索。"
 QV_NO_RESULT_HINT = NO_RESULT_HINT
@@ -214,8 +231,7 @@ def hit_row(hit: dict) -> dict:
 class QueryView:
     def __init__(self, page) -> None:
         self.page = page
-        self.mode = "key"
-        self.text = ""
+        self.mode = "advanced"
         self.rows: list[dict] = []
         self.hits: list[dict] = []
         self.total_matched: int | None = None
@@ -236,8 +252,11 @@ class QueryView:
         self._task_running = False
         self._build_width = 0.0
         # ── P06 分页与复用状态（CONTRACT §5）：page 字段只消费、不重算 ──
-        self.query_advanced = False
-        self.adv_values: dict[str, str] = {}
+        self.query_advanced = True
+        self.adv_values: dict[str, str] = {field: "" for field, _, _ in COMMON_QUERY_FIELDS}
+        self.adv_modes: dict[str, str] = {field: QUERY_FIELD_MODES[field]
+                                          for field, _, _ in COMMON_QUERY_FIELDS}
+        self.extra_terms: list[dict[str, str]] = []
         self.adv_strict = False
         self._gen = 0
         self._loaded = 0
@@ -326,8 +345,8 @@ class QueryView:
 
     # ── 生命周期 ────────────────────────────────────────────────────────
     def activate(self) -> None:
-        # 查库不自动跑查询（没有条件时不猜），首屏保留「还没有查询」。
-        self._set_store("bib_query_mode", self.mode)
+        # 无条件时不自动跑查询；首屏显示空态和完整检索条件。
+        self.query_advanced = True
 
     def refresh_running(self) -> None:
         return None
@@ -336,62 +355,94 @@ class QueryView:
         return self._query_button()
 
     # ── 条件 ────────────────────────────────────────────────────────────
-    def _mode_of(self, raw) -> str:
-        key = str(getattr(raw, "data", raw) or "").strip().lower()
-        return key if key in dict(MODES) else "key"
-
-    def _on_mode(self, e) -> None:
-        mode = self._mode_of(e)
-        if mode == self.mode and not self.query_advanced:
-            self._set_store("bib_query_mode", self.mode)
-            self._refresh()
-            return
-        self.mode = mode
-        self.query_advanced = False
-        had = self.loaded and bool(str(self.text or "").strip())
-        self._set_store("bib_query_mode", self.mode)
-        # 条件变化（契约 §5）：重置分页状态与选择，再走首查。
-        self._reset_paging()
-        if had:
-            self.error = ""
-            self.cancelled = False
-            self._schedule()
-        else:
-            self._refresh()
-
-    def _on_text(self, e) -> None:
+    def _on_advanced_field(self, key: str, e) -> None:
         control = getattr(e, "control", e)
         value = str(getattr(control, "value", None)
                     if hasattr(control, "value") else getattr(e, "data", "") or "")
-        if value == self.text and not self.input_error:
+        if value == self.adv_values.get(key, "") and not self.input_error:
             return
         had_error = bool(self.input_error)
-        self.text = value
-        self._set_store("bib_query_text", self.text)
+        self.adv_values[key] = value
         self.input_error = ""
-        self.query_advanced = False
         # 条件变化（契约 §5）：作废旧分页/在途结果与选择。输入中不整页重建，
         # 免得重建 TextField 丢焦点；真正的首查在回车/「查询」时发起。
         self._reset_paging()
         if had_error:
             self._refresh()
 
+    def _on_extra_value(self, index: int, e) -> None:
+        control = getattr(e, "control", e)
+        value = str(getattr(control, "value", None)
+                    if hasattr(control, "value") else getattr(e, "data", "") or "")
+        if index >= len(self.extra_terms):
+            return
+        if value == self.extra_terms[index].get("value", "") and not self.input_error:
+            return
+        had_error = bool(self.input_error)
+        self.extra_terms[index]["value"] = value
+        self.input_error = ""
+        self._reset_paging()
+        if had_error:
+            self._refresh()
+
+    def _on_extra_field(self, index: int, e) -> None:
+        field = str(getattr(e, "data", None) or
+                    getattr(getattr(e, "control", None), "value", "") or "editor")
+        if index >= len(self.extra_terms) or field not in QUERY_FIELD_LABELS:
+            return
+        self.extra_terms[index]["field"] = field
+        self.extra_terms[index]["mode"] = QUERY_FIELD_MODES[field]
+        self._reset_paging()
+        self._refresh()
+
+    def _on_match_mode(self, field: str, e) -> None:
+        mode = str(getattr(e, "data", None) or
+                   getattr(getattr(e, "control", None), "value", "") or "")
+        if mode not in {key for key, _ in QUERY_MATCH_OPTIONS[field]}:
+            return
+        if self.adv_modes.get(field) == mode:
+            return
+        self.adv_modes[field] = mode
+        self._reset_paging()
+        self._refresh()
+
+    def _on_extra_mode(self, index: int, e) -> None:
+        if index >= len(self.extra_terms):
+            return
+        field = self.extra_terms[index].get("field", "editor")
+        mode = str(getattr(e, "data", None) or
+                   getattr(getattr(e, "control", None), "value", "") or "")
+        if mode not in {key for key, _ in QUERY_MATCH_OPTIONS[field]}:
+            return
+        self.extra_terms[index]["mode"] = mode
+        self._reset_paging()
+        self._refresh()
+
+    def _add_extra_term(self, e=None) -> None:
+        self.extra_terms.append({"field": "editor", "value": "",
+                                 "mode": QUERY_FIELD_MODES["editor"]})
+        self._reset_paging()
+        self._refresh()
+
+    def _remove_extra_term(self, index: int, e=None) -> None:
+        if 0 <= index < len(self.extra_terms):
+            self.extra_terms.pop(index)
+            self._reset_paging()
+            self._refresh()
+
     def _on_submit(self, e=None) -> None:
         self.query()
 
     def query(self) -> None:
-        """校验后启动查询；空输入只报错，不禁用按钮。"""
-        text = str(self.text or "").strip()
-        if not text:
+        """校验结构化条件后启动查询；空条件只报错，不禁用按钮。"""
+        if not self._has_condition():
             self.input_error = EMPTY_INPUT
             self.error = ""
             self._refresh()
-            self._focus_search()
             return
         self.input_error = ""
         self.error = ""
         self.cancelled = False
-        self.query_advanced = False
         # 新首查（契约 §5）：先清空旧分页/选择，再显式 offset=0 拉第一页。
         self._reset_paging()
         self._schedule()
@@ -422,25 +473,24 @@ class QueryView:
 
     # ── 分页状态（CONTRACT §5：page 字段只消费不重算）───────────────────
     def _is_list_query(self) -> bool:
-        """只有列表型查询（题名 / 高级检索）返回 page，可翻页；key/doi 是单条定位。"""
-        return bool(getattr(self, "query_advanced", False)) or self.mode == "title"
+        """统一检索走列表型分页，精确 key/DOI 条件也可与其他条件组合。"""
+        return True
 
     def _has_condition(self) -> bool:
-        if getattr(self, "query_advanced", False):
-            return any(str(value or "").strip()
-                       for value in (getattr(self, "adv_values", {}) or {}).values())
-        return bool(str(self.text or "").strip())
+        return (any(str(value or "").strip() for value in self.adv_values.values())
+                or any(str(term.get("value") or "").strip()
+                       for term in self.extra_terms))
 
     def _cond_snapshot(self) -> dict:
         """首查条件快照；载入更多必须与它逐字段一致（同条件才允许续页）。"""
         return {
-            "advanced": bool(getattr(self, "query_advanced", False)),
-            "mode": self.mode,
-            "text": str(self.text or "").strip(),
+            "advanced": True,
             "sort": self.sort_key,
             "strict": bool(getattr(self, "adv_strict", False)),
             "terms": {str(field): str(value or "").strip()
                       for field, value in (getattr(self, "adv_values", {}) or {}).items()},
+            "modes": dict(self.adv_modes),
+            "extra_terms": [dict(term) for term in self.extra_terms],
         }
 
     def _reset_paging(self) -> None:
@@ -474,20 +524,23 @@ class QueryView:
 
     # ── 执行 ────────────────────────────────────────────────────────────
     def _call(self, offset: int | None = None):
-        text = str(self.text or "").strip()
-        if getattr(self, "query_advanced", False):
-            terms = []
-            for field, mode in (("author", "contains"), ("title", "contains"),
-                                ("year", "exact"), ("doi", "exact")):
-                value = str(self.adv_values.get(field) or "").strip()
-                if value:
-                    terms.append((field, value, mode))
-            return EB.bibdb_query_advanced_call(
-                terms=terms, sort=self.sort_key, limit=self.limit, offset=offset,
-                strict=bool(self.adv_strict), bibtex=True, db=self._db())
-        return EB.bibdb_query_basic_call(
-            self.mode, text, limit=self.limit, offset=offset, bibtex=True,
-            db=self._db())
+        terms = [
+            (field, str(value or "").strip(), self.adv_modes.get(
+                field, QUERY_FIELD_MODES[field]))
+            for field, value in self.adv_values.items()
+            if str(value or "").strip()
+        ]
+        terms.extend(
+            (term["field"], str(term.get("value") or "").strip(),
+             term.get("mode") or QUERY_FIELD_MODES[term["field"]])
+            for term in self.extra_terms
+            if term.get("field") in QUERY_FIELD_MODES
+            and str(term.get("value") or "").strip()
+        )
+        return EB.bibdb_query_advanced_call(
+            terms=terms, sort=self.sort_key, sort_desc=self.sort_desc,
+            limit=self.limit, offset=offset,
+            strict=bool(self.adv_strict), bibtex=True, db=self._db())
 
     def _adopt_first(self, data: dict) -> None:
         """首查采纳：列表型用 page 六字段；无 page（旧引擎 / key/doi）退回旧字段。"""
@@ -518,7 +571,7 @@ class QueryView:
         self.truncated = self._has_more
         self.success = (f"找到 {self.total_matched:,} 条"
                         if self.total_matched else "0 条 · 没有匹配")
-        self._mark("bib_query_run", mode=self.mode, limit=self.limit,
+        self._mark("bib_query_run", mode="advanced", limit=self.limit,
                    count=self.count, total=self.total_matched)
 
     def _adopt_more(self, data: dict) -> None:
@@ -559,7 +612,7 @@ class QueryView:
         self.truncated = self._has_more
         self.success = (f"找到 {self.total_matched:,} 条"
                         if self.total_matched else "0 条 · 没有匹配")
-        self._mark("bib_query_more", mode=self.mode, limit=self.limit,
+        self._mark("bib_query_more", mode="advanced", limit=self.limit,
                    count=self.count, total=self.total_matched)
 
     async def _run(self, *, more: bool = False) -> None:
@@ -591,9 +644,12 @@ class QueryView:
             return
         self._refresh()
         try:
+            engine_started = time.monotonic()
             result = await asyncio.to_thread(
                 EB.read_json_command, call, timeout=30.0, notes=self._notes())
+            engine_elapsed_ms = round((time.monotonic() - engine_started) * 1000, 1)
         except Exception as exc:  # noqa: BLE001
+            engine_elapsed_ms = round((time.monotonic() - engine_started) * 1000, 1)
             result = {"ok": False, "json": {}, "error": f"{type(exc).__name__}: {exc}"}
         self.elapsed = time.monotonic() - started
         self.running = False
@@ -612,11 +668,18 @@ class QueryView:
             self._refresh()
             return
         data = result.get("json") or {}
+        adopt_started = time.monotonic()
         if more:
             self._adopt_more(data)
         else:
             self._adopt_first(data)
+        adopt_elapsed_ms = round((time.monotonic() - adopt_started) * 1000, 1)
+        refresh_started = time.monotonic()
         self._refresh()
+        self._mark("bib_query_timing", more=more, engine_ms=engine_elapsed_ms,
+                   adopt_ms=adopt_elapsed_ms,
+                   refresh_call_ms=round((time.monotonic() - refresh_started) * 1000, 1),
+                   loaded=self._loaded)
 
     async def _run_more(self) -> None:
         await self._run(more=True)
@@ -639,14 +702,11 @@ class QueryView:
 
     # ── 排序 ────────────────────────────────────────────────────────────
     def _on_sort(self, key: str, desc: bool) -> None:
-        mapping = {"title": ("relevance", False), "year": ("year", True),
-                   "author": ("author", False)}
-        if key not in mapping:
+        if key not in ("title", "year", "author"):
             return
-        engine_sort, engine_desc = mapping[key]
         had = bool(self.loaded and self._has_condition())
-        self.sort_key = engine_sort
-        self.sort_desc = engine_desc
+        self.sort_key = key
+        self.sort_desc = bool(desc)
         # 排序是查询条件的一部分：先重置分页与选择，再按新排序走首查。
         self.error = ""
         self.cancelled = False
@@ -657,74 +717,159 @@ class QueryView:
             self._refresh()
 
     # ── 高级检索 ────────────────────────────────────────────────────────
-    def open_advanced(self, e=None) -> None:
+    def _common_condition_field(self, field: str, label: str, hint: str) -> ft.Control:
         t = self.t
-        self.adv_values = dict(getattr(self, "adv_values", {}) or {})
-        self.adv_strict = bool(getattr(self, "adv_strict", False))
-        fields = []
-        for key, label in (("author", "作者"), ("title", "题名"), ("year", "年份"),
-                           ("doi", "DOI")):
-            fields.append(C.text_field(
-                t, value=self.adv_values.get(key, ""), hint_text=f"{label}（可空）",
-                on_change=lambda e, key=key: self.adv_values.__setitem__(
-                    key, getattr(e.control, "value", "")),
-                width=420))
-
-        def _close(e=None) -> None:
-            try:
-                self.page.page.pop_dialog()
-            except Exception:  # noqa: BLE001
-                pass
-
-        def _submit(e=None) -> None:
-            if not any(str(v or "").strip() for v in self.adv_values.values()):
-                self.adv_error = "至少填一行检索条件。"
-                return
-            self.adv_strict = bool(self.adv_strict)
-            self.query_advanced = True
-            _close()
-            self.error = ""
-            self.cancelled = False
-            self.limit = 100
-            # 高级检索提交 = 条件变化（契约 §5）：清分页/选择，再首查。
-            self._reset_paging()
-            self._schedule()
-
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=C.text("高级检索", t, "h2"),
-            content=ft.Container(width=t.px(520), content=ft.Column(
-                spacing=t.sp("1"), tight=True, controls=[
-                    C.text("空行忽略，条件取交集。", t, "caption", t.palette.text_muted),
-                    *fields,
-                    ft.Row(spacing=t.sp("1"), controls=[
-                        C.text("排序", t, "caption", t.palette.text_muted),
-                        C.select(t, value=self.sort_key,
-                                 options=[("relevance", "相关度"), ("year", "年份"),
-                                          ("author", "作者")],
-                                 on_select=lambda e: setattr(self, "adv_sort", e.data),
-                                 width=120),
-                    ]),
-                    ft.Row(spacing=t.sp("half"), controls=[
-                        ft.Checkbox(value=bool(self.adv_strict),
-                                    on_change=lambda e: setattr(
-                                        self, "adv_strict", bool(e.control.value)),
-                                    visual_density=ft.VisualDensity.COMPACT,
-                                    splash_radius=0),
-                        C.text("严格匹配", t, "caption", t.palette.text_muted),
-                    ]),
-                ])),
-            actions=[
-                C.text_button("取消", _close, t, height=28),
-                C.primary_button("高级检索", _submit, t, height=28),
+        label_control = C.text(label, t, "caption", t.palette.text_muted)
+        if field == "alias":
+            label_control.tooltip = "同一条目曾使用过的其他 BibTeX key。"
+        if field in ("author", "title"):
+            match_control = C.select(
+                t, value=self.adv_modes.get(field, QUERY_FIELD_MODES[field]),
+                options=QUERY_MATCH_OPTIONS[field],
+                on_select=lambda e, field=field: self._on_match_mode(field, e),
+                width=96)
+        else:
+            match_control = None
+        field_ctl = C.text_field(
+            t, value=self.adv_values.get(field, ""), hint_text=hint,
+            on_change=lambda e, field=field: self._on_advanced_field(field, e),
+            on_submit=self._on_submit, expand=True)
+        field_ctl._bib_query_field = field
+        input_row = [field_ctl]
+        if match_control is not None:
+            input_row.append(match_control)
+        return ft.Column(
+            spacing=0,
+            controls=[
+                ft.Row(spacing=t.sp("half"), controls=[label_control]),
+                ft.Row(spacing=t.sp("half"), controls=input_row),
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.adv_error = ""
-        try:
-            self.page.page.show_dialog(dialog)
-        except Exception:  # noqa: BLE001
-            self.error = "无法打开高级检索对话框。"
+
+    def _extra_condition_row(self, index: int) -> ft.Control:
+        t = self.t
+        term = self.extra_terms[index]
+        options = [(field, label) for field, label in QUERY_FIELD_LABELS.items()]
+        selector = C.select(
+            t, value=term.get("field", "editor"), options=options,
+            on_select=lambda e, index=index: self._on_extra_field(index, e),
+            width=132, hint="字段")
+        value = C.text_field(
+            t, value=term.get("value", ""),
+            hint_text=f"{QUERY_FIELD_LABELS.get(term.get('field'), '条件')}条件",
+            on_change=lambda e, index=index: self._on_extra_value(index, e),
+            on_submit=self._on_submit, expand=True)
+        value._bib_query_extra = index
+        match = C.select(
+            t, value=term.get("mode", QUERY_FIELD_MODES.get(term.get("field"), "contains")),
+            options=QUERY_MATCH_OPTIONS.get(term.get("field"), []),
+            on_select=lambda e, index=index: self._on_extra_mode(index, e),
+            width=104)
+        remove = C.icon_button("CLOSE", "移除此条件",
+                               lambda e, index=index: self._remove_extra_term(index, e),
+                               t, width=28, height=28)
+        return ft.Row(spacing=t.sp("1"), controls=[selector, match, value, remove])
+
+    def _filter(self) -> ft.Control:
+        t = self.t
+        width = self._design_width()
+        wrap = width < FILTER_WRAP_W
+        controls = [
+            self._common_condition_field(field, label, hint)
+            for field, label, hint in COMMON_QUERY_FIELDS
+        ]
+        self._field = next((n for control in controls for n in self._walk_local(control)
+                            if getattr(n, "_bib_query_field", "") == "title"), None)
+        rows = []
+        for index in range(0, len(controls), 2):
+            pair = controls[index:index + 2]
+            if len(pair) == 1:
+                pair.append(ft.Container(expand=True))
+            rows.append(ft.Row(
+                spacing=t.sp("1"),
+                controls=[ft.Container(expand=True, content=control) for control in pair]))
+        if wrap:
+            rows = [ft.Row(spacing=t.sp("1"), controls=[
+                ft.Container(expand=True, content=control)]) for control in controls]
+        rows.extend(self._extra_condition_row(i) for i in range(len(self.extra_terms)))
+
+        actions = ft.Row(
+            spacing=t.sp("1"), run_spacing=t.sp("1"), wrap=wrap,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                self._query_button(),
+                C.paste_button(t, self.page, self._field, height=28),
+                C.text_button("增加条件", self._add_extra_term, t, height=28),
+                C.select(t, value=self.sort_key,
+                         options=[("relevance", "相关度"), ("title", "题名"),
+                                  ("author", "作者"), ("year", "年份")],
+                         on_select=lambda e: self._on_sort_value(e),
+                         width=116, hint="排序"),
+                ft.Row(spacing=0, controls=[
+                    ft.Checkbox(value=bool(self.adv_strict),
+                                on_change=self._on_strict_change,
+                                visual_density=ft.VisualDensity.COMPACT,
+                                splash_radius=0),
+                    C.text("严格匹配", t, "caption", t.palette.text_muted),
+                ]),
+                C.text_button("清空", lambda e: self._clear(), t, height=28),
+                ft.Container(expand=True),
+                self._count_control(),
+            ])
+        form = ft.Column(spacing=t.sp("1"), controls=[
+            C.text("多个条件同时填写时取交集；key、别名和 DOI 默认精确匹配。",
+                   t, "caption", t.palette.text_faint),
+            *rows,
+            actions,
+        ])
+        box = ft.Container(
+            padding=ft.Padding(left=t.px(0), top=t.px(8),
+                               right=t.px(0), bottom=t.px(8)),
+            content=form)
+        box._bib_filter_row = True
+        box._bib_query_form = True
+        page = self.page.page if hasattr(self.page, "page") else None
+        if self._field is not None:
+            box._bib_filter_field = self._field
+            if page is not None:
+                S.bind_filter_shortcut(page, self._field)
+        return box
+
+    def _walk_local(self, control):
+        yield control
+        content = getattr(control, "content", None)
+        if content is not None and not isinstance(content, str):
+            yield from self._walk_local(content)
+        for child in getattr(control, "controls", None) or ():
+            yield from self._walk_local(child)
+
+    def _on_sort_value(self, e) -> None:
+        value = str(getattr(e, "data", None) or
+                    getattr(getattr(e, "control", None), "value", "relevance"))
+        if value not in EB.QUERY_SORTS or value == self.sort_key:
+            return
+        self.sort_key = value
+        self.sort_desc = False
+        had = bool(self.loaded and self._has_condition())
+        self.error = ""
+        self.cancelled = False
+        self._reset_paging()
+        if had:
+            self._schedule()
+        else:
+            self._refresh()
+
+    def _on_strict_change(self, e) -> None:
+        value = bool(getattr(getattr(e, "control", None), "value", False))
+        if value == self.adv_strict:
+            return
+        had = bool(self.loaded and self._has_condition())
+        self.adv_strict = value
+        self._reset_paging()
+        if had:
+            self._schedule()
+        else:
+            self._refresh()
 
     # ── 控件的构建 ──────────────────────────────────────────────────────
     def _design_width(self) -> float:
@@ -765,60 +910,6 @@ class QueryView:
                           t, "caption", t.palette.text_faint)
         return C.text("", t, "caption", t.palette.text_faint)
 
-    def _filter(self) -> ft.Control:
-        t = self.t
-        wrap = self._design_width() < FILTER_WRAP_W
-        self._field = C.text_field(
-            t, value=self.text, hint_text=HINTS.get(self.mode, HINTS["key"]),
-            on_change=self._on_text, on_submit=self._on_submit,
-            width=None if wrap else 352, expand=wrap, field_ref=None)
-        self._field._bib_search_field = True
-        mode = C.select(
-            t, value=self.mode, options=[(key, label) for key, label in MODES],
-            on_select=self._on_mode, width=88, hint="方式")
-        if wrap:
-            return self._filter_wrapped(mode)
-        return S.filter_row(
-            t, search=self._field, on_search=self._on_text, on_submit=self._on_submit,
-            controls=[mode,
-                      C.paste_button(t, self.page, self._field, height=28),
-                      self._query_button()],
-            count=self._count_control(), on_advanced=self.open_advanced,
-            page=self.page.page if hasattr(self.page, "page") else None,
-            search_width=352)
-
-    def _filter_wrapped(self, mode: ft.Control) -> ft.Control:
-        """R2-3（DEF-02）：窄于 FILTER_WRAP_W 时筛选行折三行，360 宽不横向裁切。
-
-        宽布局仍走 ``S.filter_row``（行高/几何由骨架统一）；这里只把同样的控件重排：
-        搜索框（expand）+ 查询按钮 / 方式 + 粘贴 + 高级检索 / 计数。照骨架约定登记
-        ``_bib_filter_row`` / ``_bib_filter_field``，⌘F 仍绑到搜索框。
-        """
-        t = self.t
-        page = self.page.page if hasattr(self.page, "page") else None
-        row1 = ft.Row(spacing=t.sp("1"),
-                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                      controls=[self._field, self._query_button()])
-        row2 = ft.Row(spacing=t.sp("1"),
-                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                      controls=[mode,
-                                C.paste_button(t, self.page, self._field, height=28),
-                                C.text_button("高级检索", self.open_advanced,
-                                              t, height=28),
-                                ft.Container(expand=True)])
-        row3 = ft.Row(spacing=t.sp("1"),
-                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                      controls=[self._count_control()])
-        box = ft.Container(
-            padding=ft.Padding(left=t.px(0), top=t.px(8),
-                               right=t.px(0), bottom=t.px(8)),
-            content=ft.Column(spacing=t.sp("1"), controls=[row1, row2, row3]))
-        box._bib_filter_row = True
-        box._bib_filter_field = self._field
-        if page is not None:
-            S.bind_filter_shortcut(page, self._field)
-        return box
-
     def _table(self) -> ft.Control:
         t = self.t
         if self._build_width < 1100:
@@ -843,7 +934,12 @@ class QueryView:
             empty_message=(NO_RESULT if self.loaded else "还没有查询"),
             empty_action=None, on_row_click=self._row_clicked,
             on_sort=self._on_sort, row_key="key", first_col_width=160,
-            scroll_x=(self._build_width >= 1100), height=None, page=self.page.page)
+            sort_key=self.sort_key if self.sort_key in ("title", "year", "author") else None,
+            sort_desc=self.sort_desc,
+            scroll_x=(self._build_width >= 1100),
+            force_list_view=(self._total is not None
+                             and self._total > BT.LIST_VIEW_THRESHOLD),
+            height=None, page=self.page.page)
         table._bib_first_col_width = 160
         table.empty_action = C.text_button(
             "清空筛选" if self.loaded else "查询", 
@@ -857,14 +953,19 @@ class QueryView:
         self._refresh()
 
     def _clear(self) -> None:
-        self.text = ""
+        self.adv_values = {field: "" for field, _, _ in COMMON_QUERY_FIELDS}
+        self.adv_modes = {field: QUERY_FIELD_MODES[field]
+                          for field, _, _ in COMMON_QUERY_FIELDS}
+        self.extra_terms = []
+        self.adv_strict = False
+        self.sort_key = "relevance"
+        self.sort_desc = False
         self.error = ""
         self.input_error = ""
         self.success = ""
         self.limit = 100
-        self.query_advanced = False
+        self.query_advanced = True
         self._reset_paging()
-        self._set_store("bib_query_text", "")
         self._refresh()
 
     def _selected_hit(self) -> dict | None:
@@ -1194,9 +1295,8 @@ class QueryView:
                                   next_label="重试", on_next=lambda e: self.query(),
                                   page=self.page.page)
         return ft.Column(spacing=0, controls=[
-            S.state_banner(t, "empty", message="还没有查询",
-                           next_label="高级检索", on_next=self.open_advanced),
-            C.text("输入 key、DOI 或题名；⌘F 聚焦。", t, "caption",
+            S.state_banner(t, "empty", message="还没有查询"),
+            C.text("在上方填写一个或多个条件，然后查询。", t, "caption",
                    t.palette.text_faint),
         ])
 

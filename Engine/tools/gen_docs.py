@@ -243,8 +243,7 @@ SELF_REFERENTIAL = {"test_docs_consistency.py"}
 
 def test_files() -> list[Path]:
     """参与 AUTO「测试」计数的套件清单（排除自指的 test_docs_consistency.py）。"""
-    return [f for f in sorted((ENGINE / "tests").glob("test_*.py"))
-            if f.name not in SELF_REFERENTIAL]
+    return [f for f in runner_test_files() if f.name not in SELF_REFERENTIAL]
 
 
 def runner_test_files() -> list[Path]:
@@ -888,15 +887,48 @@ def _sha256_file(p: Path) -> str:
 
 
 def test_run_identity(inputs: dict) -> str:
-    """Stable full-run identity shared with selfcheck and the strict consumer."""
+    """Stable full-run identity shared with selfcheck and the strict consumer.
+
+    AUTO excludes the self-referential docs suite from its displayed counters, but
+    that suite is still part of the runner and gates strict evidence. Bind every
+    runner suite name and source digest here so changes to that suite (or suite
+    membership) invalidate an otherwise current-looking manifest.
+    """
     runner = ENGINE / "tools" / "run_engine_tests.sh"
     runner_sha = _sha256_file(runner)
     if not runner_sha:
         raise RuntimeError(f"full runner script is unavailable: {runner}")
-    payload = {"auto_inputs": inputs, "runner_script_sha256": runner_sha}
+    runner_suites = []
+    for path in runner_test_files():
+        digest = _sha256_file(path)
+        if not digest:
+            raise RuntimeError(f"full runner suite is unavailable: {path}")
+        runner_suites.append({"name": path.stem, "sha256": digest})
+    if not runner_suites:
+        raise RuntimeError("full runner suite set is empty")
+    payload = {"auto_inputs": inputs, "runner_script_sha256": runner_sha,
+               "runner_suites": runner_suites}
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False,
                          separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def runner_result_rows_complete(rows: list, expected_names: list[str]) -> bool:
+    """Whether a strict in-process run returned one valid four-column row per suite."""
+    if not isinstance(rows, list) or not expected_names or len(rows) != len(expected_names):
+        return False
+    names = []
+    for row in rows:
+        if not isinstance(row, (tuple, list)) or len(row) != 4:
+            return False
+        name, passes, fails, status = row
+        if (not isinstance(name, str) or not name
+                or type(passes) is not int or passes < 0
+                or type(fails) is not int or fails < 0
+                or (status is not None and not isinstance(status, str))):
+            return False
+        names.append(name)
+    return len(set(names)) == len(names) and set(names) == set(expected_names)
 
 
 def load_current_test_manifest(inputs_now: dict) -> tuple[list | None, str]:
@@ -933,6 +965,8 @@ def load_current_test_manifest(inputs_now: dict) -> tuple[list | None, str]:
         return None, "manifest identity 与当前输入/runner 不匹配"
 
     expected_names = [f.stem for f in runner_test_files()]
+    if not expected_names:
+        return None, "当前 full runner suite 集合为空"
     suites = data.get("suites")
     if not isinstance(suites, list) or len(suites) != len(expected_names):
         return None, "manifest suite 覆盖面与 full runner 不一致"
@@ -1501,19 +1535,24 @@ def _main_impl(argv: list[str] | None = None) -> int:
                     return 0
         if a.strict_tests:
             if manifest_rows is None:
-                full_rows, _ = run_tests(files=runner_test_files())
+                runner_files = runner_test_files()
+                full_rows, _ = run_tests(files=runner_files)
+                expected_runner = [f.stem for f in runner_files]
+                if not runner_result_rows_complete(full_rows, expected_runner):
+                    print("FAIL  严格实跑结果行无效或未精确覆盖 full runner suites")
+                    return 1
                 full_by_name = {str(row[0]): row for row in full_rows}
                 docs_row = full_by_name.get("test_docs_consistency")
-                if (docs_row is None or len(docs_row) < 4 or docs_row[3] is not None
-                        or int(docs_row[2]) != 0):
+                if docs_row is None or docs_row[3] is not None or docs_row[2] != 0:
                     status = "缺失" if docs_row is None else str(docs_row[3] or "非绿色退出")
                     print(f"FAIL  严格校验的 test_docs_consistency 自检未通过：{status}")
                     return 1
-                expected = {f.stem for f in test_files()}
-                if not expected.issubset(full_by_name):
+                expected_auto = [name for name in expected_runner
+                                 if f"{name}.py" not in SELF_REFERENTIAL]
+                if not set(expected_auto).issubset(full_by_name):
                     print("FAIL  严格实跑结果未覆盖全部 AUTO suites")
                     return 1
-                rows = [full_by_name[f.stem] for f in test_files()]
+                rows = [full_by_name[name] for name in expected_auto]
             else:
                 rows = manifest_rows
             new, all_ok = build_block(run_test_suites=False, test_rows_in=rows)

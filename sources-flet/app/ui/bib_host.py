@@ -45,6 +45,10 @@ VIEW_SPECS: dict[str, tuple[str, str, str, str]] = {
     "settings": ("ui.bib_prefs", "BibPrefsView", "设置", "write"),
 }
 
+_INTERNAL_VIEW_SPECS = {
+    "version_sync": ("ui.bib_version_sync", "BibVersionSyncView"),
+}
+
 #: 批 116 BIB-NAV2：页内二级导航条高度（单行 36）与两行断点（设计宽 <1100）。
 BIB_NAV_H = 36
 BIB_NAV_NARROW_BELOW = 1100
@@ -177,6 +181,7 @@ class BibHost(BasePage):
         self._width_bucket: int | None = None
         self._nav_narrow_cache: bool | None = None
         self._bib_inpage_marked = False
+        self._version_sync_active = False
         self._normalize_adapter = _NormalizeCompat(self)
 
     # ── 兼容旧属性（main.py / 旧测试）──────────────────────────────────
@@ -244,6 +249,15 @@ class BibHost(BasePage):
 
     def navigate_route(self, route: str) -> None:
         """路由交给 main（BNAV 唯一路由入口）；无壳时退回本页激活。"""
+        text = str(route or "")
+        if text == "bib:version_sync":
+            # 宿主内部目的地：不加入全局 IA 或持久化的 bib_view 白名单。
+            self._version_sync_active = True
+            self.mark("bib_version_sync_view", source="ui")
+            self._sync_header()
+            self._render()
+            self._ensure_loaded("version_sync")
+            return
         nav = getattr(self.app, "navigate", None)
         if callable(nav):
             try:
@@ -261,7 +275,6 @@ class BibHost(BasePage):
                 self.mark("bib_navigate_error", route=str(route),
                           error=f"{type(exc).__name__}: {exc}")
                 return
-        text = str(route or "")
         if text.startswith("bib:"):
             self.set_view(text[4:], source="ui")
 
@@ -272,6 +285,9 @@ class BibHost(BasePage):
         if cached is not None:
             return cached
         spec = VIEW_SPECS.get(view)
+        if spec is None:
+            internal = _INTERNAL_VIEW_SPECS.get(view)
+            spec = (*internal, "版本与同步", "write") if internal else None
         if spec is None:
             return None
         try:
@@ -294,6 +310,7 @@ class BibHost(BasePage):
     def activate(self, view: str, *, source: str = "nav") -> None:
         """导航激活：白名单 → store（view + 组记忆）→ mark → 重画 → 按需加载。"""
         view = str(view or "")
+        self._version_sync_active = False
         if view not in self.view_keys():
             self.mark("bib_view_invalid", view=view, source=source)
             view = "overview"
@@ -496,15 +513,17 @@ class BibHost(BasePage):
     def _sync_header(self) -> None:
         """维护旧页头状态（crumb/子标题/notice/状态）；不再挂到控件树。"""
         t = self.t
+        active_view = "version_sync" if self._version_sync_active else self.view
         self.group = self.group_of(self.view)
         crumb = f"引用库 / {self.GROUPS[self.group][0]}"
+        title = "版本与同步" if active_view == "version_sync" else self.VIEW_LABELS[self.view]
         if self._crumb is None:
             self._crumb = ft.Row(spacing=t.sp("half"), controls=[
                 C.text(crumb, t, "caption", t.palette.text_muted)])
-            self._child_title = C.text(self.VIEW_LABELS[self.view], t, role="page-title")
+            self._child_title = C.text(title, t, role="page-title")
         else:
             self._crumb.controls[0].value = crumb
-            self._child_title.value = self.VIEW_LABELS[self.view]
+            self._child_title.value = title
         if self._notice_slot is not None:
             self._notice_slot.content = self._notice_control()
             self._notice_slot.visible = self._notice_slot.content is not None
@@ -534,7 +553,7 @@ class BibHost(BasePage):
         t = self.t
         groups = IA.group_views("bib")
         content_keys = {str(view["key"]) for group in groups for view in group["views"]}
-        active = str(getattr(self, "view", "") or "")
+        active = "" if self._version_sync_active else str(getattr(self, "view", "") or "")
         if active not in content_keys:
             active = ""
         narrow = self._nav_narrow()
@@ -618,7 +637,18 @@ class BibHost(BasePage):
         nav = self._bib_nav_control()
         inner.controls.insert(0, nav)
         panel._bib_inpage_nav = nav
+        inner.controls.insert(1, self._version_sync_entry())
         return content
+
+    def _version_sync_entry(self) -> ft.Control:
+        """紧邻主 chip 导航的独立工作页入口，不改变 IA 中的 9 个视图契约。"""
+        t = self.t
+        button = C.primary_button if self._version_sync_active else C.secondary_button
+        return ft.Container(
+            padding=ft.Padding(left=t.px(24), top=t.px(4), right=t.px(24), bottom=t.px(4)),
+            content=ft.Row(alignment=ft.MainAxisAlignment.END, controls=[
+                button("版本与同步", lambda e: self.navigate_route("bib:version_sync"),
+                       t, icon="HISTORY")]))
 
     def _replant_nav(self) -> None:
         """视图异步重绘后把导航条重新插回 page_shell。
@@ -640,6 +670,7 @@ class BibHost(BasePage):
             return
         nav = self._bib_nav_control()
         inner.controls.insert(0, nav)
+        inner.controls.insert(1, self._version_sync_entry())
         panel._bib_inpage_nav = nav
 
     def _refresh_nav(self) -> None:
@@ -661,6 +692,8 @@ class BibHost(BasePage):
             pass
 
     def _notice_control(self):
+        if self._version_sync_active:
+            return None
         spec = self.VIEW_NOTICES.get(self.view)
         if not spec:
             return None
@@ -674,7 +707,7 @@ class BibHost(BasePage):
 
     def _status_chips(self) -> list:
         t = self.t
-        access = self.VIEW_ACCESS.get(self.view, "只读")
+        access = "写库" if self._version_sync_active else self.VIEW_ACCESS.get(self.view, "只读")
         tone = "warn" if access == "写库" else "ok"
         return [ft.Row(spacing=t.sp("half"), controls=[
             C.status_dot(tone, t),
@@ -699,7 +732,8 @@ class BibHost(BasePage):
     def _render(self) -> None:
         if self.view_slot is None:
             return
-        view = str(getattr(self, "view", "overview") or "overview")
+        view = ("version_sync" if self._version_sync_active else
+                str(getattr(self, "view", "overview") or "overview"))
         instance = self._get_view(view)
         try:
             content = instance.build() if instance is not None else self._fallback(view)

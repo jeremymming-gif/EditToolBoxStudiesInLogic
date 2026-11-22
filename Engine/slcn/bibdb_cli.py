@@ -13,7 +13,8 @@ import argparse, copy, hashlib, json, os, re, sys
 from slcn import bibcheck, bibdb, bibnorm, bibparse, fsutil
 from slcn.bibdb_core import (
     _backup_dir_arg, _clip, _db_path, _fail, _field, _normalize_sha256_arg, _open_store,
-    _print_json, _print_stats, _print_written, _resolve_report_out, _source_note,
+    _print_changes, _print_import_report, _print_json, _print_stats, _print_written,
+    _resolve_report_out, _source_note,
     _write_db_backup, _write_guard,
 )  # noqa: F401
 from slcn.bibdb_reports import (
@@ -35,6 +36,59 @@ from slcn.bibdb_import import (
     cmd_import_bib, cmd_import_dir, cmd_init, cmd_rehash,
 )  # noqa: F401
 from slcn.bibdb_query_page import build_page
+
+
+def cmd_import_bib(args) -> int:
+    """导入单个 bib；明细取逐条 upsert 结果，避免原地变更快照漏报冲突。"""
+    bib_path = os.path.abspath(args.bib)
+    if not os.path.isfile(bib_path):
+        print(f"✗ 找不到要导入的 bib：{bib_path}", file=sys.stderr)
+        return 2
+    verified = bool(args.verified or (args.issue and args.slug))
+    if args.unverified:
+        verified = False
+    if verified and (args.issue or args.slug):
+        kind = bibdb.KIND_PUBLISHED
+    elif verified:
+        kind = bibdb.KIND_VERIFIED
+    else:
+        kind = bibdb.KIND_IMPORTED
+    source = {"kind": kind, "issue": args.issue or None,
+              "slug": args.slug or None, "file": os.path.basename(bib_path)}
+    try:
+        text, text_warning = bibdb.read_bib_text(bib_path)
+        if text_warning:
+            print(f"⚠️ {text_warning}", file=sys.stderr)
+        path, store = _open_store(args, create=True)
+        db_sha_before, _ = _write_guard(path, args)
+        db_existed = os.path.isfile(path)
+        report = store.import_bib_text(text, source, verified=verified, force=args.force)
+        changes = report.change_rows
+        written = False if args.dry_run else store.save()
+        db_sha_after = bibdb.db_sha256(path)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    payload = {"db": path, "bib": bib_path, "source": source,
+               "verified": verified, "written": written,
+               "dry_run": bool(args.dry_run), "db_existed": db_existed,
+               "db_sha256_before": db_sha_before, "db_sha256_after": db_sha_after,
+               "report": report.summary(), "changes": changes}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}" + ("" if db_existed else "（不存在，确认导入时会新建）"))
+    print(f"来源：{_source_note(source)}（{'已核实' if verified else '未核实'}）")
+    if args.dry_run:
+        print("预览（dry-run：**未写库**，库文件一个字节都没动）：")
+    _print_import_report(report.summary())
+    if args.dry_run:
+        _print_changes(changes)
+        print("（确认无误后再点「确认入藏」/ 去掉 --dry-run 重跑。）")
+        return 0
+    print(f"已写回（sha256: {bibdb.db_sha256(path)}）" if written
+          else "库无变化（幂等，未重写）。")
+    return 0
 
 def render_bibtex(record: dict) -> str:
     """一条库记录 → 一段 BibTeX（GUI「复制 BibTeX」按钮的唯一实现）。
@@ -272,7 +326,8 @@ def cmd_query_advanced(args) -> int:
         min_score = (bibdb.SEARCH_MIN_SCORE_STRICT if args.strict
                      else bibdb.SEARCH_MIN_SCORE_DEFAULT if args.min_score is None
                      else args.min_score)
-        spec = bibdb.SearchSpec(tuple(terms), sort=args.sort, limit=args.limit,
+        spec = bibdb.SearchSpec(tuple(terms), sort=args.sort,
+                                sort_desc=args.sort_desc, limit=args.limit,
                                 min_score=min_score,
                                 offset=0 if offset is None else offset)
     except bibdb.BibDBError as exc:
@@ -2913,7 +2968,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "contains|prefix|exact|fuzzy；未指定时文本字段 contains、"
                            "doi/key/alias exact；必须同时给对应字段条件")
     qadv.add_argument("--sort", default="relevance", choices=list(bibdb.SEARCH_SORTS),
-                      help="排序：relevance（默认）/ year / author")
+                      help="排序：relevance（默认）/ year / author / title")
+    sort_order = qadv.add_mutually_exclusive_group()
+    sort_order.add_argument("--sort-desc", dest="sort_desc", action="store_true",
+                            help="对所选字段使用降序")
+    sort_order.add_argument("--sort-asc", dest="sort_desc", action="store_false",
+                            help="对所选字段使用升序")
+    qadv.set_defaults(sort_desc=None)
     qadv.add_argument("--limit", type=int, default=20,
                       help="最多返回几条（默认 20，范围 1–200）")
     qadv.add_argument("--offset", type=int, default=None, metavar="N",

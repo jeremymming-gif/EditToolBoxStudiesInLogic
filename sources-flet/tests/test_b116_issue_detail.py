@@ -177,7 +177,7 @@ def test_cleantemp_single_entry_has_no_confirm_dialog():
                         "count": 18, "ts": "2026-11-04 11:04:00"}
     shown: list = []
     app.page.show_dialog = lambda d: shown.append(d)
-    assert page._primary_label("cleantemp") == "清理临时文件"
+    assert page._primary_label("cleantemp") == "扫描本期"
     page._primary_action("cleantemp")
     assert shown == [], "T3 单入口点击即自动校验+清理，不再弹危险确认框"
     assert page._cleanup.phase == "scanning"

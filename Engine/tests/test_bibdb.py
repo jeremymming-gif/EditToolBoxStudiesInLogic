@@ -325,6 +325,36 @@ with tempfile.TemporaryDirectory(prefix="bibdb_") as tmp:
               {"title": "A Theory of Everything", "author": "Smith, John", "year": "2021"},
           ) is False)
 
+    doi_changed_key = """@incollection{Fine2018,
+  author = {Fine, Kit},
+  title = {Truthmaker semantics},
+  booktitle = {A Companion to the Philosophy of Language},
+  volume = {2}, pages = {556--577}, year = {2018},
+  doi = {10.1002/9781118972090.ch22}
+}
+"""
+    fine_existing = """@incollection{Fine2017,
+  author = {Fine, Kit},
+  title = {Truthmaker semantics},
+  booktitle = {A Companion to the Philosophy of Language},
+  volume = {2}, pages = {556--577}, year = {2017},
+  doi = {10.1002/9781118972090.ch22}
+}
+"""
+    fine_path, fine_store = new_store(tmp, "fine-db.jsonl")
+    fine_store.import_bib_text(fine_existing, SOURCE, verified=True)
+    fine_store.save()
+    fine_report = fine_store.import_bib_text(
+        doi_changed_key, dict(SOURCE, issue="2026年第1期", slug="Fine"),
+        verified=True)
+    fine_record = fine_store.get("Fine2017")
+    check("(c) key/year 改变但 DOI 相同 → 分类为冲突而非新增",
+          fine_report.conflicts == 1 and fine_report.new == 0
+          and len(fine_store.records()) == 1
+          and fine_record["fields"]["year"] == "2017"
+          and fine_record["conflicts"][-1]["field_diff"]["year"]
+          == {"existing": "2017", "incoming": "2018"})
+
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) 升级：未核实 → 已核实（不重复建记录） ──")
@@ -912,6 +942,53 @@ with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
           and len(payload.get("changes") or []) == 2
           and {row["key"] for row in payload["changes"]} == {"Smith2020", "Jones2019"},
           json.dumps(payload.get("report"), ensure_ascii=False))
+
+    # DOI identity must retain a conflict row when the incoming key/year differ,
+    # including repeated previews where the audit conflict already exists.
+    fine_existing = write(os.path.join(tmp, "fine-existing.bib"), """@incollection{Fine2017,
+  author = {Fine, Kit},
+  title = {Truthmaker semantics},
+  booktitle = {A Companion to the Philosophy of Language},
+  year = {2017},
+  doi = {10.1002/9781118972090.ch22}
+}
+""")
+    fine_incoming = write(os.path.join(tmp, "fine-incoming.bib"), """@incollection{Fine2018,
+  author = {Fine, Kit},
+  title = {Truthmaker semantics},
+  booktitle = {A Companion to the Philosophy of Language},
+  year = {2018},
+  doi = {10.1002/9781118972090.ch22}
+}
+""")
+    fine_db = os.path.join(tmp, "fine-gui.jsonl")
+    r = run_cli("import-bib", "--bib", fine_existing, "--verified", "--db", fine_db)
+    check("(n) DOI 冲突回归：先建立已核实的 Fine2017", r.returncode == 0)
+    fine_preview = None
+    for _ in range(2):
+        r = run_cli("import-bib", "--bib", fine_incoming, "--verified", "--dry-run",
+                    "--json", "--db", fine_db)
+        fine_preview = json.loads(r.stdout) if r.returncode == 0 else {}
+        rows = fine_preview.get("changes") or []
+        check("(n) DOI 冲突 summary 与详细行一致（重复预览也保留）",
+              r.returncode == 0
+              and fine_preview.get("report", {}).get("conflicts") == 1
+              and len(rows) == 1 and rows[0].get("status") == "conflict"
+              and rows[0].get("key") == "Fine2017"
+              and rows[0].get("incoming_key") == "Fine2018"
+              and rows[0].get("identity") == "doi:10.1002/9781118972090.ch22"
+              and rows[0].get("title") == "Truthmaker semantics"
+              and rows[0].get("author") == "Fine, Kit"
+              and rows[0].get("year") == "2017"
+              and rows[0].get("conflict_fields") == ["year"]
+              and rows[0].get("field_diff") == {
+                  "year": {"existing": "2017", "incoming": "2018"}
+              }
+              and set(rows[0]["field_diff"]["year"]) == {"existing", "incoming"},
+              json.dumps(fine_preview, ensure_ascii=False)[:500])
+    check("(n) DOI 冲突预览没有写库", fine_preview.get("written") is False
+          and bibdb.Store.load(fine_db).get("Fine2017")["fields"]["year"] == "2017"
+          and bibdb.Store.load(fine_db).get("Fine2018") is None)
 
     # ── 真正导入 → 再 dry-run：库文件不变、明细为空 ──
     r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
@@ -2748,6 +2825,16 @@ with tempfile.TemporaryDirectory(prefix="bibdb_adv_") as tmp:
           adv_keys(adv_store, T("any", "e"), sort="author")
           == ["Anders2020", "Chen2018", "Date2022", "Godel2017", "Jones2019",
               "Long2024", "Smith2020", "Undated"])
+    title_asc = adv_query(adv_store, T("any", "o"), sort="title")
+    title_desc = adv_query(adv_store, T("any", "o"), sort="title", sort_desc=True)
+    title_values = [bibdb.normalize_search_text(hit["title"])
+                    for hit in title_asc["hits"] if hit["title"]]
+    title_values_desc = [bibdb.normalize_search_text(hit["title"])
+                         for hit in title_desc["hits"] if hit["title"]]
+    check("(v) 排序 title：题名按字母升序，缺题名在末尾",
+          title_values == sorted(title_values))
+    check("(v) 排序 title：可切换降序且无题名仍在末尾",
+          title_values_desc == list(reversed(title_values)))
 
     # ── 6) 分页 / why-hit 细节 / 空结果 ──
     one = adv_query(adv_store, T("title", "logic"))
@@ -2852,6 +2939,16 @@ with tempfile.TemporaryDirectory(prefix="bibdb_adv_") as tmp:
                                                 "--json").stdout)["hits"]]
           == ["Long2024", "Date2022", "Anders2020", "Smith2020", "Jones2019",
               "Chen2018", "Godel2017", "Undated"])
+    title_asc_cli = json.loads(run_adv("--any", "o", "--sort", "title",
+                                       "--json").stdout)["hits"]
+    title_desc_cli = json.loads(run_adv("--any", "o", "--sort", "title",
+                                        "--sort-desc", "--json").stdout)["hits"]
+    check("(v) CLI --sort title 与 --sort-desc 生效",
+          [bibdb.normalize_search_text(hit["title"]) for hit in title_asc_cli]
+          == sorted(bibdb.normalize_search_text(hit["title"]) for hit in title_asc_cli)
+          and [bibdb.normalize_search_text(hit["title"]) for hit in title_desc_cli]
+          == list(reversed([bibdb.normalize_search_text(hit["title"])
+                            for hit in title_asc_cli])))
     check("(v) CLI --limit 截断 + 人读提示共 N 条",
           "共 2 条" in run_adv("--title", "logic", "--limit", "1").stdout)
     check("(v) CLI --bibtex 命中条带 BibTeX",

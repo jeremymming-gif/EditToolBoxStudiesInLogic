@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -226,21 +227,208 @@ def case_r01_cas(work: Path) -> Path:
                      "  year = {2022},\n  doi = {10.1000/alpha.2020}\n}\n",
                      encoding="utf-8")
     keys_before = set(keyed(db))
+    db_before_preview = facts(db)
+    preview1 = run_cli("import-bib", "--db", str(db), "--bib", str(forge),
+                       "--dry-run", "--json")
+    preview2 = run_cli("import-bib", "--db", str(db), "--bib", str(forge),
+                       "--dry-run", "--json")
+    preview_body1 = payload(preview1)
+    preview_body2 = payload(preview2)
+    preview_report = preview_body1.get("report") or {}
+    preview_changes = preview_body1.get("changes") or []
+    alpha_before_apply = keyed(db)["Alpha2020"]
+    check("R01-d 同 DOI 不同 key/year：重复预览稳定、零写且摘要计为冲突非新增",
+          preview1.returncode == preview2.returncode == 0
+          and preview_body1.get("dry_run") is True
+          and preview_body1.get("written") is preview_body2.get("written") is False
+          and preview_report == preview_body2.get("report")
+          and preview_changes == preview_body2.get("changes")
+          and preview_report.get("new") == 0
+          and preview_report.get("conflicts") == 1
+          and facts(db) == db_before_preview
+          and set(keyed(db)) == keys_before,
+          json.dumps({"first": preview_body1, "second": preview_body2},
+                     ensure_ascii=False)[:500])
+    preview_change = preview_changes[0] if len(preview_changes) == 1 else {}
+    preview_diff = preview_change.get("field_diff") or {}
+    check("R01-d 预览摘要与逐条明细一致：Alpha2020 冲突、year 差异明确",
+          preview_report.get("entries") == 1
+          and preview_report.get("conflicts") == 1
+          and preview_report.get("new") == 0
+          and len(preview_changes) == 1
+          and preview_change.get("status") == "conflict"
+          and preview_change.get("key") == "Alpha2020"
+          and preview_change.get("incoming_key") == "AlphaNewKey2022"
+          and preview_change.get("conflicts_added") == 1
+          and preview_change.get("conflict_fields") == ["year"]
+          and preview_diff.get("year") == {"existing": "2020", "incoming": "2022"},
+          json.dumps({"report": preview_report, "changes": preview_changes},
+                     ensure_ascii=False)[:500])
     result = run_cli("import-bib", "--db", str(db), "--bib", str(forge), "--json")
     rows = keyed(db)
-    new_keys = set(rows) - keys_before
-    new_record = rows.get(next(iter(new_keys))) if new_keys else {}
-    check("R01-d 题名/DOI 相同但内容不同、key 不同：新增记录而非并源",
-          result.returncode == 0 and len(new_keys) == 1, result.stderr[:300])
-    check("R01-d 新记录不伪造 verified（verified=false 且无 verified_at/method）",
-          new_record.get("verified") is False
-          and not str(new_record.get("verified_at") or "").strip()
-          and not str(new_record.get("method") or "").strip(), str(new_record)[:300])
-    check("R01-d 库内已核实 Alpha2020 的字段与 verified 未被改动",
-          rows["Alpha2020"].get("verified") is True
-          and rows["Alpha2020"].get("method") == "published-bib"
-          and (rows["Alpha2020"].get("fields") or {}).get("year") == "2020",
-          str(rows["Alpha2020"].get("fields"))[:200])
+    alpha = rows.get("Alpha2020") or {}
+    conflicts = alpha.get("conflicts") or []
+    check("R01-d 确认导入仍为冲突：无新增 key、Alpha2020 字段/核实证据保留、冲突来源入账",
+          result.returncode == 0
+          and (payload(result).get("report") or {}).get("new") == 0
+          and (payload(result).get("report") or {}).get("conflicts") == 1
+          and set(rows) == keys_before
+          and (alpha.get("fields") or {}).get("year") == "2020"
+          and (alpha.get("fields") or {}).get("journal") == "Journal of Examples"
+          and alpha.get("fields") == alpha_before_apply.get("fields")
+          and alpha.get("verified") is True
+          and alpha.get("verified_at") == alpha_before_apply.get("verified_at")
+          and alpha.get("method") == "published-bib"
+          and any((item.get("field_diff") or {}).get("year") == {
+              "existing": "2020", "incoming": "2022"}
+              and item.get("source", {}).get("key") == "AlphaNewKey2022"
+              and item.get("existing_sha256") and item.get("incoming_sha256")
+              for item in conflicts),
+          json.dumps({"report": payload(result).get("report"), "rows": rows},
+                     ensure_ascii=False)[:500])
+
+    # 冲突已写入后再次预览同一来源，仍要展示待裁决证据，但不能重复写库/重复记冲突。
+    after_import_facts = facts(db)
+    repeated_preview1 = run_cli("import-bib", "--db", str(db), "--bib", str(forge),
+                                "--dry-run", "--json")
+    repeated_preview2 = run_cli("import-bib", "--db", str(db), "--bib", str(forge),
+                                "--dry-run", "--json")
+    repeated_body1 = payload(repeated_preview1)
+    repeated_body2 = payload(repeated_preview2)
+    repeated_report = repeated_body1.get("report") or {}
+    repeated_changes = repeated_body1.get("changes") or []
+    repeated_change = repeated_changes[0] if len(repeated_changes) == 1 else {}
+    repeated_diff = repeated_change.get("field_diff") or {}
+    check("R01-d 重复预览已入账冲突：仍计 1 冲突并保留可筛选明细",
+          repeated_preview1.returncode == repeated_preview2.returncode == 0
+          and repeated_body1.get("report") == repeated_body2.get("report")
+          and repeated_changes == repeated_body2.get("changes")
+          and repeated_report.get("conflicts") == 1
+          and repeated_report.get("new") == 0
+          and len(repeated_changes) == 1
+          and repeated_change.get("status") == "conflict"
+          and repeated_change.get("key") == "Alpha2020"
+          and repeated_change.get("conflicts_added") == 0
+          and repeated_change.get("conflict_fields") == ["year"]
+          and repeated_diff.get("year") == {"existing": "2020", "incoming": "2022"}
+          and facts(db) == after_import_facts
+          and len(keyed(db)["Alpha2020"].get("conflicts") or []) == 1,
+          json.dumps({"report": repeated_report, "changes": repeated_changes},
+                     ensure_ascii=False)[:500])
+
+    # (d2) 新 key 的 DOI 命中多条库记录：必须明确跳过，不能静默新增。
+    ambiguous_folder = work / "ambiguous-doi"
+    ambiguous_folder.mkdir()
+    ambiguous_rows = base_records()
+    ambiguous_rows.append(record("AlphaAlt2020", "article", {
+        "author": "Jones, Pat", "title": "Alternate Alpha Record",
+        "journal": "Another Journal", "year": "2021",
+        "doi": "10.1000/alpha.2020",
+    }, verified=False))
+    ambiguous_db = write_records(ambiguous_folder / "bibliography.jsonl", ambiguous_rows)
+    ambiguous_bib = work / "ambiguous-doi.bib"
+    ambiguous_bib.write_text(
+        "@article{AlphaIncoming2022,\n  author = {Lee, Ann},\n"
+        "  title = {A distinct incoming Alpha work},\n  year = {2022},\n"
+        "  doi = {10.1000/alpha.2020}\n}\n", encoding="utf-8")
+    ambiguous_before = facts(ambiguous_db)
+    ambiguous_preview1 = run_cli("import-bib", "--db", str(ambiguous_db),
+                                 "--bib", str(ambiguous_bib), "--dry-run", "--json")
+    ambiguous_preview2 = run_cli("import-bib", "--db", str(ambiguous_db),
+                                 "--bib", str(ambiguous_bib), "--dry-run", "--json")
+    ambiguous_body1 = payload(ambiguous_preview1)
+    ambiguous_body2 = payload(ambiguous_preview2)
+    ambiguous_report = ambiguous_body1.get("report") or {}
+    ambiguous_changes = ambiguous_body1.get("changes") or []
+    ambiguous_skipped = ambiguous_report.get("skipped") or {}
+    ambiguous_skip_reasons = [str(reason) for reason, count in ambiguous_skipped.items()
+                              if count == 1]
+    ambiguous_details = [change for change in ambiguous_changes
+                         if change.get("status") == "skipped"]
+    ambiguous_detail_reasons = [str(change.get("reason") or "")
+                                for change in ambiguous_details]
+    candidate_keys = ("Alpha2020", "AlphaAlt2020")
+    check("R01-d2 DOI 多命中：重复预览稳定、摘要不报新增、隔离库零写",
+          ambiguous_preview1.returncode == ambiguous_preview2.returncode == 0
+          and ambiguous_body1.get("dry_run") is True
+          and ambiguous_body1.get("written") is False
+          and ambiguous_report == ambiguous_body2.get("report")
+          and ambiguous_changes == ambiguous_body2.get("changes")
+          and ambiguous_report.get("new") == 0
+          and ambiguous_report.get("skipped", {}).values()
+          and sum(ambiguous_report.get("skipped", {}).values()) == 1
+          and facts(ambiguous_db) == ambiguous_before,
+          json.dumps({"first": ambiguous_body1, "second": ambiguous_body2},
+                     ensure_ascii=False)[:500])
+    check("R01-d2 DOI 多命中：摘要跳过原因与逐条原因均点名候选 key",
+          len(ambiguous_skip_reasons) == 1
+          and all(key in ambiguous_skip_reasons[0] for key in candidate_keys)
+          and len(ambiguous_details) == 1
+          and ambiguous_details[0].get("key") == "AlphaIncoming2022"
+          and all(key in ambiguous_detail_reasons[0] for key in candidate_keys),
+          json.dumps({"skipped": ambiguous_skipped, "changes": ambiguous_changes},
+                     ensure_ascii=False)[:500])
+
+    # 负例：无 DOI 的不同 key 不受 DOI 歧义规则影响，仍预览为新增。
+    no_doi_bib = work / "no-doi-new-key.bib"
+    no_doi_bib.write_text(
+        "@article{NoDoiNew2024,\n  author = {Lee, Ann},\n"
+        "  title = {A distinct work without a DOI},\n  year = {2024}\n}\n",
+        encoding="utf-8")
+    no_doi_before = facts(db)
+    no_doi_preview = run_cli("import-bib", "--db", str(db), "--bib", str(no_doi_bib),
+                             "--dry-run", "--json")
+    no_doi_body = payload(no_doi_preview)
+    no_doi_report = no_doi_body.get("report") or {}
+    no_doi_changes = no_doi_body.get("changes") or []
+    check("R01-d3 无 DOI 不同 key 反例：仍预览为新增且库零写",
+          no_doi_preview.returncode == 0
+          and no_doi_body.get("dry_run") is True
+          and no_doi_body.get("written") is False
+          and no_doi_report.get("new") == 1
+          and not no_doi_report.get("skipped")
+          and len(no_doi_changes) == 1
+          and no_doi_changes[0].get("status") == "new"
+          and no_doi_changes[0].get("key") == "NoDoiNew2024"
+          and facts(db) == no_doi_before,
+          json.dumps({"report": no_doi_report, "changes": no_doi_changes},
+                     ensure_ascii=False)[:500])
+
+    # 解析阶段早退也必须逐条进入 changes，且摘要 skipped 总数与明细分类一致。
+    parse_skip_folder = work / "parse-skips"
+    parse_skip_folder.mkdir()
+    parse_skip_db = parse_skip_folder / "bibliography.jsonl"
+    parse_skip_bib = parse_skip_folder / "parse-skips.bib"
+    parse_skip_bib.write_text(
+        "@article{Malformed,\n  title = {Unclosed}\n"
+        "@article{, title = {Missing key}}\n"
+        "@article{Repeated, title = {First}}\n"
+        "@article{Repeated, title = {Duplicate}}\n", encoding="utf-8")
+    parse_skip = run_cli("import-bib", "--db", str(parse_skip_db),
+                         "--bib", str(parse_skip_bib), "--dry-run", "--json")
+    parse_skip_body = payload(parse_skip)
+    parse_skip_report = parse_skip_body.get("report") or {}
+    parse_skip_rows = [row for row in parse_skip_body.get("changes", [])
+                       if row.get("status") == "skipped"]
+    parse_skip_codes = [row.get("skip_code") for row in parse_skip_rows]
+    parse_skip_summary = parse_skip_report.get("skipped") or {}
+    parse_skip_detail_summary = dict(Counter(row.get("reason", "")
+                                             for row in parse_skip_rows))
+    check("R01-d4 malformed/missing/duplicate key：摘要计数与逐条 skipped 明细一致",
+          parse_skip.returncode == 0
+          and sum(parse_skip_summary.values()) == len(parse_skip_rows) == 3
+          and parse_skip_detail_summary == parse_skip_summary
+          and sorted(parse_skip_codes) == [
+              "duplicate_key", "malformed_entry", "missing_key"]
+          and all(row.get("line") and row.get("change_id")
+                  and row.get("reason") for row in parse_skip_rows),
+          json.dumps({"summary": parse_skip_summary, "changes": parse_skip_rows},
+                     ensure_ascii=False)[:600])
+    check("R01-d4 三类解析跳过的来源行可分别定位，重复 key 保留输入键",
+          len({row["change_id"] for row in parse_skip_rows}) == 3
+          and all(row.get("incoming_key") == "Repeated"
+                  for row in parse_skip_rows if row.get("skip_code") == "duplicate_key"),
+          json.dumps(parse_skip_rows, ensure_ascii=False)[:500])
 
     # (e) 已核实条目遇同作品不同内容：字段保留、冲突入 conflicts（前后 sha + 来源）
     conflict_bib = work / "alpha-both.bib"
@@ -253,16 +441,21 @@ def case_r01_cas(work: Path) -> Path:
                      "--issue", "2020年第1期", "--slug", "alpha", "--json")
     alpha = keyed(db)["Alpha2020"]
     conflicts = alpha.get("conflicts") or []
+    added_conflicts = conflicts[len(alpha_before.get("conflicts") or []):]
     check("R01-e 已核实条目遇不同内容：rc0、字段保留（journal 不被覆盖）",
           result.returncode == 0
           and (alpha.get("fields") or {}).get("journal") == "Journal of Examples",
           result.stderr[:300])
     check("R01-e 冲突入 conflicts：带 existing_sha256/incoming_sha256/source 且待裁决",
-          len(conflicts) == 1
-          and all(conflicts[0].get(name) for name in
+          len(conflicts) == len(alpha_before.get("conflicts") or []) + 1
+          and len(added_conflicts) == 1
+          and all(added_conflicts[0].get(name) for name in
                   ("existing_sha256", "incoming_sha256", "source"))
-          and not str(conflicts[0].get("resolved_at") or "").strip(),
-          json.dumps(conflicts, ensure_ascii=False)[:400])
+          and not str(added_conflicts[0].get("resolved_at") or "").strip()
+          and (added_conflicts[0].get("field_diff") or {}).get("journal") == {
+              "existing": "Journal of Examples",
+              "incoming": "Journal of Counterexamples"},
+          json.dumps(added_conflicts, ensure_ascii=False)[:400])
     check("R01-e verified/verified_at/method 不因冲突被重标",
           alpha.get("verified") is True
           and alpha.get("verified_at") == alpha_before.get("verified_at")

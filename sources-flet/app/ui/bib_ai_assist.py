@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import json
 import os
 import uuid
 
@@ -837,7 +838,9 @@ class BibAiAssistView:
             return {}
         store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
         try:
-            return EB.ai_settings_env(AI.from_store(store))
+            raw = AI.raw_from_store(store)
+            settings = AI.r3_request_settings(raw) if self._r3 else AI.from_store(store)
+            return EB.ai_settings_env(settings)
         except Exception:  # noqa: BLE001
             return {}
 
@@ -2240,6 +2243,10 @@ class BibAiAssistView:
         t = self.t
         slot = self._primary_slot
         controls: list[ft.Control] = []
+        if callable(self._initial_call) and self._r3:
+            scope_caption = self._r3_scope_caption()
+            if scope_caption:
+                controls.append(C.notice_bar(scope_caption, t, "warn"))
         if self.channel == "api":
             # API 通道必须**有入口**：只写一句「会产生费用」而不给按钮，
             # 等于这条路走不通（DESIGN §3.1「Chat/API 两条路都要能跑完」）。
@@ -2760,6 +2767,12 @@ class BibAiAssistView:
         if initial:
             try:
                 call = self._initial_call(self, work)
+                if call is not None and hasattr(call, "argv"):
+                    from services import ai_prefs as AI
+                    from services import engine_bridge as EB
+
+                    store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
+                    call.argv.extend(EB.r3_ai_budget_args(AI.raw_from_store(store)))
                 code = await self._run(call)
                 if code == 0:
                     reported = parse_status(self.log)
@@ -2882,11 +2895,236 @@ class BibAiAssistView:
             self._fail("直接请求", "先选工作目录，或先选目标 Bib（会在同目录派生 .aiw）")
             self._refresh()
             return
+        if initial and self._r3:
+            from services import ai_prefs as AI
+
+            try:
+                request_identity = self._r3_api_request_identity()
+            except (TypeError, ValueError) as exc:
+                self._fail("直接请求", f"AI 预算或请求配置无效，已阻止请求：{exc}")
+                self._refresh()
+                return
+            taskbook = await self._read_current_taskbook(force=True)
+            fields = self._taskbook_cache if isinstance(self._taskbook_cache, dict) else {}
+            if (not taskbook or request_identity != self._r3_api_request_identity()):
+                self._fail("直接请求", "无法读取本次任务书范围；为避免扩大到全库，已阻止 API 请求")
+                self._refresh()
+                return
+            scope = AI.r3_task_scope(taskbook)
+            if not scope["known"]:
+                self._fail("直接请求", scope["warning"])
+                self._refresh()
+                return
+            if scope["count"] > AI.R3_VERIFY_MAX:
+                self._fail("直接请求",
+                           f"本次委派 {scope['count']} 条，超过固定上限 {AI.R3_VERIFY_MAX} 条；"
+                           "已阻止请求。请缩小本次正文引用范围。")
+                self._refresh()
+                return
+            try:
+                store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
+                from services import engine_bridge as EB
+
+                request_env = EB.env_for_run(self._api_env())
+                budgets = AI.r3_budget_estimate(
+                    taskbook, AI.raw_from_store(store), request_env=request_env,
+                )
+            except ValueError as exc:
+                self._fail("直接请求", f"AI 预算配置无效，已阻止请求：{exc}")
+                self._refresh()
+                return
+            if budgets["unbounded_with_finite_budget"]:
+                self._fail(
+                    "直接请求",
+                    "当前引擎输出不封顶，无法核实有限 token 预算；已阻止请求。"
+                    "请设置正数 SLCN_LLM_MAX_TOKENS，或将 AI 预算明确设为 0（不限）。",
+                )
+                self._refresh()
+                return
+            if budgets["over_budget"]:
+                self._fail("直接请求",
+                           f"本次 token 用量估算约 {budgets['total_tokens']}，超过现有单篇或批次预算；"
+                           "未发送请求。请缩小范围或调整 AI 设置预算。")
+                self._refresh()
+                return
+            detail = (f"正文引用范围内预计委派 {scope['count']} 条（上限 {AI.R3_VERIFY_MAX} 条）。"
+                      + (f"\n⚠ {scope['warning']}" if scope["warning"] else ""))
+            if budgets["budget_verifiable"]:
+                token_line = (
+                    f"token 用量估算：输入约 {budgets['prompt_tokens']} + 输出上限 "
+                    f"{budgets['completion_tokens']} = 约 {budgets['total_tokens']} tokens "
+                    f"（{budgets['output_limit_source']}；不是实际用量）。"
+                )
+            else:
+                token_line = (
+                    f"输入约 {budgets['prompt_tokens']} tokens；输出不封顶，"
+                    "无法计算 token 总量上界。"
+                )
+            impact = (
+                token_line
+                + f"\n单篇预算 {budgets['article_budget_tokens']} / 批次预算 "
+                f"{budgets['batch_budget_tokens']} tokens。"
+                "\n当前没有可核实的价格表，无法估算金额；此提示不是账单或费用承诺。"
+            )
+            expected_digest = hashlib.sha256(taskbook.encode("utf-8")).hexdigest()
+            expected_path = str(fields.get("path") or "")
+            consumed = False
+
+            async def send_confirmed() -> None:
+                nonlocal consumed
+                if consumed:
+                    return
+                consumed = True
+                await self._send_confirmed_r3_api(
+                    request_identity, expected_digest, expected_path,
+                )
+
+            self._confirm(
+                title="确认本次初排 AI API 请求", message=detail, impact=impact,
+                callback=lambda: self._do(send_confirmed),
+            )
+            return
+
         call = self._build_call("request_call", self._call_kwargs())
         if call is None:
             self._refresh()
             return
         identity = self._initial_identity() if initial else None
+        await self._run_api_request(call, initial, identity)
+
+    def _r3_api_request_identity(self) -> tuple:
+        """Bind one-use approval to this task, channel, request settings and budgets."""
+        from services import ai_prefs as AI
+        from services import engine_bridge as EB
+
+        store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
+        raw = AI.raw_from_store(store)
+        article_budget, batch_budget = AI.r3_budget_limits(raw)
+        configured = EB.ai_settings_env(AI.r3_request_settings(raw))
+        env_names = (
+            "SLCN_LLM_BASE", "SLCN_LLM_KEY", "SLCN_LLM_MODEL", "SLCN_LLM_PROTOCOL",
+            "SLCN_LLM_SEARCH_TOOL", "SLCN_LLM_RESPONSES_PATH", "SLCN_LLM_THINKING",
+            "SLCN_LLM_MAX_TOKENS", "SLCN_LLM_WEB_SEARCH", "SLCN_SEARCH_REFS",
+        )
+        effective = {name: configured.get(name, os.environ.get(name, ""))
+                     for name in env_names}
+        relevant = {
+            "article_budget_tokens": article_budget,
+            "batch_budget_tokens": batch_budget,
+            "enabled": raw.get("enabled", AI.AI_DEFAULTS["enabled"]),
+            "environment": effective,
+        }
+        encoded = json.dumps(relevant, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), default=str).encode("utf-8")
+        config_digest = hashlib.sha256(encoded).hexdigest()
+        return (self._initial_identity(), self.channel, str(self.task_id or ""),
+                os.path.realpath(self._work_dir_path()), config_digest)
+
+    async def _send_confirmed_r3_api(self, expected_identity: tuple,
+                                     expected_digest: str, expected_path: str) -> None:
+        """Re-read reviewed taskbook and rebuild the request immediately before dispatch."""
+        from services import ai_prefs as AI
+
+        try:
+            current_identity = self._r3_api_request_identity()
+        except (TypeError, ValueError) as exc:
+            self._fail("直接请求", f"AI 预算或请求配置无效；旧确认已失效：{exc}")
+            self._refresh()
+            return
+        if expected_identity != current_identity:
+            self._fail("直接请求", "任务、通道或 API 配置已变化；旧确认已失效")
+            self._refresh()
+            return
+        taskbook = await self._read_current_taskbook(force=True)
+        fields = self._taskbook_cache if isinstance(self._taskbook_cache, dict) else {}
+        current_digest = hashlib.sha256(taskbook.encode("utf-8")).hexdigest() if taskbook else ""
+        current_path = str(fields.get("path") or "")
+        try:
+            unchanged = expected_identity == self._r3_api_request_identity()
+        except (TypeError, ValueError):
+            unchanged = False
+        if (not unchanged or current_digest != expected_digest
+                or current_path != expected_path):
+            self._fail("直接请求", "任务书正文或路径已变化；旧确认已失效，请重新检查")
+            self._refresh()
+            return
+        scope = AI.r3_task_scope(taskbook)
+        if not scope["known"] or scope["count"] > AI.R3_VERIFY_MAX:
+            self._fail("直接请求", scope["warning"] or
+                       f"本次委派 {scope['count']} 条，超过固定上限 {AI.R3_VERIFY_MAX} 条；已阻止请求")
+            self._refresh()
+            return
+        store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
+        try:
+            from services import engine_bridge as EB
+
+            request_env = EB.env_for_run(self._api_env())
+            budgets = AI.r3_budget_estimate(
+                taskbook, AI.raw_from_store(store), request_env=request_env,
+            )
+        except ValueError as exc:
+            self._fail("直接请求", f"AI 预算配置无效，已阻止请求：{exc}")
+            self._refresh()
+            return
+        if budgets["unbounded_with_finite_budget"]:
+            self._fail("直接请求", "当前输出不封顶，无法核实有限 token 预算；已阻止请求")
+            self._refresh()
+            return
+        if budgets["over_budget"]:
+            self._fail("直接请求", "当前任务书超出 AI token 预算，已阻止请求")
+            self._refresh()
+            return
+        kwargs = self._call_kwargs()
+        kwargs["taskbook"] = current_path
+        kwargs["taskbook_sha256"] = current_digest
+        call = self._build_call("request_call", kwargs)
+        if call is None:
+            self._refresh()
+            return
+        argv = list(getattr(call, "argv", ()) or ())
+        try:
+            digest_index = argv.index("--taskbook-sha256")
+            bound_digest = argv[digest_index + 1]
+        except (ValueError, IndexError):
+            bound_digest = ""
+        if bound_digest != current_digest:
+            self._fail("直接请求", "引擎桥不支持任务书摘要绑定，已阻止 API 请求")
+            self._refresh()
+            return
+        if current_path:
+            try:
+                path_index = argv.index("--taskbook")
+                bound_path = argv[path_index + 1]
+            except (ValueError, IndexError):
+                bound_path = ""
+            if bound_path != current_path:
+                self._fail("直接请求", "引擎桥未绑定当前任务书路径，已阻止 API 请求")
+                self._refresh()
+                return
+        try:
+            initial_identity = self._initial_identity()
+        except Exception:  # noqa: BLE001 - identity failure must fail closed
+            initial_identity = None
+        if initial_identity is None:
+            self._fail("直接请求", "无法验证当前任务身份，已阻止 API 请求")
+            self._refresh()
+            return
+        await self._run_api_request(
+            call, True, initial_identity, request_identity=expected_identity,
+        )
+
+    async def _run_api_request(self, call, initial: bool, identity,
+                               request_identity: tuple | None = None) -> None:
+        """执行已通过界面范围/预算提示的 API 调用。"""
+        try:
+            request_unchanged = (request_identity is None
+                                 or request_identity == self._r3_api_request_identity())
+        except (TypeError, ValueError):
+            request_unchanged = False
+        if ((initial and identity != self._initial_identity()) or not request_unchanged):
+            self._fail("直接请求", "任务或正文范围已变化，请重新检查后再确认")
+            self._refresh()
+            return
         self.running = True
         self._initial_operation = "正在请求 API…"
         self.error = ""
@@ -2933,6 +3171,50 @@ class BibAiAssistView:
         self._notify("请求完成，结果已落盘")
         self._mark("bib_ai_request_ok", chars=len(self.log))
         self._refresh()
+
+    def _r3_scope_caption(self) -> str:
+        fields = self._taskbook_cache if isinstance(self._taskbook_cache, dict) else {}
+        text = str(fields.get("text") or "")
+        if not text:
+            return "任务书范围正在读取；读取失败时不会按全库范围请求。"
+        from services import ai_prefs as AI
+
+        scope = AI.r3_task_scope(text)
+        if not scope["known"]:
+            return scope["warning"]
+        caption = f"本次正文引用任务书：预计委派 {scope['count']} 条；未引用条目不纳入范围。"
+        return caption + (f" {scope['warning']}" if scope["warning"] else "")
+
+    async def _read_current_taskbook(self, *, force: bool = False) -> str:
+        """读取并校验当前 R3 任务书，供范围/数量保护使用。"""
+        cached = self._taskbook_cache if isinstance(self._taskbook_cache, dict) else {}
+        tid = str(self.task_id or "")
+        if (not force and cached.get("ok") and cached.get("task_id") == tid
+                and str(cached.get("text") or "").strip()):
+            return str(cached["text"])
+        fn = self._fn("taskbook_call")
+        if not callable(fn):
+            return ""
+        wd = self._work_dir_path()
+        if not wd or not tid:
+            return ""
+        seq = self.request_seq
+        try:
+            from services import engine_bridge as EB
+
+            call = _invoke(fn, {"work_dir": wd, "task_id": tid})
+            result = await asyncio.to_thread(EB.read_json_command, call)
+            fields = EB.taskbook_result_fields(result)
+        except Exception:  # noqa: BLE001 - failure to verify scope must fail closed
+            return ""
+        self._check_parent_task()
+        if (seq != self.request_seq or wd != self._work_dir_path()
+                or tid != str(self.task_id or "")
+                or not fields.get("ok") or fields.get("task_id") != tid):
+            return ""
+        self._taskbook_cache = fields
+        self.taskbook_path = str(fields.get("path") or self.taskbook_path)
+        return str(fields.get("text") or "")
 
     def _begin_external_import(self, expected: tuple) -> None:
         if self.running or expected != self._initial_action_context():
@@ -3707,6 +3989,21 @@ class BibAiAssistView:
             self._mark("bib_ai_copy_task_failed", op="copy_task", error=self.error)
             self._refresh()
             return False
+
+        if self._r3:
+            from services import ai_prefs as AI
+
+            scope = AI.r3_task_scope(text)
+            if not scope["known"] or scope["count"] > AI.R3_VERIFY_MAX:
+                self._taskbook_cache = fields
+                self.error = (scope["warning"] if not scope["known"] else
+                              f"本次正文引用任务书预计委派 {scope['count']} 条，"
+                              f"超过固定上限 {AI.R3_VERIFY_MAX} 条；未复制。"
+                              "任务书仍可查看，请缩小范围后重新生成。")
+                self._mark("bib_ai_copy_task_blocked", task_id=tid,
+                           count=scope["count"] if scope["known"] else None)
+                self._refresh()
+                return False
 
         if not self._copy(text, exact=True):
             self.error = "复制任务书全文失败：剪贴板不可用"

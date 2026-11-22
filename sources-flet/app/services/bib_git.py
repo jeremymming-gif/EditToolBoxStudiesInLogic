@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import subprocess
+from urllib.parse import urlsplit, urlunsplit
 
 #: 库文件在笔记仓里的**唯一**合法相对路径（与 mac / Windows 同值）
 DB_RELATIVE_PATH = "bib_db/bibliography.jsonl"
@@ -292,6 +293,66 @@ def status(db: str = "", *, notes_repo: str = "") -> dict:
     return _probe(loc)
 
 
+_MUTATION_SNAPSHOT_KEYS = (
+    "db", "repo_root", "branch", "head", "db_sha256", "db_index_sha256",
+    "worktree_sha256",
+    "dirty_db", "dirty_other", "conflict", "merge", "rebase", "identity_ok",
+    "identity",
+)
+
+
+def _mutation_snapshot(loc: dict) -> dict:
+    """只读地固定库目标、HEAD、库字节和工作树状态，供显式确认复核。"""
+    probe = _probe(loc)
+    code, porcelain, err = _run(
+        loc["git"], ["--no-optional-locks", "status", "--porcelain=v1",
+                     "--untracked-files=all"], cwd=loc["repo_root"])
+    if code != 0:
+        return {"ok": False, "soft": False,
+                "error": "读取确认所需的工作树状态失败："
+                         + _error_of(porcelain, err, "未知错误")}
+    code, index_state, err = _run(
+        loc["git"], ["--no-optional-locks", "ls-files", "--stage", "-z", "--",
+                     loc["db_rel"]], cwd=loc["repo_root"])
+    if code != 0:
+        return {"ok": False, "soft": False,
+                "error": "读取确认所需的库文件索引指纹失败："
+                         + _error_of(index_state, err, "未知错误")}
+    identity = str(probe.get("identity") or "")
+    return {
+        "ok": True,
+        "db": loc["db_abs"],
+        "repo_root": loc["repo_root"],
+        "branch": probe.get("branch", ""),
+        "head": probe.get("head", ""),
+        "db_sha256": file_sha256(loc["db_abs"]),
+        "db_index_sha256": hashlib.sha256(index_state.encode("utf-8")).hexdigest(),
+        "worktree_sha256": hashlib.sha256(porcelain.encode("utf-8")).hexdigest(),
+        "dirty_db": bool(probe.get("dirty_db")),
+        "dirty_other": int(probe.get("dirty_other") or 0),
+        "conflict": bool(probe.get("conflict")),
+        "merge": bool(probe.get("merge")),
+        "rebase": bool(probe.get("rebase")),
+        "identity_ok": bool(probe.get("identity_ok")),
+        "identity": identity,
+    }
+
+
+def mutation_snapshot(db: str = "", *, notes_repo: str = "") -> dict:
+    """确认提交/回退前的目标库及 Git 工作树快照；只读，不触碰库以外的数据。"""
+    loc = locate_repo(db or default_db(notes_repo))
+    if not loc.get("ok"):
+        return {"ok": False, "soft": True,
+                "error": loc.get("error", "无法定位 git 仓库。")}
+    return _mutation_snapshot(loc)
+
+
+def _matches_mutation_snapshot(expected: dict, current: dict) -> bool:
+    return (current.get("ok") is True
+            and all(key in expected and expected.get(key) == current.get(key)
+                    for key in _MUTATION_SNAPSHOT_KEYS))
+
+
 def preflight(db: str = "", *, notes_repo: str = "") -> dict:
     """写库前的只读预检；与 `status` 同一份探针，名字让调用点读起来就是「写前检查」。"""
     return status(db, notes_repo=notes_repo)
@@ -338,7 +399,7 @@ def file_sha256(path: str) -> str:
         return ""
 
 
-def commit_db(db: str, message: str) -> dict:
+def commit_db(db: str, message: str, *, expected_snapshot: dict | None = None) -> dict:
     """把**库文件**的当前改动提交成一次本地 commit。绝不 push/pull。
 
     返回 `{ok, committed, sha_before, sha_after, sha, message, reason, soft, error}`：
@@ -358,7 +419,16 @@ def commit_db(db: str, message: str) -> dict:
     # 独立写前检查：commit_db 在写库成功后才被调用，调用方页面加载时的 git 状态
     # 可能早已过期；这里不看调用方，自己重跑一次只读探针。merge / rebase / 冲突未
     # 解决时绝不提交（否则会把未完成的合并状态一并提交进去）。
-    probe = _probe(loc)
+    snapshot = _mutation_snapshot(loc)
+    if not snapshot.get("ok"):
+        return {"ok": False, "committed": False,
+                "soft": bool(snapshot.get("soft")),
+                "error": str(snapshot.get("error") or "无法读取当前工作树状态。")}
+    if (expected_snapshot is not None
+            and not _matches_mutation_snapshot(expected_snapshot, snapshot)):
+        return {"ok": False, "committed": False, "soft": True,
+                "error": "确认后的目标库或工作树状态已变化，未生成提交；请重新检查并确认。"}
+    probe = snapshot
     blocked = [name for name, flag in (
         ("有未解决的合并冲突", probe.get("conflict")),
         ("merge 进行中", probe.get("merge")),
@@ -491,7 +561,7 @@ def looks_like_proxy_failure(output: str) -> bool:
 
 
 def parse_upstream(output: str) -> tuple[str, str] | None:
-    """`origin/main` → `(origin, main)`：首个 `/` 拆开（分支名可含 `/`）。"""
+    """`origin/main` → `(origin, main)`；首个 `/` 后的分支名可继续含 `/`。"""
     line = ""
     for raw in str(output or "").splitlines():
         if raw.strip():
@@ -516,14 +586,60 @@ def _failure_text(output: str, max_lines: int = 3) -> str:
     return " / ".join(lines[-max_lines:])
 
 
-def push(db: str = "", *, notes_repo: str = "") -> dict:
-    """把「连续 bib-only 前缀」推到 upstream（**只**在用户显式点「推送…」时调用）。
+def _push_urls(git: str, root: str, remote: str) -> list[str]:
+    """读取 Git 已应用 pushurl/pushInsteadOf 后实际解析出的全部目的地址。"""
+    code, out, _err = _run(git, ["remote", "get-url", "--push", "--all", remote],
+                           cwd=root)
+    if code != 0:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
-    返回 `{ok, pushed, count, tip, remainder, reason, error, soft}`；绝不 `--force`。
-    """
+
+def _push_urls_are_stable(git: str, root: str, urls: list[str]) -> bool:
+    """Refuse a literal destination that Git URL rewrite rules would redirect again."""
+    code, out, _err = _run(git, ["config", "--get-regexp",
+                                 r"^url\..*\.(insteadOf|pushInsteadOf)$"], cwd=root)
+    if code not in (0, 1):
+        return False
+    rules: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        key, separator, prefix = line.partition(" ")
+        if not separator:
+            continue
+        suffix = ".pushinsteadof" if key.lower().endswith(".pushinsteadof") else ".insteadof"
+        if key.lower().startswith("url.") and key.lower().endswith(suffix):
+            replacement = key[4:-len(suffix)]
+            if prefix:
+                rules.append((prefix, replacement))
+    for url in urls:
+        matches = [(prefix, replacement) for prefix, replacement in rules
+                   if url.startswith(prefix)]
+        if matches:
+            prefix, replacement = max(matches, key=lambda pair: len(pair[0]))
+            if replacement + url[len(prefix):] != url:
+                return False
+    return True
+
+
+def display_push_url(value: str) -> str:
+    """显示可识别的 push 目的地，不把 URL 凭据或查询令牌放进确认框。"""
+    text = str(value or "").strip()
+    parsed = urlsplit(text)
+    if parsed.scheme and parsed.netloc:
+        host = parsed.hostname or ""
+        if parsed.port:
+            host += f":{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    if "@" in text and ":" in text.split("/", 1)[0]:
+        return text.split("@", 1)[1]
+    return text
+
+
+def _push_state(db: str = "", *, notes_repo: str = "") -> dict:
+    """只读地解析推送目标与当前待推前缀，供确认展示及二次校验共用。"""
     loc = locate_repo(db or default_db(notes_repo))
     if not loc.get("ok"):
-        return {"ok": False, "pushed": False, "soft": True,
+        return {"ok": False, "soft": True,
                 "error": loc.get("error", "无法定位 git 仓库。")}
     git, root = loc["git"], loc["repo_root"]
     probe = _probe(loc)
@@ -532,52 +648,174 @@ def push(db: str = "", *, notes_repo: str = "") -> dict:
         ("merge 进行中", probe.get("merge")),
         ("rebase 进行中", probe.get("rebase"))) if flag]
     if blocked:
-        return {"ok": False, "pushed": False, "soft": True,
+        return {"ok": False, "soft": True,
                 "error": "git 仓库" + "、".join(blocked) + "：先处理完 git 状态再推送。"}
-    code, out, _err = _run(git, ["rev-parse", "--abbrev-ref", "--symbolic-full-name",
-                                 "@{upstream}"], cwd=root)
-    upstream = parse_upstream(out) if code == 0 else None
-    if not upstream:
-        return {"ok": False, "pushed": False, "soft": True,
+    code, branch_ref, err = _run(git, ["symbolic-ref", "--quiet", "HEAD"], cwd=root)
+    branch_ref = branch_ref.strip()
+    if code != 0 or not branch_ref.startswith("refs/heads/"):
+        return {"ok": False, "soft": True,
+                "error": "当前分支没有可用 upstream：先设置远端跟踪分支再推送。 "
+                         + _error_of(branch_ref, err, "当前可能处于 detached HEAD。")}
+    code, mapping, err = _run(
+        git, ["for-each-ref", "--format=%(upstream:remotename)%09%(upstream:remoteref)",
+              branch_ref], cwd=root)
+    rows = [line for line in mapping.splitlines() if line]
+    if code != 0 or len(rows) != 1 or "\t" not in rows[0]:
+        return {"ok": False, "soft": True,
+                "error": "读取当前分支的 upstream remote/ref 映射失败："
+                         + _error_of(mapping, err, "没有 upstream。")}
+    remote, remote_ref = rows[0].split("\t", 1)
+    if not remote and not remote_ref:
+        return {"ok": False, "soft": True,
                 "error": "没有 upstream：先 `git push -u` 再推送。"}
-    remote, branch = upstream
+    if not remote or remote == "." or not remote_ref.startswith("refs/heads/"):
+        return {"ok": False, "soft": True,
+                "error": "upstream 未映射到可推送的远端 heads ref：未推送。"}
+    branch = remote_ref[len("refs/heads/"):]
+    if not branch:
+        return {"ok": False, "soft": True,
+                "error": "upstream 的远端分支名为空：未推送。"}
+    code, upstream_ref, err = _run(
+        git, ["rev-parse", "--symbolic-full-name", "@{upstream}"], cwd=root)
+    upstream_ref = upstream_ref.strip()
+    if code != 0 or not upstream_ref.startswith("refs/remotes/"):
+        return {"ok": False, "soft": True,
+                "error": "当前 upstream 不是可确认的 refs/remotes 跟踪引用："
+                         + _error_of(upstream_ref, err, "路径格式不受支持。")}
+    if not upstream_ref[len("refs/remotes/"):]:
+        return {"ok": False, "soft": True,
+                "error": "当前 upstream 的 refs/remotes 跟踪引用为空：未推送。"}
+    push_urls = _push_urls(git, root, remote)
+    if not push_urls:
+        return {"ok": False, "soft": False,
+                "error": f"读取远端 {remote} 的 push 目的地址失败：未推送。"}
+    if not _push_urls_are_stable(git, root, push_urls):
+        return {"ok": False, "soft": True,
+                "error": "Git URL 改写规则会再次改变实际 push 目的地；为避免推送到未确认地址，已拒绝。"}
+    code, upstream_sha, err = _run(git, ["rev-parse", "--verify", upstream_ref], cwd=root)
+    if code != 0 or not upstream_sha.strip():
+        return {"ok": False, "soft": False,
+                "error": "读取 upstream 当前版本失败："
+                         + _error_of(upstream_sha, err, "未知错误")}
     code, out, err = _run(git, ["log", "--reverse", "--format=%x1e%H%x1f%P%x1f%s",
-                                "--name-only", "@{upstream}..HEAD"], cwd=root)
+                                "--name-only", f"{upstream_ref}..HEAD"], cwd=root)
     if code != 0:
-        return {"ok": False, "pushed": False, "soft": False,
+        return {"ok": False, "soft": False,
                 "error": "读取未推送提交失败：" + _error_of(out, err, "未知错误")}
-    plan = plan_push(parse_push_log(out))
-    if plan["kind"] == "nothing":
-        return {"ok": True, "pushed": False, "reason": "没有待推送提交。"}
+    commits = parse_push_log(out)
+    plan = plan_push(commits)
     if plan["kind"] == "blocked":
         commit = plan["commit"]
         where = plan["path"] or "（merge 提交）"
-        return {"ok": False, "pushed": False, "soft": True,
+        return {"ok": False, "soft": True,
                 "error": (f"最旧的未推送提交 {short_sha(commit['sha'])} 含非 bib_db/ 文件"
                           f"（{where}）：整次拒绝（本工具只推仅含 bib_db/ 的连续提交，"
                           "不 force、不推送 notes 的提交）。")}
-    tip = plan["tip"]
-    count = plan["count"]
-    refspec = f"{tip['sha']}:refs/heads/{branch}"
-    code, out, err = _run(git, ["push", remote, refspec], cwd=root, timeout=PUSH_TIMEOUT)
-    if code != 0 and looks_like_proxy_failure((err or "") + "\n" + (out or "")):
-        # 失效代理是已知现场：清掉两个代理键重试一次（只清本次命令，不改配置）。
-        code, out, err = _run(git, ["push", remote, refspec], cwd=root,
-                              timeout=PUSH_TIMEOUT,
-                              extra=["-c", "http.https://github.com.proxy=",
-                                     "-c", "http.proxy="])
+    tip = plan.get("tip") or {}
+    return {
+        "ok": True,
+        "db": loc["db_abs"],
+        "repo_root": root,
+        "branch": probe.get("branch", ""),
+        "head": probe.get("head", ""),
+        "upstream": f"{remote}/{branch}",
+        "upstream_ref": upstream_ref,
+        "upstream_sha": upstream_sha.strip(),
+        "push_urls": push_urls,
+        "remote": remote,
+        "target_branch": branch,
+        "tip": tip.get("sha", ""),
+        "count": int(plan.get("count") or 0),
+        "outgoing_shas": [item["sha"] for item in commits[:int(plan.get("count") or 0)]],
+        "remainder": [short_sha(item["sha"]) for item in plan.get("remainder") or []],
+    }
+
+
+def push_snapshot(db: str = "", *, notes_repo: str = "") -> dict:
+    """只读推送预览：精确给出目标仓、upstream 与待推 bib-only tip。"""
+    state = _push_state(db, notes_repo=notes_repo)
+    if not state.get("ok"):
+        return state
+    if not state.get("count"):
+        return {**state, "kind": "nothing"}
+    return {**state, "kind": "pushable"}
+
+
+def push(db: str = "", *, notes_repo: str = "",
+         expected: dict | None = None) -> dict:
+    """把确认快照中的「连续 bib-only 前缀」推到 upstream；绝不 force/pull/fetch。
+
+    提供 `expected` 时，目标仓、HEAD、upstream 及精确待推 tip/count 任一变化都会拒绝，
+    防止确认框打开后把用户没看见的新提交一并推送。
+    """
+    state = _push_state(db, notes_repo=notes_repo)
+    if not state.get("ok"):
+        return {**state, "pushed": False}
+    if expected is not None:
+        keys = ("db", "repo_root", "branch", "head", "upstream", "upstream_sha",
+                "upstream_ref", "push_urls", "remote", "target_branch", "tip", "count",
+                "outgoing_shas", "remainder")
+        if any(expected.get(key) != state.get(key) for key in keys):
+            return {"ok": False, "pushed": False, "soft": True,
+                    "error": "推送目标或待推提交已变化；为避免推送未确认内容，已拒绝。请刷新后重新确认。"}
+    if not state.get("count"):
+        return {"ok": True, "pushed": False, "reason": "没有待推送提交。"}
+    tip = state["tip"]
+    count = state["count"]
+    refspec = f"{tip}:refs/heads/{state['target_branch']}"
+    git, root = find_git(), state["repo_root"]
+    if not git:
+        return {"ok": False, "pushed": False, "soft": True,
+                "error": "找不到 git：未推送。"}
+    pushed_urls: list[str] = []
+    for url in state["push_urls"]:
+        code, out, err = _run(git, ["push", "--no-follow-tags", "--", url, refspec], cwd=root,
+                              timeout=PUSH_TIMEOUT)
+        if code != 0 and looks_like_proxy_failure((err or "") + "\n" + (out or "")):
+            # 失效代理只对本次目标重试一次，不改 Git 配置或推送目标。
+            code, out, err = _run(git, ["push", "--no-follow-tags", "--", url, refspec], cwd=root,
+                                  timeout=PUSH_TIMEOUT,
+                                  extra=["-c", "http.https://github.com.proxy=",
+                                         "-c", "http.proxy="])
+        if code != 0:
+            partial = ("已推送到：" + "；".join(display_push_url(item)
+                                                   for item in pushed_urls) + "。"
+                       if pushed_urls else "")
+            return {"ok": False, "pushed": bool(pushed_urls), "soft": False,
+                    "error": partial + "推送失败："
+                             + _failure_text((err or "") + "\n" + (out or ""))}
+        pushed_urls.append(url)
+    code, current_upstream_ref, upstream_err = _run(
+        git, ["rev-parse", "--symbolic-full-name", "@{upstream}"], cwd=root)
+    if code != 0 or current_upstream_ref.strip() != state["upstream_ref"]:
+        return {"ok": False, "pushed": True, "soft": False,
+                "pushed_urls": pushed_urls,
+                "error": "远端已推送，但当前 upstream 映射已变化；未更新本地跟踪引用。 "
+                         + _error_of(current_upstream_ref, upstream_err,
+                                     "请刷新 Git 状态后再操作。")}
+    tracking_ref = state["upstream_ref"]
+    code, out, err = _run(
+        git, ["update-ref", "--no-deref", tracking_ref, tip, state["upstream_sha"]],
+        cwd=root)
     if code != 0:
-        return {"ok": False, "pushed": False, "soft": False,
-                "error": "推送失败：" + _failure_text((err or "") + "\n" + (out or ""))}
-    remainder = plan.get("remainder") or []
-    return {"ok": True, "pushed": True, "count": count, "tip": tip["sha"],
-            "remainder": [short_sha(item["sha"]) for item in remainder],
-            "reason": f"已推送 {count} 条提交（tip {short_sha(tip['sha'])}）。"}
+        current_code, current, _current_err = _run(
+            git, ["rev-parse", "--verify", tracking_ref], cwd=root)
+        if current_code != 0 or current.strip() != tip:
+            return {"ok": False, "pushed": True, "soft": False,
+                    "pushed_urls": pushed_urls,
+                    "error": ("远端已推送，但本地 upstream 跟踪引用未能按确认的旧版本安全更新；"
+                              "未改动其他引用。请刷新 Git 状态后再操作。 "
+                              + _error_of(out, err, "本地跟踪引用发生并发变化。"))}
+    return {"ok": True, "pushed": True, "count": count, "tip": tip,
+            "pushed_urls": pushed_urls,
+            "remainder": state["remainder"],
+            "reason": f"已推送 {count} 条提交（tip {short_sha(tip)}）。"}
 
 
 # ── 回退（B-190）：checkout 上一个提交 + 新 commit，不 hard reset ────────
 
-def rollback(db: str = "", *, notes_repo: str = "") -> dict:
+def rollback(db: str = "", *, notes_repo: str = "",
+             expected_snapshot: dict | None = None) -> dict:
     """把库文件退回到**上一个版本**并生成一次新 commit。
 
     「上一个版本」按库文件内容的历史取：先找到当前内容最早出现的那个库提交，
@@ -593,7 +831,16 @@ def rollback(db: str = "", *, notes_repo: str = "") -> dict:
         return {"ok": False, "reverted": False, "soft": True,
                 "error": loc.get("error", "无法定位 git 仓库。")}
     git, root, rel = loc["git"], loc["repo_root"], loc["db_rel"]
-    probe = _probe(loc)
+    snapshot = _mutation_snapshot(loc)
+    if not snapshot.get("ok"):
+        return {"ok": False, "reverted": False,
+                "soft": bool(snapshot.get("soft")),
+                "error": str(snapshot.get("error") or "无法读取当前工作树状态。")}
+    if (expected_snapshot is not None
+            and not _matches_mutation_snapshot(expected_snapshot, snapshot)):
+        return {"ok": False, "reverted": False, "soft": True,
+                "error": "确认后的目标库或工作树状态已变化，未回退；请重新检查并确认。"}
+    probe = snapshot
     if probe.get("conflict") or probe.get("merge") or probe.get("rebase"):
         return {"ok": False, "reverted": False, "soft": True,
                 "error": "仓库有未解决的合并冲突或正在 merge/rebase："

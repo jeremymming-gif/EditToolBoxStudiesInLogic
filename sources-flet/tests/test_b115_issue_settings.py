@@ -246,8 +246,8 @@ def test_issue_nav_bar_uses_chips_not_progress_band():
     assert "status_chip" not in _calls(P.IssuePage._nav_bar)
 
 
-# ── 3. SettingsPage 白面板 / 四组 / kv_row ─────────────────────────────
-def test_settings_page_white_sheet_and_four_groups(tmp_path):
+# ── 3. SettingsPage 白面板 / 三类设置 / kv_row ─────────────────────────
+def test_settings_page_white_sheet_and_three_groups(tmp_path):
     page, root = _build_settings(tmp_path)
     t = page.t
     assert isinstance(root, ft.Container)
@@ -257,26 +257,15 @@ def test_settings_page_white_sheet_and_four_groups(tmp_path):
     assert isinstance(body, ft.Column)
     # 批 118 P1-1：滚动 Column 内先包一层右缘 6px 留白容器，再是原内容。
     groups = body.controls[0].content.controls[1:]
-    assert len(groups) == 4
+    assert len(groups) == 3
     labels = [group.controls[0].controls[0].controls[0].value for group in groups]
-    assert labels == ["引擎与环境", "外观", "窗口与托盘", "路径与关于"]
+    assert labels == ["通用", "AI", "引用库"]
     # 每组都以 section_label + 发丝线开头。
     for group in groups:
         head = group.controls[0]
         assert isinstance(head, ft.Column)
         assert isinstance(head.controls[1], ft.Container)
         assert head.controls[1].height == 1  # hairline
-    # 「窗口与托盘」只有一张同名的 shell 卡：标题合并到组头（note 上提），
-    # 组内不得再出现第二层「窗口与托盘」小标题。
-    tray_group = groups[2]
-    tray_head = tray_group.controls[0].controls[0]
-    assert tray_head.controls[0].value == "窗口与托盘"
-    assert tray_head.controls[-1].value == "仅 Windows"
-    tray_body = tray_group.controls[1]
-    assert isinstance(tray_body, ft.Column)
-    first = tray_body.controls[0]
-    assert not (isinstance(first, ft.Row) and isinstance(first.controls[0], ft.Text)
-                and first.controls[0].value == "窗口与托盘")
 
 
 def test_settings_engine_rows_merge_envcheck_and_use_kv_row(tmp_path):
@@ -312,7 +301,7 @@ def test_settings_page_methods_have_no_cards_or_section_titles(tmp_path):
     assert "button_palette_row" in calls
     src = inspect.getsource(P.SettingsPage.build)
     assert "panel=True" in src
-    assert src.count("self._group(") == 4
+    assert src.count("self._group(") == 3
 
 
 def test_settings_body_has_no_card_containers_left(tmp_path):

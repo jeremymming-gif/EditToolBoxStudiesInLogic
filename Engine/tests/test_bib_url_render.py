@@ -12,14 +12,14 @@ r"""B-189：参考文献 DOI/网址渲染规范（2026-10-22 用户拍板）。
     `strip_published_urls()`（Word 的 bib 不经过 normalize_bib）；模板
     `SLCN-MIX(.4).sty` 另有 `\AtEveryBibitem` 兜底（作者自行编译也成立）。
 
-本套件钉住（hermetic；不读真实库/稿件仓、不联网；产物只写临时目录）
+本套件钉住（hermetic；不读真实库/稿件仓、不联网；产物只写系统临时目录）
   ① `strip_published_urls_fields()`：正式/在线/SEP/未知类型/夹带网址/幂等；
   ② `strip_published_urls()`（Word 通道文本级）：只重写命中条目、其余逐字节不动、
      注释与条目间文本保留、花括号不配平时不猜；
   ③ `normalize_bib()` 默认**不改变**旧输出（向后兼容）；`strip_urls=True` 才清洗；
   ④ 两通道产物接线：`build_latex` 产物 bib 清洗、`build_docx` 产物 bib 清洗；
   ⑤ 模板兜底编译夹具（有 xelatex+biber 才跑，CI 上自动 SKIP）：正式条目无
-     doi.org/正式网址、SEP/在线/misc 网址仍在。
+     doi.org/正式网址、SEP/在线/misc 网址仍在；现行模板页码范围保留 biblatex 默认连线。
 
 用法：
     cd Engine && PYTHONPATH="$PWD/vendor" python3 tests/test_bib_url_render.py
@@ -312,25 +312,39 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
             + fields_to_bib("misc", "Fallback",
                             [("author", "{{Some complex reference, with commas; "
                                         "and ``quotes'' -- and more.}}")]))
+    tex = ("\\documentclass[b5paper,10.5t,onecolumn,UTF8]{article}\n"
+           f"\\usepackage{{{sty_name[:-4]}}}\n"
+           "\\addbibresource{refs.bib}\n")
+    if tag in {"mix", "en"}:
+        # Inspect the macro in the actual bibliography item, after localization.
+        tex += (r"\AtEveryBibitem{\iffieldequalstr{entrykey}{ArtFormal}{%" "\n"
+                r"  \typeout{B387-DASH-BEGIN:\meaning\bibrangedash:B387-DASH-END}%" "\n"
+                r"  \ifdefined\cndash\typeout{B387-CNDASH-DEFINED}\fi}{} }" "\n")
+    # The reference-only fixture has no article metadata for running headers.
+    tex += ("\\begin{document}\n\\pagestyle{empty}\n测试正文。\n\\nocite{*}\n"
+            "\\printbibliography\n\\end{document}\n")
     with open(os.path.join(d, "fixture.tex"), "w", encoding="utf-8") as fh:
-        fh.write("\\documentclass[b5paper,10.5t,onecolumn,UTF8]{article}\n"
-                 f"\\usepackage{{{sty_name[:-4]}}}\n"
-                 "\\addbibresource{refs.bib}\n"
-                 "\\begin{document}\n测试正文。\n\\nocite{*}\n"
-                 "\\printbibliography\n\\end{document}\n")
+        fh.write(tex)
     env = dict(os.environ, TEXINPUTS=d + os.pathsep, BIBINPUTS=d + os.pathsep)
-    _run = lambda args: subprocess.run(args, cwd=d, env=env, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, timeout=180)
-    _run([_XELATEX, "-interaction=nonstopmode", "fixture.tex"])
-    _run([_BIBER, "fixture"])
-    _run([_XELATEX, "-interaction=nonstopmode", "fixture.tex"])
-    _run([_XELATEX, "-interaction=nonstopmode", "fixture.tex"])
+    xelatex = [_XELATEX, "-interaction=nonstopmode", "fixture.tex"]
+    for step, args in (("xelatex-first", xelatex), ("biber", [_BIBER, "fixture"]),
+                       ("xelatex-2", xelatex), ("xelatex-3", xelatex)):
+        log_path = os.path.join(d, f"{step}.log.txt")
+        with open(log_path, "wb") as log:
+            result = subprocess.run(args, cwd=d, env=env, stdout=log,
+                                    stderr=subprocess.STDOUT, timeout=180)
+        detail = f"rc={result.returncode} cwd={d} argv={args!r} log={log_path}"
+        print(f"COMMAND {detail}")
+        if result.returncode:
+            check(f"⑤ 模板兜底（{tag}）：{step} 成功", False, detail)
+            return
     pdf = os.path.join(d, "fixture.pdf")
     if not os.path.isfile(pdf):
         check(f"⑤ 模板兜底编译（{tag}）：产物 PDF 存在", False)
         return
     text = "\n".join(p.extract_text() or "" for p in PdfReader(pdf).pages)
     norm = re.sub(r"\s+", "", text)
+    print(f"PDF {pdf}")
     check(f"⑤ 模板兜底（{tag}）：正式 article 的 doi.org 不印", "doi.org" not in norm)
     check(f"⑤ 模板兜底（{tag}）：SEP 词条网址仍打印", "plato.stanford.edu" in norm)
     check(f"⑤ 模板兜底（{tag}）：online 网址仍打印", "example.org/web" in norm)
@@ -349,10 +363,18 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
         check(f"⑤ 模板兜底（{tag}）：解析失败条目 author 整串逐字印出",
               "Somecomplexreference,withcommas" in norm,
               text[-400:].replace("\n", " "))
-        # cndash（\raise0.1em\hbox{--}）在 pypdf 抽取里带前导空格：「1 –10」；
-        # 旧默认 \bibrangedash 是 en dash，抽取为「1–10」（无空格）。
-        check(f"⑤ 模板兜底（{tag}）：参考文献页码范围印 cndash",
-              "1 –10" in text, repr(text[-200:]))
+        with open(log_path, encoding="utf-8", errors="replace") as log:
+            diagnostics = log.read().replace("\n", "")  # TeX wraps long log lines.
+        match = re.search(r"B387-DASH-BEGIN:(.*?):B387-DASH-END", diagnostics)
+        meaning = match.group(1) if match else ""
+        check(f"⑤ 模板兜底（{tag}）：TeX 页码宏使用默认 en dash，保留 cndash 命令",
+              bool(re.search(r"\\textendash(?![A-Za-z])", meaning))
+              and not re.search(r"\\cndash(?![A-Za-z])", meaning)
+              and "B387-CNDASH-DEFINED" in diagnostics,
+              f"{meaning or '缺少页码宏诊断'} | {log_path}")
+        # PDF extraction checks the rendered glyph and digits independently.
+        check(f"⑤ 模板兜底（{tag}）：PDF 呈现 1–10 页码范围",
+              "1–10" in norm, repr(text[-300:]))
         check(f"⑤ 模板兜底（{tag}）：unpublished 网址仍打印",
               "example.org/draft" in norm)
 

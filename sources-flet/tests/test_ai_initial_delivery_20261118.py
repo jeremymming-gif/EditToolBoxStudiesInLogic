@@ -982,8 +982,14 @@ def test_initial_api_success_uses_nested_reply_identity(monkeypatch, tmp_path, i
     import asyncio
 
     head = _fake_head(monkeypatch)
-    view, status, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    view, status, _, pending, dialogs = _original_offer(monkeypatch, tmp_path)
     view.channel = "api"
+    taskbook = ("## 文献核实\n- 可用材料：待核条目 1 条，正文引用缺条 0 条。\n")
+    monkeypatch.setattr(EB, "read_json_command", lambda _call: {
+        "ok": True,
+        "json": {"ok": True, "task_id": view.task_id,
+                 "path": str(tmp_path / "task.md"), "text": taskbook},
+    })
     status.update(library={"checked": True, "matched": 2, "conflicts": 1},
                   conflicts=[{"conflict_id": "cf-old", "key": "old", "field": "title"}],
                   decisions={"cf-old": "reply"})
@@ -997,6 +1003,11 @@ def test_initial_api_success_uses_nested_reply_identity(monkeypatch, tmp_path, i
 
     monkeypatch.setattr(EB, "run_call", run)
     asyncio.run(view.request_api())
+    assert len(dialogs) == 1 and not pending
+    assert "token 用量估算" in dialogs[0]._bib_impact
+    dialogs[0].actions[1].on_click(None)
+    assert pending
+    asyncio.run(pending.pop(0)())
     assert view.result_path == "/work/api-reply.md"
     assert bool(view.library) is idempotent and bool(view.decisions) is idempotent
     assert view.can_apply() is idempotent

@@ -284,7 +284,8 @@ def _cases():
 
     def query(host):
         view = QV.QueryView(host)
-        return view, view._filter()
+        tree = view._filter()
+        return view, tree
 
     def advanced_basic(host):
         view = AV.BibQueryView(host)
@@ -328,7 +329,8 @@ def _cases():
         return view, view._source_control()
 
     return [
-        pytest.param("query", query, lambda v, text: v.text == text, id="query"),
+        pytest.param("query", query,
+                     lambda v, text: v.adv_values["title"] == text, id="query"),
         pytest.param("advanced-basic", advanced_basic,
                      lambda v, text: v.basic_text == text, id="advanced-basic"),
         pytest.param("advanced-row", advanced_row,

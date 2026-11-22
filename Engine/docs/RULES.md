@@ -639,13 +639,14 @@ undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
 删除、在线资源保留字段（模板从不印 `doi` 字段，只印 `url`）；② 判断按条目类型 +
 出版信息，**缺字段的残缺条目按在线资源保守保留**（宁可不删，不误删数据；要更严请先
 把字段补齐）；③ `misc` 驱动只印作者（网址也不印；复杂文献的原文在 `author` 里原样输出）；
-④ 参考文献 `pages` 范围的 `--` 统一渲染成 `\cndash`（`\DefineBibliographyExtras`
-  里改 `\bibrangedash`，中英文模板一致）。
+④ 参考文献 `pages` 范围由现行中英文模板交给 `biblatex` 自动渲染；模板保留
+  `\cndash` 宏供显式调用，不再强制重定义 `\bibrangedash`。
 
 **回归**：`tests/test_bib_url_render.py`（① 字段级判据/幂等；② 文本级只改命中条目；
 ③ `normalize_bib` 默认向后兼容；④ 两通道产物接线；⑤ `SLCN-MIX.sty`/`SLEN.sty`
 编译夹具：正式条目 doi.org 不印、SEP/online/unpublished 网址仍印、misc 只印 author、
-`pages` 范围印 `\cndash`；`SLCN-MIX4.sty` 保持旧行为 —— 无 TeX 环境自动 SKIP）。
+现行两模板的 `pages` 范围走 `biblatex` 默认渲染连线；`SLCN-MIX4.sty` 保留旧模板覆盖
+—— 无 TeX 环境自动 SKIP）。
 41 篇实测复测见笔记仓 `drafts/b189-report.md`。
 
 ---

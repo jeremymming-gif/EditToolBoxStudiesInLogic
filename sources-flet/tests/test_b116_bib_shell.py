@@ -489,22 +489,26 @@ def test_table_limit_load_more_and_footer() -> None:
     assert len(final.controls) == 2  # header + body，footer 已消失
 
 
-def test_table_300_rows_column_and_301_rows_listview_on_scroll() -> None:
-    """≤300 全量 Column；>300 才上 ListView + on_scroll 自动载入更多。"""
+def test_table_100_rows_column_and_101_rows_listview_on_scroll() -> None:
+    """≤100 用 Column；>100 切到 ListView + on_scroll 自动载入更多。"""
     t = Tokens()
-    small = T.BibTable(t, _cols(), _rows(300))
+    small = T.BibTable(t, _cols(), _rows(100))
     small_tree = small.build()
     assert isinstance(small_tree.controls[1], ft.Column)
     assert getattr(small_tree.controls[1], "on_scroll", None) is None
 
-    big = T.BibTable(t, _cols(), _rows(301))
+    big = T.BibTable(t, _cols(), _rows(165), limit=165)
     big_tree = big.build()
     body = big_tree.controls[1]
     assert isinstance(body, ft.ListView)
     assert body.on_scroll is not None
-    big._scrolled(SimpleNamespace(pixels=1000, viewport_dimension=400,
-                                  max_scroll_extent=1400))
-    assert big.visible_count == 200
+    assert big.visible_count == 165
+
+    longer = T.BibTable(t, _cols(), _rows(301))
+    longer.build()
+    longer._scrolled(SimpleNamespace(pixels=1000, viewport_dimension=400,
+                                      max_scroll_extent=1400))
+    assert longer.visible_count == 200
 
 
 def test_table_scroll_x_fixed_width_fallback_is_documented() -> None:

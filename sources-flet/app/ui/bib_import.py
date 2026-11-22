@@ -26,8 +26,8 @@ VIEW_KEY = "import"
 TITLE = "入藏"
 ROLE = "write"
 
-#: 三种来源（段控 28 高）
-MODES = (("bib", "单个 .bib"), ("dir", "整期目录"), ("paste", "粘贴文本"))
+#: 入藏来源（段控 28 高）
+MODES = (("bib", "单个 .bib"), ("paste", "粘贴文本"))
 #: 预览结果筛选（chip 28）
 FILTERS = (("all", "全部"), ("new", "新增"), ("updated", "更新"),
            ("conflict", "冲突"), ("skipped", "跳过"))
@@ -73,8 +73,6 @@ class BibImportView:
         self.issue = ""
         self.slug = ""
         self.verified = False
-        self.through_year = ""
-        self.finished_only = False
         self.force = False
         self.more_open = False
         self.paste_text = ""
@@ -93,7 +91,9 @@ class BibImportView:
         self.busy = False
         self.dirty_reason = ""
         self.shown = 100
+        self.expanded_change = ""
         self._root: ft.Container | None = None
+        self._preview_button: ft.Control | None = None
         # N01（DESIGN §11）：浏览入口必须接回真实文件选择服务。这里保留本次渲染
         # 创建的来源输入框引用，`app.browse_field` 直接往里写值（旧 `page.file_picker`
         # 在 Flet 1.0.5 上根本不存在，是永久失效的分支）。
@@ -246,6 +246,7 @@ class BibImportView:
         self.path = e.control.value or ""
         self._store_set("recent.bib_import", self.path)
         self._invalidate("来源已修改，请重新预览")
+        self._refresh_preview_button()
 
     def _on_issue(self, e) -> None:
         self.issue = e.control.value or ""
@@ -255,13 +256,28 @@ class BibImportView:
         self.slug = e.control.value or ""
         self._invalidate("slug 已修改，请重新预览")
 
-    def _on_year(self, e) -> None:
-        self.through_year = e.control.value or ""
-        self._invalidate("截止年份已修改，请重新预览")
-
     def _on_paste(self, e) -> None:
         self.paste_text = e.control.value or ""
         self._invalidate("粘贴内容已修改，请重新预览")
+        self._refresh_preview_button()
+
+    def _refresh_preview_button(self) -> None:
+        button = self._preview_button
+        if button is None:
+            return
+        button.disabled = not self._can_preview()
+        update = getattr(button, "update", None)
+        if callable(update):
+            try:
+                update()
+            except Exception:  # noqa: BLE001 - 控件尚未挂载时忽略
+                page = self._flet()
+                page_update = getattr(page, "update", None)
+                if callable(page_update):
+                    try:
+                        page_update()
+                    except Exception:  # noqa: BLE001
+                        pass
 
     def _toggle(self, name: str, e=None) -> None:
         value = bool(getattr(e.control, "value", False))
@@ -277,9 +293,7 @@ class BibImportView:
         self.paste_text = ""
         self.issue = ""
         self.slug = ""
-        self.through_year = ""
         self.verified = False
-        self.finished_only = False
         self.force = False
         self.payload = None
         self.expect_sha = ""
@@ -293,15 +307,11 @@ class BibImportView:
 
     # ── 引擎命令 ─────────────────────────────────────────────────────
     def _build_call(self, *, dry_run: bool, expect_sha: str = "") -> EB.EngineCall:
-        if self.mode == "dir":
-            return EB.bibdb_import_dir_call(
-                root=self.path, through_year=self.through_year,
-                finished_only=self.finished_only, dry_run=dry_run,
-                force=self.force, expect_db_sha256=expect_sha)
         bib = self._paste_file() if self.mode == "paste" else self.path
         return EB.bibdb_import_call(
             bib=bib, issue=self.issue, slug=self.slug, dry_run=dry_run,
-            force=self.force, verified=self.verified, expect_db_sha256=expect_sha)
+            force=self.force, verified=self.verified, unverified=not self.verified,
+            expect_db_sha256=expect_sha)
 
     def _paste_file(self) -> str:
         """粘贴文本落一个临时 .bib（temp dir，不碰笔记仓）。"""
@@ -335,6 +345,14 @@ class BibImportView:
             self._render()
             return
         payload = res.get("json") or {}
+        summary = _summary_of(payload) or payload
+        if _int(summary.get("entries")) == 0:
+            self.state = "failure"
+            self.error = "没有解析到 BibTeX 条目；检查来源内容后重试。"
+            self._mark("bib_import_preview", ok=False, code=res.get("code"),
+                       entries=0, error=self.error)
+            self._render()
+            return
         self.payload = payload
         self.expect_sha = str(payload.get("db_sha256_before") or "")
         self.dirty_reason = ""
@@ -495,8 +513,105 @@ class BibImportView:
             key = str(item.get("key") or record.get("key") or "")
             status = str(item.get("status") or item.get("action") or item.get("kind") or "")
             title = str(item.get("title") or fields.get("title") or item.get("message") or "")
-            out.append({"key": key, "status": status, "title": title})
+            conflict = item.get("conflict") if isinstance(item.get("conflict"), dict) else {}
+            field_diff = (item.get("field_diff") or item.get("field_diffs")
+                          or item.get("diff") or conflict.get("field_diff"))
+            out.append({
+                "change_id": str(item.get("change_id") or ""),
+                "line": _int(item.get("line")),
+                "skip_code": str(item.get("skip_code") or ""),
+                "key": key,
+                "incoming_key": str(item.get("incoming_key") or ""),
+                "status": status,
+                "title": title,
+                "author": str(item.get("author") or fields.get("author")
+                               or fields.get("editor") or ""),
+                "year": str(item.get("year") or fields.get("year") or ""),
+                "identity": str(item.get("identity") or ""),
+                "reason": str(item.get("reason") or ""),
+                "verified": item.get("verified"),
+                "conflict_fields": item.get("conflict_fields") or [],
+                "field_diff": field_diff if isinstance(field_diff, dict) else {},
+            })
         return out
+
+    @staticmethod
+    def _field_diff_values(row: dict) -> list[tuple[str, str, str]]:
+        """Accept current and legacy engine diff shapes without inventing values."""
+        diff = row.get("field_diff")
+        if not isinstance(diff, dict):
+            return []
+        values = []
+        for name, change in diff.items():
+            if isinstance(change, dict):
+                existing = change.get("existing", change.get("old", change.get("existing_value", "")))
+                incoming = change.get("incoming", change.get("new", change.get("incoming_value", "")))
+                if change.get("remove"):
+                    incoming = "（新稿无此字段）"
+            else:
+                existing, incoming = "", change
+            values.append((str(name), str(existing or "（空）"),
+                           str(incoming or "（空）")))
+        return values
+
+    def _change_detail(self, row: dict) -> ft.Control:
+        t = self.t
+        p = t.palette
+        details: list[ft.Control] = []
+        key_line = " · ".join(part for part in (
+            f"库键 {row['key']}" if row.get("key") else "",
+            f"输入键 {row['incoming_key']}" if row.get("incoming_key") else "",
+            f"第 {row['line']} 行" if row.get("line") else "",
+            f"分类 {row['skip_code']}" if row.get("skip_code") else "",
+            row.get("identity", "")) if part)
+        if key_line:
+            details.append(C.text(key_line, t, "caption", p.text_muted,
+                                  font_family=t.mono_family, selectable=True))
+        if row.get("reason"):
+            details.append(C.text("原因：" + str(row["reason"]),
+                                  t, "caption", p.warn, selectable=True))
+        bibliographic = " · ".join(part for part in (
+            row.get("author", ""), row.get("year", "")) if part)
+        if bibliographic:
+            details.append(C.text(bibliographic, t, "caption", p.text_muted))
+        diffs = self._field_diff_values(row)
+        conflict_fields = row.get("conflict_fields")
+        if isinstance(conflict_fields, str):
+            conflict_fields = [conflict_fields]
+        if not diffs and isinstance(conflict_fields, (list, tuple)) and conflict_fields:
+            details.append(C.text("差异字段：" + "、".join(map(str, conflict_fields)),
+                                  t, "caption", p.warn))
+            details.append(C.text("引擎未返回字段值；此处不推测库内值或输入值。",
+                                  t, "caption", p.text_faint))
+        elif diffs:
+            details.append(ft.Row(spacing=0, controls=[
+                ft.Container(expand=1, content=C.text("字段", t, "caption", p.text_faint)),
+                ft.Container(expand=2, content=C.text("库内值", t, "caption", p.text_faint)),
+                ft.Container(expand=2, content=C.text("本次输入", t, "caption", p.text_faint)),
+            ]))
+            for name, existing, incoming in diffs:
+                details.append(ft.Row(spacing=0, vertical_alignment=ft.CrossAxisAlignment.START,
+                                      controls=[
+                    ft.Container(expand=1, content=C.text(name, t, "caption", p.warn,
+                                                          font_family=t.mono_family)),
+                    ft.Container(expand=2, content=C.text(existing, t, "caption", p.text_muted,
+                                                          selectable=True)),
+                    ft.Container(expand=2, content=C.text(incoming, t, "caption", p.text,
+                                                          selectable=True)),
+                ]))
+        elif _STATUS_LABEL.get(row.get("status"), ("", ""))[0] == "冲突":
+            details.append(C.text("引擎未提供字段级差异；请在「待处理」中查看冲突记录。",
+                                  t, "caption", p.warn))
+        else:
+            details.append(C.text("本条没有字段差异数据。", t, "caption", p.text_faint))
+        return ft.Container(
+            padding=ft.Padding(left=t.px(12), top=t.px(8), right=t.px(12), bottom=t.px(8)),
+            bgcolor=p.surface_2,
+            content=ft.Column(spacing=t.sp("half"), controls=details))
+
+    def _toggle_change(self, key: str) -> None:
+        self.expanded_change = "" if self.expanded_change == key else key
+        self._render()
 
     def _counts(self) -> dict:
         # G-5：两种 payload 的计数都在嵌套层（import-bib 在 report，import-dir 在
@@ -552,6 +667,10 @@ class BibImportView:
         width = int(getattr(self._flet(), "width", 1160) or 1160)
         narrow = width <= S.NARROW_W
         params = self._params(narrow=narrow)
+        if not narrow:
+            params = ft.ListView(
+                expand=True, spacing=t.sp("2"), padding=0,
+                scroll=C.scrollbar(t), controls=list(params.controls))
         layout = S.write_layout(t, params=params, preview=self._preview_col(),
                                 confirm=None, narrow=narrow)
         # P1-7：确认条满宽常驻在页面底部，不再缩在右预览栏；窄屏同样通栏。
@@ -590,8 +709,6 @@ class BibImportView:
                            f"{self.path or ('粘贴文本 %d 行' % len(self.paste_text.splitlines())) or '未选择'}",
                            t, "small", t.palette.text_muted, max_lines=1,
                            overflow=ft.TextOverflow.ELLIPSIS),
-                    C.text(f"期号 {self.issue or '—'} · slug {self.slug or '—'}",
-                           t, "caption", t.palette.text_faint, max_lines=1),
                     C.text_button("编辑参数…", lambda e: self._open_params(), t),
                 ]))
         controls: list[ft.Control] = [self._segment()]
@@ -602,7 +719,8 @@ class BibImportView:
             # bib_write/normalize 的多行粘贴区同一套布局。
             paste_field = C.text_field(
                 t, value=self.paste_text,
-                hint_text="整段 BibTeX 条目",
+                hint_text="整段 BibTeX 条目；长文本可在框内滚动",
+                mono=True,
                 multiline=True, min_lines=6, max_lines=10,
                 on_change=self._on_paste, expand=True)
             # 按钮固定在多行框右侧（顶部对齐），不嵌 suffix、不改多行框几何。
@@ -612,12 +730,12 @@ class BibImportView:
                           C.paste_button(t, self.page, paste_field,
                                          height=t.control_h())])
             controls.append(C.form_field(t, "粘贴 .bib 文本", body,
-                                         expand=True, clearable=False))
+                                         clearable=False))
         else:
             field = C.floating_field(
-                t, "来源 *" if self.mode == "bib" else "整期目录 *",
+                t, "来源",
                 value=self.path,
-                hint=".bib 文件路径" if self.mode == "bib" else "期目录路径",
+                hint=".bib 文件路径",
                 on_change=self._on_path, expand=True)
             # N01：登记本次渲染的来源框，供真实文件选择器回填。
             self._source_ref = [field]
@@ -628,28 +746,23 @@ class BibImportView:
                     C.secondary_button("浏览…", lambda e: self._browse(), t,
                                        icon="FOLDER_OPEN", height=t.px(48)),
                 ])))
-        if self.mode == "bib":
-            controls.append(ft.Row(spacing=t.sp("1"), controls=[
-                C.floating_field(t, "期号", value=self.issue, hint="可空，如 2026-3",
-                                 on_change=self._on_issue, width=t.px(174)),
-                C.floating_field(t, "slug", value=self.slug, hint="可空",
-                                 on_change=self._on_slug, width=t.px(174)),
-            ]))
+        if self.mode in ("bib", "paste"):
             controls.append(self._check("verified", "标为已核实",
                                         self.verified))
-        else:
-            controls.append(ft.Row(spacing=t.sp("1"), controls=[
-                C.floating_field(t, "截止年份", value=self.through_year,
-                                 hint="可空，如 2026", on_change=self._on_year,
-                                 width=t.px(174)),
-                ft.Container(width=t.px(174), height=t.px(48),
-                             alignment=ft.Alignment.CENTER_LEFT,
-                             content=self._check("finished_only", "只要已完期",
-                                                 self.finished_only)),
-            ]))
-        more_label = "更多选项 ▾" if self.more_open else "更多选项 ▸"
+        more_label = "来源信息与选项 ▾" if self.more_open else "来源信息与选项 ▸"
         controls.append(C.text_button(more_label, self._toggle_more, t))
         if self.more_open:
+            controls.append(C.text("来源追溯（可选）", t, "caption",
+                                   t.palette.text_faint))
+            controls.append(ft.Row(spacing=t.sp("1"), controls=[
+                C.floating_field(t, "来源期号", value=self.issue,
+                                 hint="如 2026年第1期", on_change=self._on_issue,
+                                 width=t.px(174)),
+                C.floating_field(t, "稿件目录", value=self.slug,
+                                 hint="如 01 Lei_Wang", on_change=self._on_slug,
+                                 tooltip="填写期目录下的稿件文件夹名；用于来源追溯，不影响条目匹配。",
+                                 width=t.px(174)),
+            ]))
             controls.append(self._check("force", "覆盖待裁决冲突",
                                         self.force))
         controls.append(ft.Container(height=t.px(32), content=ft.Row(
@@ -665,6 +778,7 @@ class BibImportView:
                        else C.secondary_button)(
             preview_label, lambda e: self._task(self._preview), t,
             disabled=not self._can_preview())
+        self._preview_button = preview_btn
         # P1-7：预览前页内只此一个 accent 主操作；预览成功后让位给确认条。
         preview_btn._bib_primary = self.payload is None
         controls.append(ft.Row(spacing=t.sp("1"), controls=[
@@ -701,8 +815,8 @@ class BibImportView:
         if not self._source_ref:
             self._notify("来源输入框尚未就绪；请重新展开参数区再选。")
             return
-        kind = "dir" if self.mode == "dir" else "file"
-        title = "选择整期目录" if kind == "dir" else "选择来源 .bib"
+        kind = "file"
+        title = "选择来源 .bib"
         before = (self._source_ref[0].value or "").strip()
         try:
             browse(self._source_ref, title, kind, "bib_import_src")
@@ -710,40 +824,38 @@ class BibImportView:
             self._notify(f"文件选择器不可用：{type(exc).__name__}。可直接粘贴路径。")
             return
         self._picking = True
-        self._task(lambda: self._watch_pick(before))
+        source_ref = self._source_ref
+        self._task(lambda: self._watch_pick(before, source_ref))
 
-    async def _watch_pick(self, before: str) -> None:
+    async def _watch_pick(self, before: str, source_ref: list | None = None) -> None:
         """等真实选择结果写回输入框；取消时保持原值、不报错。
 
-        验收 §3.2-12 的两个坑：①重画会换一个新的 `self._source_ref` 列表，必须
-        每轮重新取（不能先取 `[0]` 再循环）；②取消时选择器**不一定**写回任何
-        值，`_picking` 不能一直卡到 60s 才解开——轮询期间同时看宿主的
-        `picker_cancel`/`picker_error` 标记，看到就立刻收工。
+        选择结果异步写回且不触发 on_change，因此固定使用发起选择时的控件引用；
+        等待期间若选择器仍为 opening 就继续轮询，结束但值未变化则视为取消。
         """
         try:
             for _ in range(240):
                 await asyncio.sleep(0.25)
-                host = self._host()                      # 每轮重取：列表会被重画换掉
-                if host is not None and not self._picker_idle(host):
-                    self._mark("bib_import_browse", mode=self.mode, picked=False)
-                    return
-                field = self._source_ref[0] if self._source_ref else None
+                host = self._host()
+                # The picker updates the field asynchronously and does not emit on_change.
+                # Keep the exact field reference passed to browse_field across rerenders.
+                ref = source_ref if source_ref is not None else self._source_ref
+                field = ref[0] if ref else None
                 if field is None:
                     return
                 after = (field.value or "").strip()
-                if after == before:
-                    continue
-                if after:
+                if after != before and after:
                     self.path = after
                     self._store_set("recent.bib_import", after)
                     self._invalidate("来源已修改，请重新预览")
                     self._mark("bib_import_browse", mode=self.mode,
                                picked=True)
                     self._render()
-                else:
-                    self._mark("bib_import_browse", mode=self.mode,
-                               picked=False)
-                return
+                    return
+                # `opening` means the result has not arrived yet, not that the picker failed.
+                if host is None or self._picker_idle(host):
+                    self._mark("bib_import_browse", mode=self.mode, picked=False)
+                    return
         finally:
             self._picking = False
 
@@ -852,14 +964,21 @@ class BibImportView:
         rows = self._rows()
         body_rows = []
         for row in rows[: self.shown]:
-            label, tone = _STATUS_LABEL.get(row["status"], (row["status"] or "—", "muted"))
-            color = {"success": t.palette.success, "accent": t.palette.accent,
-                     "warn": t.palette.warn, "muted": t.palette.text_faint}.get(
-                         tone, t.palette.text_muted)
+            label, _tone = _STATUS_LABEL.get(row["status"], (row["status"] or "—", "muted"))
+            detail_id = (row["change_id"] or
+                         f"{row['key']}::{row['incoming_key']}::{row['line']}")
+            open_detail = self.expanded_change == detail_id
+            review = C.text_button("收起" if open_detail else "查看明细",
+                                   lambda e, k=detail_id: self._toggle_change(k), t)
+            title = row["title"] or "（无题名）"
             body_rows.append(S.table_row(
-                t, [label, row["key"], "写入", row["title"]],
-                weights=[0.7, 1.5, 0.8, 3.0], mono=(1,),
-                align=["left", "left", "left", "left"]))
+                t, [label, row["key"] or row["incoming_key"], title, review],
+                weights=[0.72, 1.2, 3.2, 1.0], mono=(1,),
+                align=["left", "left", "left", "right"],
+                selected=open_detail,
+                on_click=lambda e, k=detail_id: self._toggle_change(k)))
+            if open_detail:
+                body_rows.append(self._change_detail(row))
         if not rows:
             body_rows.append(S.empty_row(t, "没有变化记录"))
         # ≤8 行走 shrink-wrap（滚轮归页体）；只有长变化列表才保留独立滚动，
@@ -868,8 +987,8 @@ class BibImportView:
         table = ft.Column(spacing=0, expand=scrolling,
                           scroll=C.scrollbar(t) if scrolling else None,
                           controls=[
-                              S.table_header_row(t, ["状态", "key", "动作", "题名 / 变化"],
-                                                 weights=[0.7, 1.5, 0.8, 3.0],
+                              S.table_header_row(t, ["状态", "key", "题名", "审阅"],
+                                                 weights=[0.72, 1.2, 3.2, 1.0],
                                                  mono=(1,)),
                               ft.Column(spacing=0, controls=body_rows),
                           ])
@@ -898,7 +1017,11 @@ class BibImportView:
 
     def _chip_count(self, key: str) -> str:
         counts = self._counts()
-        return str(counts.get(key, 0))
+        count_key = {"new": "new", "updated": "updated",
+                     "conflict": "conflicts", "skipped": "skipped"}.get(key)
+        if key == "all":
+            return str(len(self._changes()))
+        return str(counts.get(count_key, 0))
 
     def _set_filter(self, key: str) -> None:
         self.filter = key
@@ -941,10 +1064,18 @@ class BibImportView:
         sha = _sha8(str(commit.get("sha") or ""))
         detail = (f"已提交 {sha} · 未推送" if commit.get("committed") and sha
                   else "已写入；未生成版本提交")
-        return S.result_banner(
+        result = S.result_banner(
             t, title=f"已写入 {added} 新增 · {updated} 更新", detail=detail,
             on_review=lambda e: self._goto_pending(),
             on_revert=self._revert_confirm if commit.get("committed") else None)
+        version_link = C.secondary_button(
+            "查看版本与同步",
+            lambda e: self.page.navigate_route("bib:version_sync"),
+            t, icon="HISTORY", height=28)
+        return ft.Column(spacing=t.sp("half"), controls=[
+            result,
+            ft.Row(alignment=ft.MainAxisAlignment.END, controls=[version_link]),
+        ])
 
     def _goto_pending(self) -> None:
         nav = getattr(self.page, "goto", None)
