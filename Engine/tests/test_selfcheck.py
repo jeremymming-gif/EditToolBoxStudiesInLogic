@@ -591,6 +591,119 @@ if G.AUDIT_CSV.is_file() and G.CORPUS_CSV.is_file():
 else:
     skip("④C2 AUTO 非测试行 strict 比对", "本机无 out/ 产物（CI/新克隆形态），跳过")
 
+# ── ⑤ B-390：状态语义拆分 / 补号 / REVIEW-DRAFT / 取代方向 / 只读查询 ──────
+CASE_B = """# 案例法（测试用）
+
+### 1. 首条（2026-10-17）
+
+**修复**：含关键词「测试」与路径 `Engine/engine_main.py` 的正文，英文 AlphaBeta。
+
+### 2. 已发布条（2026-10-17）
+
+> 状态：已发布：v1.1.1
+
+正文。
+
+### 2补. 补号条（2026-10-18）
+
+补号正文。
+
+### 3. 取代源（2026-10-19）
+
+> 状态：已被取代：已被第 4 条取代
+
+正文。
+
+### 4. 取代目标（2026-10-20）
+
+正文。
+"""
+
+
+def cases_b(name):
+    d = new_cases_dir(name)
+    write(os.path.join(d, "01-30.md"), CASE_B)
+    return d
+
+
+d_b = cases_b("b390_good")
+rc, out = run([sys.executable, GEN, "--cases", d_b])
+check("⑤ 生成器接受补号库（rc=0）", rc == 0, out[-200:])
+idx_b = open(os.path.join(d_b, "INDEX.md"), encoding="utf-8").read()
+check("⑤ INDEX 显式 unknown 分类计数（unknown=3/released=1/superseded=1/history=0/other=0）",
+      "未复核(unknown) 3 条" in idx_b and "已发布 1 条" in idx_b
+      and "已被取代 1 条" in idx_b and "只作历史/部分历史 0 条" in idx_b
+      and "其他状态 0 条" in idx_b, idx_b.splitlines()[6])
+check("⑤ INDEX 不再有「现行/待判定」混合标签、不产生 live 分类",
+      "现行/待判定" not in idx_b and "live" not in idx_b)
+rc, out = run([sys.executable, AUDIT, "--cases", d_b, "--check"])
+check("⑤ 审计器实解析补号库 5 条且 rc=0", rc == 0 and "条目 5 条" in out, out[-300:])
+
+# 补号反例：普通编号缺号仍能被发现（把 3 改成 8 → 缺 3/5/6/7）
+d_bad = cases_b("b390_badnum")
+write(os.path.join(d_bad, "01-30.md"), CASE_B.replace("### 3.", "### 8.")
+      .replace("已被第 4 条取代", "已被第 9 条取代"))
+rc, out = run([sys.executable, AUDIT, "--cases", d_bad, "--check"])
+check("⑤ 补号库里普通编号缺号仍能发现（rc=1 + 缺号）", rc == 1 and "缺号" in out, out[-300:])
+
+# _generated/ 跳过：生成物目录里的假案例不算数
+d_gen = cases_b("b390_generated")
+write(os.path.join(d_gen, "_generated", "REVIEW-DRAFT.md"),
+      "# 生成物\n\n### 99. 假案例（不该被解析）\n")
+run([sys.executable, GEN, "--cases", d_gen])  # 生成物全量重写，INDEX 恢复新鲜
+rc, out = run([sys.executable, AUDIT, "--cases", d_gen, "--check"])
+check("⑤ _generated/ 里的假案例被跳过（仍 5 条、不含第 99 条）",
+      rc == 0 and "条目 5 条" in out and "第 99 条" not in out, out[-300:])
+
+# REVIEW-DRAFT：全量重写、逐字节稳定；指针文档点名的案例排最前
+rc, out = run([sys.executable, GEN, "--cases", d_b])
+draft_path = os.path.join(d_b, "_generated", "REVIEW-DRAFT.md")
+draft1 = open(draft_path, encoding="utf-8").read()
+rc2, _ = run([sys.executable, GEN, "--cases", d_b])
+draft2 = open(draft_path, encoding="utf-8").read()
+check("⑤ REVIEW-DRAFT 每次全量重写且逐字节一致", draft1 == draft2 and "source_head" in draft1)
+check("⑤ REVIEW-DRAFT 列字段齐全且 source_head 不称「依据版本」",
+      all(x in draft1 for x in ("case_date", "released_status", "source_head",
+                                "pointer_hits", "evidence")) and "依据版本" not in draft1)
+# 在 cases/ 父目录放固定指针文档点名第 4 条：它应排在近 N 条之前
+write(os.path.join(os.path.dirname(d_b), "LEAD-LESSONS.md"), "案例 4（测试点名）\n")
+run([sys.executable, GEN, "--cases", d_b])
+draft3 = open(draft_path, encoding="utf-8").read()
+rows_d = [ln for ln in draft3.splitlines() if ln.startswith("| ") and "案例号" not in ln and "---" not in ln]
+check("⑤ REVIEW-DRAFT 指针点名优先（第 4 条排首位）",
+      rows_d and rows_d[0].startswith("| 4 |"), rows_d[0] if rows_d else "")
+os.remove(os.path.join(os.path.dirname(d_b), "LEAD-LESSONS.md"))
+run([sys.executable, GEN, "--cases", d_b])
+
+# 取代结构：目标编号必须更大（方向错误升为错误）
+d_dir = cases_b("b390_direction")
+write(os.path.join(d_dir, "01-30.md"), CASE_B.replace("已被第 4 条取代", "已被第 1 条取代"))
+rc, out = run([sys.executable, AUDIT, "--cases", d_dir, "--check"])
+check("⑤ 取代目标编号不大于源 → 错误（方向性）",
+      rc == 1 and "方向错误" in out, out[-300:])
+
+# 四类查询 + 正负例（只读）
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--num", "2补"])
+check("⑤ 查询 --num 补号精确返回补号条", rc == 0 and "119补" not in out
+      and "补号条" in out and "1 条命中" in out, out[:160])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--num", "99999"])
+check("⑤ 查询 --num 不存在 → 空 + 明确非零码 3", rc == 3 and "0 条命中" in out, out[:120])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--path", "Engine/engine_main.py"])
+check("⑤ 查询 --path 后缀匹配正例命中第 1 条", rc == 0 and "1 条命中" in out
+      and "案例号：1" in out, out[:200])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--path", "this/path/does-not-exist.py"])
+check("⑤ 查询 --path 不存在路径 → 空 + 非零码", rc == 3 and "0 条命中" in out, out[:120])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--status", "unknown"])
+check("⑤ 查询 --status unknown 返回 3 条（无状态桶）", rc == 0 and "3 条命中" in out, out[:120])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--status", "live"])
+check("⑤ 查询 --status 非法值（live）→ 参数错误 rc=2", rc == 2, out[:160])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--keyword", "alphabeta"])
+check("⑤ 查询 --keyword 英文大小写不敏感", rc == 0 and "1 条命中" in out, out[:120])
+rc, out = run([sys.executable, GEN, "--cases", d_b, "--query", "--keyword", "测试"])
+check("⑤ 查询 --keyword 中文命中", rc == 0 and "1 条命中" in out, out[:120])
+check("⑤ 查询结果含固定「适用范围」串且不编造结构化字段",
+      "适用范围：未结构化，见正文" in out and "取代关系：" in out)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("=" * 70)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")

@@ -14,13 +14,19 @@ r"""案例库体检 `tools/case_audit.py`（第二十二批，第 122 条）。
 
 **错误（--check 退 1）**：
   - 条目编号不连续 / 重复 / 与文件范围不符（01-30、31-61、62+）；
-  - INDEX.md 或 DIGEST.md 过期（调 `tools/gen_case_index.py --check`）；
-  - `> 状态：已被第 N 条取代` 指向不存在的条目。
+  - INDEX.md / DIGEST.md / _generated/REVIEW-DRAFT.md 过期（调 gen_case_index.py --check）；
+  - `> 状态：已被第 N 条取代` 指向不存在的条目 / 目标编号不大于源 / 自指 /
+    同一状态行多个取代目标（结构性损坏才升为错误）。
 
 **警告（只报告，不退非 0）**：
   - 两条正文 3-gram Jaccard > 0.5（疑似复制粘贴）；
   - 反引号里的「当前布局路径」不存在，且所在行附近没有历史叙述词；
   - 无法识别的状态前缀。
+
+**补号兼容（B-390）**：`119补` / `119补2` 是第 119 条的补充案例，与生成器同口径解析：
+`CASE_RE` 支持补号、排序用 `_case_sort_key`（119 < 119补 < 119补2 < 120）、
+`check_numbering` 的缺号检查只看普通号（补号不占普通号）。`_generated/` 是生成物目录，
+显式跳过，不进案例解析、不占编号、不计入 265。
 
 输出是本地报告，不含作者信息，不写文件。
 """
@@ -28,16 +34,16 @@ r"""案例库体检 `tools/case_audit.py`（第二十二批，第 122 条）。
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import re
 import subprocess
 import sys
 from collections import Counter
 
-CASE_RE = re.compile(r"^### (\d+)\. (.+)$")
+#: 与 gen_case_index.py 同口径：`### 119.` / `### 119补.` / `### 119补2.`
+CASE_RE = re.compile(r"^###\s+(\d+(?:补\d*)?)\.\s*(.+?)\s*$")
 STATUS_RE = re.compile(r"^>\s*状态[:：]\s*(.+?)\s*$")
-SUPERSEDED_RE = re.compile(r"已被第\s*(\d+)\s*条取代")
+SUPERSEDED_RE = re.compile(r"已被第\s*(\d+(?:补\d*)?)\s*条取代")
 STATUS_PREFIXES = ("已被取代", "只作历史", "部分历史", "已发布")
 HIST_WORDS = ("已删", "删除", "已退役", "退役", "已移除", "移除", "历史", "曾", "当时",
               "作废", "废弃", "不再", "只作")
@@ -66,14 +72,25 @@ def find_cases_dir(explicit: str = "") -> str | None:
     return None
 
 
+def _case_sort_key(num: str) -> tuple[int, bool, int]:
+    """案例号排序键（与 gen_case_index.py 一致）：119 < 119补 < 119补2 < 120。"""
+    m = re.match(r"^(\d+)(?:补(\d*))?$", num)
+    if not m:
+        return (10 ** 9, False, 0)
+    return (int(m.group(1)), m.group(2) is not None, int(m.group(2) or 0))
+
+
 def parse_cases(cases_dir: str) -> list[dict]:
-    """返回 [{num,title,file,status,body,line_start}]（只读）。"""
+    """返回 [{num,title,file,status,body,line_start}]（只读，跳过 `_generated/`）。"""
     rows: list[dict] = []
     files = sorted(f for f in os.listdir(cases_dir)
-                   if f.endswith(".md") and f not in ("INDEX.md", "DIGEST.md", "TEMPLATE.md"))
+                   if f.endswith(".md") and f not in ("INDEX.md", "DIGEST.md", "TEMPLATE.md")
+                   and f != "_generated"                      # 显式跳过生成物目录
+                   and not f.startswith("_generated" + os.sep)
+                   and os.path.isfile(os.path.join(cases_dir, f)))
     for f in files:
         lines = open(os.path.join(cases_dir, f), encoding="utf-8").read().split("\n")
-        heads = [(i, int(m.group(1)), m.group(2)) for i, ln in enumerate(lines)
+        heads = [(i, m.group(1), m.group(2)) for i, ln in enumerate(lines)
                  for m in [CASE_RE.match(ln)] if m]
         for k, (i, num, title) in enumerate(heads):
             end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
@@ -86,7 +103,7 @@ def parse_cases(cases_dir: str) -> list[dict]:
                     break
             rows.append({"num": num, "title": title, "file": f, "status": status,
                          "body": body, "line_start": i})
-    rows.sort(key=lambda r: r["num"])
+    rows.sort(key=lambda r: _case_sort_key(r["num"]))
     return rows
 
 
@@ -94,35 +111,52 @@ def check_numbering(rows: list[dict], errors: list[str], warns: list[str]) -> No
     nums = [r["num"] for r in rows]
     if len(nums) != len(set(nums)):
         dup = [n for n, c in Counter(nums).items() if c > 1]
-        errors.append(f"条目编号重复：{sorted(dup)}")
-    if nums:
-        missing = [n for n in range(1, max(nums) + 1) if n not in set(nums)]
+        errors.append(f"条目编号重复：{sorted(dup, key=_case_sort_key)}")
+    # 补号不占普通号：缺号检查只看普通编号（普通号缺号仍能发现）
+    plain = [int(n) for n in nums if re.fullmatch(r"\d+", n)]
+    if plain:
+        missing = [n for n in range(1, max(plain) + 1) if n not in set(plain)]
         if missing:
             errors.append(f"条目编号不连续，缺号：{missing[:20]}{' …' if len(missing) > 20 else ''}")
-    # 初始文件的内容范围（只增不改）
+    # 初始文件的内容范围（只增不改）；补号按主号判断范围
     ranges = {"01-30.md": range(1, 31), "31-61.md": range(31, 62)}
     for name, rng in ranges.items():
-        bad = [r["num"] for r in rows if r["file"] == name and r["num"] not in rng]
+        bad = [r["num"] for r in rows if r["file"] == name
+               and _case_sort_key(r["num"])[0] not in rng]
         if bad:
             errors.append(f"{name} 里出现范围外条目号：{paid(bad)}")
-    bad62 = [r["num"] for r in rows if r["file"] == "62+.md" and r["num"] < 62]
+    bad62 = [r["num"] for r in rows if r["file"] == "62+.md"
+             and _case_sort_key(r["num"])[0] < 62]
     if bad62:
         errors.append(f"62+.md 里出现 <62 的条目号：{paid(bad62)}")
 
 
-def paid(xs: list[int]) -> str:
+def paid(xs: list[str]) -> str:
     return "、".join(str(x) for x in xs[:10])
 
 
 def check_status(rows: list[dict], errors: list[str], warns: list[str]) -> None:
-    nums = {r["num"] for r in rows}
+    """取代关系最小结构检查（B-390 §2.5）：目标存在 / 目标编号必更大 / 不自指 /
+    同一状态行最多一个取代目标。循环在「目标编号必更大」下天然不发生，不实现图算法。
+    只警告，不改判定门槛为 fail（除结构性损坏：目标不存在、目标不更大、自指、多目标）。
+    """
+    by_num = {r["num"]: r for r in rows}
     for r in rows:
         s = r["status"]
         if not s:
             continue
-        m = SUPERSEDED_RE.search(s)
-        if m and int(m.group(1)) not in nums:
-            errors.append(f"第 {r['num']} 条状态指向不存在的第 {m.group(1)} 条")
+        targets = [m.group(1) for m in SUPERSEDED_RE.finditer(s)]
+        if len(targets) > 1:
+            errors.append(f"第 {r['num']} 条状态行含多个取代目标：{targets}（最多一个）")
+        for t in targets:
+            if t not in by_num:
+                errors.append(f"第 {r['num']} 条状态指向不存在的第 {t} 条")
+                continue
+            if t == r["num"]:
+                errors.append(f"第 {r['num']} 条状态自指（取代自己）")
+                continue
+            if _case_sort_key(t) <= _case_sort_key(r["num"]):
+                errors.append(f"第 {r['num']} 条状态取代目标第 {t} 条编号不大于源（方向错误）")
         if not s.startswith(STATUS_PREFIXES):
             warns.append(f"第 {r['num']} 条状态前缀不认识：{s[:30]}")
 
@@ -139,7 +173,7 @@ def check_index(cases_dir: str, errors: list[str]) -> None:
     if r.returncode != 0:
         for ln in (r.stdout + r.stderr).splitlines():
             if ln.startswith("FAIL"):
-                errors.append(ln[len("FAIL"):].strip() or "案例索引/速查过期")
+                errors.append(ln[len("FAIL"):].strip() or "案例索引/速查/候选清单过期")
 
 
 def _grams(text: str, n: int = 3) -> Counter:
