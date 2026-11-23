@@ -32,6 +32,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Engine"))
 
@@ -432,8 +434,140 @@ def render_query(cases_dir: str, rows: list[dict[str, str]], snippets: list[str]
     return "\n".join(out)
 
 
+def run_self_test() -> int:
+    """内置自检（hermetic、只增不减、秒级）：全部读写只在临时目录内进行。
+
+    构造约 5 条小案例库，覆盖补号、状态四维、_generated 跳过、REVIEW-DRAFT
+    确定性/指针优先、四类查询正负例，以及「篡改正文 → --check 翻红」真门控。
+    """
+    import contextlib
+    import io
+    print("gen_case_index --self-test")
+    checks: list[bool] = []
+
+    def check(name: str, cond: bool, detail: str = "") -> None:
+        checks.append(bool(cond))
+        print(f"  [{'OK' if cond else 'FAIL'}] {name}" + (f" — {detail}" if detail and not cond else ""))
+
+    def capture(argv: list[str]) -> tuple[int, str]:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main(argv)
+        return rc, buf.getvalue()
+
+    with tempfile.TemporaryDirectory(prefix="gen_case_index_self_") as tmpdir:
+        root = Path(tmpdir)
+        cases = root / "cases"
+        cases.mkdir()
+        gen = cases / "_generated"   # 必须建在被扫描案例目录内部，跳过断言才是真门控
+        gen.mkdir()
+
+        # 小案例库：普通号 1/2/3/4、补号 3补；状态四维各一条。
+        (cases / "01-30.md").write_text(
+            "\n".join([
+                "### 1. 第一条",
+                "",
+                "正文提到 Word 稿 与 WindowsShell/main.py，关键词 Alpha。",
+                "",
+                "### 2. 第二条",
+                "",
+                "> 状态：已发布 v1",
+                "",
+                "正文 BETA 关键词。",
+                "",
+                "### 3. 第三条",
+                "",
+                "> 状态：已被取代",
+                "",
+                "正文 third 条目。",
+                "",
+                "### 3补. 第三条补充",
+                "",
+                "> 状态：复核中",
+                "",
+                "补号单独计，普通号连续检查不受它影响。",
+                "",
+                "### 4. 第四条",
+                "",
+                "> 状态：只作历史",
+                "",
+                "正文中文关键词 阿尔法。",
+                "",
+            ]), encoding="utf-8")
+        # _generated 造假案例：必须被 load_cases/build_index 跳过。
+        (gen / "FAKE.md").write_text("### 99. 生成物假案例\n\n不应被计入。\n", encoding="utf-8")
+
+        rows = load_cases(str(cases))
+        nums = [c["num"] for c in rows]
+        check("补号解析：3补 入列且排序紧跟 3", "3补" in nums and nums.index("3补") == nums.index("3") + 1,
+              f"nums={nums}")
+        check("_generated 假案例跳过：99 不在列", "99" not in nums, f"nums={nums}")
+
+        index = build_index(str(cases))
+        check("INDEX 汇总四类计数：unknown/released/superseded/history 各 1/1/1/1",
+              "未复核(unknown) 1 条" in index and "已发布 1 条" in index
+              and "已被取代 1 条" in index and "只作历史/部分历史 1 条" in index)
+        summary_line = next((ln for ln in index.splitlines() if ln.startswith("共 ")), "")
+        check("INDEX 不出现 live 分类 / 现行待判定混合标签",
+              "live" not in summary_line and "待判定" not in summary_line and "现行" not in summary_line)
+
+        # REVIEW-DRAFT：字段齐全、source_head、可字节复现、指针优先。
+        draft1 = build_review_draft(str(cases))
+        draft2 = build_review_draft(str(cases))
+        check("REVIEW-DRAFT 字段齐全 + source_head",
+              all(h in draft1 for h in ("| 案例号 |", "source_head", "pointer_hits", "released_status", "case_date")))
+        check("REVIEW-DRAFT 逐字节可重现（连跑两次一致）", draft1 == draft2)
+
+        # 指针文档点名「第 4 条案例」：4 号 pointer_hits 生效，且排序在最前。
+        (root / "LEAD-LESSONS.md").write_text("复核记录：第 4 条案例需重看。\n步骤 1 与 2 不是案例。\n", encoding="utf-8")
+        draft_ptr = build_review_draft(str(cases))
+        row4 = next((ln for ln in draft_ptr.splitlines() if ln.startswith("| 4 |")), "")
+        check("REVIEW-DRAFT 指针点名「第 4 条案例」→ 4 号 pointer_hits 生效",
+              "LEAD-LESSONS.md" in row4 and "| 4 |" in row4, row4)
+        first_data = next((ln for ln in draft_ptr.splitlines() if re.match(r"^\| \d+", ln)), "")
+        check("REVIEW-DRAFT 指针点名优先排序：4 号排首位", first_data.startswith("| 4 |"), first_data)
+        check("REVIEW-DRAFT 不把步骤 #1/#2 误判为案例",
+              "LEAD-LESSONS.md:2" not in draft_ptr and "| 1 |" not in first_data)
+
+        # 四类查询正负例。
+        r, s = query_cases(str(cases), num="3补")
+        check("QUERY --num 补号精确命中", [c["num"] for c in r] == ["3补"], f"got={[c['num'] for c in r]}")
+        rc, out = capture(["--cases", str(cases), "--query", "--num", "不见号"])
+        check("QUERY --num 不存在 → 空结果 rc=3", rc == 3 and "0 条命中" in out, f"rc={rc} out={out[:80]!r}")
+        r, _ = query_cases(str(cases), path="WindowsShell/main.py")
+        check("QUERY --path 后缀命中", any(c["num"] == "1" for c in r))
+        r, _ = query_cases(str(cases), path="NoSuch/Path.py")
+        check("QUERY --path 不命中 → 空", not r)
+        r, _ = query_cases(str(cases), status="unknown")
+        check("QUERY --status unknown 计数", len(r) == 1 and r[0]["num"] == "1", f"got={[c['num'] for c in r]}")  # 仅 1 无状态
+        r, _ = query_cases(str(cases), keyword="beta")
+        check("QUERY --keyword 英文大小写不敏感", any(c["num"] == "2" for c in r))
+        r, _ = query_cases(str(cases), keyword="阿尔法")
+        check("QUERY --keyword 中文命中", any(c["num"] == "4" for c in r))
+        rc, _ = capture(["--cases", str(cases), "--query", "--status", "live"])
+        check("QUERY --status 非法值 → rc=2", rc == 2)
+        rc, _ = capture(["--cases", str(cases), "--query"])
+        check("QUERY 无任何过滤条件 → rc=2", rc == 2)
+
+        # 真门控：先正常生成三产物并 --check PASS，再篡改正文使 INDEX 过期，--check 必须 rc=1 且含 FAIL。
+        rc, out = capture(["--cases", str(cases)])
+        check("门控前置：正常生成三产物 rc=0", rc == 0, out)
+        rc, out = capture(["--cases", str(cases), "--check"])
+        check("门控前置：--check 三产物 PASS rc=0", rc == 0 and out.count("PASS") == 3, out)
+        p = cases / "01-30.md"
+        p.write_text(p.read_text(encoding="utf-8") + "\n### 5. 新增未入索引\n", encoding="utf-8")
+        rc, out = capture(["--cases", str(cases), "--check"])
+        check("真门控：篡改正文后 --check rc=1 且输出 FAIL", rc == 1 and "FAIL" in out, f"rc={rc} out={out[:120]!r}")
+
+    failed = checks.count(False)
+    print()
+    print(f"SELF-TEST {'FAIL' if failed else 'PASS'} n={len(checks)}" + (f" failed={failed}" if failed else ""))
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成/校验案例法索引 INDEX.md，或只读查询案例")
+    ap.add_argument("--self-test", action="store_true", help="跑内置自检（hermetic，秒级，只写临时目录）")
     ap.add_argument("--cases", default="", help="案例目录（默认自动探测笔记仓）")
     ap.add_argument("--out", default="", help="输出文件（默认 <cases>/INDEX.md）")
     ap.add_argument("--check", action="store_true", help="只校验是否过期（过期退 1）")
@@ -444,6 +578,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--status", default="", help=f"按状态分类查询（{ '/'.join(QUERY_STATUS_VALUES) }）")
     ap.add_argument("--num", default="", help="按案例号精确查询（含补号 119补）")
     args = ap.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
 
     if args.query and args.status and args.status not in QUERY_STATUS_VALUES:
         print(f"参数错误：--status 取值须为 { '/'.join(QUERY_STATUS_VALUES) }", file=sys.stderr)
