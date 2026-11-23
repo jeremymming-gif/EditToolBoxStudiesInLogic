@@ -375,8 +375,8 @@ def test_desktop_import_body_has_independent_scrollable_params_and_fixed_confirm
     assert view._confirm_holder in _walk(root)
 
 
-@pytest.mark.parametrize("row_count, shrink", [(6, True), (12, False)])
-def test_narrow_import_uses_one_page_scroller_for_preview_rows(tmp_path, row_count, shrink):
+@pytest.mark.parametrize("row_count", [6, 12])
+def test_narrow_import_uses_one_page_scroller_for_preview_rows(tmp_path, row_count):
     host = _Host(_db(tmp_path))
     host.page.width = 1000
     view = BI.BibImportView(host)
@@ -403,9 +403,61 @@ def test_narrow_import_uses_one_page_scroller_for_preview_rows(tmp_path, row_cou
     tables = [node for node in _walk(layout._bib_preview)
               if getattr(node, "_bib_shrink", None) is not None]
     assert len(tables) == 1
-    assert tables[0]._bib_shrink is shrink
+    # B-348：结果表恒 shrink-wrap，长列表的滚轮由页面级 ListView 统一承载。
+    assert tables[0]._bib_shrink is True
     assert tables[0].scroll is None
     assert view._confirm_holder in _walk(root)
+
+
+@pytest.mark.parametrize("row_count", [6, 15])
+def test_wide_long_list_wheel_belongs_to_preview_not_inner_table(
+        tmp_path, monkeypatch, row_count):
+    """B-348：宽窗滚轮归右预览栏（页体内统一滚动），结果表不再内滚。
+
+    长短列表都 shrink-wrap；筛选局部更新不重建滚动容器（延续 37b5c48）。
+    """
+    host = _Host(_db(tmp_path))
+    host.page.width = 1160
+    view = BI.BibImportView(host)
+    view.state = "ready"
+    keys = [f"anon{i:02d}" for i in range(row_count)]
+    view.payload = {
+        "report": {"entries": row_count, "new": row_count, "updated": 0},
+        "changes": [{"key": key, "title": f"题名 {key}", "status": "new"}
+                    for key in keys],
+    }
+    root = view.build()
+    body = root.content
+    layout = next(node for node in _walk(root) if hasattr(node, "_bib_left"))
+    assert layout._bib_narrow is False
+    preview = layout._bib_preview
+    # 统一的滚动容器就是右预览栏本身（页体内），不是结果表的内层滚动。
+    assert isinstance(preview, ft.Column)
+    assert getattr(preview, "_bib_preview_scroller", False) is True
+    assert isinstance(preview.scroll, ft.Scrollbar)
+    assert preview.expand is True
+    table = next(node for node in _walk(preview) if hasattr(node, "_bib_shrink"))
+    assert table._bib_shrink is True
+    assert table.scroll is None
+    assert not any(getattr(node, "_bib_preview_scroller", False)
+                   for node in _walk(table))
+
+    # 筛选局部更新：滚动容器与滚动条身份不变，结果表也不被重建。
+    scrollbar = preview.scroll
+    chips = next(node for node in _walk(preview)
+                 if isinstance(node, ft.Row)
+                 and _labels(node) == ["全部 %d" % row_count, "新增 %d" % row_count,
+                                       "更新 0", "冲突 0", "跳过 0"])
+    block = next(node for node in _walk(preview)
+                 if any(child is chips for child in getattr(node, "controls", ())))
+    monkeypatch.setattr(block, "update", lambda: None)
+    chips.controls[2].on_click(None)  # 切到「更新 0」→ 空结果
+    assert root.content is body
+    assert any(node is preview for node in _walk(root))
+    assert any(node is table for node in _walk(root))
+    assert preview.scroll is scrollbar
+    assert table.scroll is None
+    assert "没有变化记录" in _labels(preview)
 
 
 @pytest.mark.parametrize("width, updated", [(1000, 0), (1000, 3), (1160, 3)])
@@ -508,10 +560,12 @@ def test_preview_detail_keeps_page_and_table_mounted(tmp_path, monkeypatch, widt
     chip_colors = [chip.bgcolor for chip in chips.controls]
     table = next(node for node in _walk(preview) if hasattr(node, "_bib_shrink"))
     table_header, rows = table.controls
-    scroll_owner = layout if width == 1000 else table
+    # B-348：窄窗滚轮归页面级 ListView；宽窗归右预览栏（页体内统一滚动）。
+    # 结果表恒无内层滚动条。
+    scroll_owner = layout if width == 1000 else preview
     scrollbar = scroll_owner.scroll
     assert isinstance(scrollbar, ft.Scrollbar)
-    assert (table.scroll is None) == (width == 1000)
+    assert table.scroll is None
 
     row_updates = []
     monkeypatch.setattr(rows, "update", lambda: row_updates.append(rows))

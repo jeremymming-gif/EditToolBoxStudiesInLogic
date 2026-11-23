@@ -78,12 +78,16 @@ def test_health_sample_and_dupes_tables_shrink_wrap() -> None:
     assert dupes.count("_bib_shrink = True") >= 2
 
 
-def test_import_table_shrinks_when_short_and_scrolls_when_long() -> None:
-    """入藏变化 ≤8 行 shrink-wrap；长列表才保留独立滚动（常显条）。"""
+def test_import_long_list_scrolls_with_page_body_not_inner_table() -> None:
+    """B-348：宽窗滚轮归右预览栏（页体内统一滚动）；结果表不再内滚，短列表 shrink-wrap。"""
     src = _src("bib_import.py")
-    assert "scrolling = len(rows) > 8" in src
-    assert "scroll=C.scrollbar(t) if scrolling else None" in src
-    assert "table._bib_shrink = len(rows) <= 8" in src
+    # 宽窗由预览栏整体承载滚轮（唯一滚动容器），局部刷新不重建它。
+    assert "preview = self._preview_col(scrolled=True)" in src
+    assert "scroll=C.scrollbar(t), controls=controls" in src
+    # 长列表不再保留内层滚动条；结果表恒为 shrink-wrap。
+    assert "scrolling = len(rows) > 8" not in src
+    assert "if scrolling else None" not in src
+    assert "table._bib_shrink = True" in src
 
 
 def test_wide_table_horizontal_bar_is_always_visible() -> None:

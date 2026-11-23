@@ -304,6 +304,36 @@ def test_expanded_row_has_manual_48_and_radio(tmp_path, monkeypatch):
     assert view.expanded == row["id"]
 
 
+def test_narrow_expanded_row_exposes_full_record_and_field_values(tmp_path, monkeypatch):
+    view, host = _view(tmp_path, width=1000, height=668)
+    _install(monkeypatch)
+    asyncio.run(view._scan())
+    row = view.rows[0]
+    row["title"] = "记录题名：" + ("长题名" * 30)
+    row["reason"] = "缺失原因：" + ("需要核对" * 30)
+    row["candidate"] = "候选值：" + ("完整内容" * 30)
+
+    # Narrow table cells remain single-line; the expanded detail is the non-hover
+    # path for reading every full value at a 1000px window.
+    row_control = view._row_control(row, view._columns()[2])
+    row_texts = [node for node in _walk(row_control) if isinstance(node, ft.Text)]
+    assert any(node.value == row["title"] and node.max_lines == 1 for node in row_texts)
+    assert any(node.value == row["reason"] and node.max_lines == 1 for node in row_texts)
+    assert any(node.value == row["candidate"] and node.max_lines == 1 for node in row_texts)
+
+    detail = view._expanded_row(row)
+    full_texts = [node.value for node in _walk(detail) if isinstance(node, ft.Text)]
+    assert f"记录：{row['title']}" in full_texts
+    assert row["reason"] in full_texts
+    candidate_fields = [node for node in _walk(detail)
+                        if isinstance(node, ft.TextField)
+                        and node.value == row["candidate"]]
+    assert len(candidate_fields) == 1
+    assert candidate_fields[0].multiline is True
+    assert candidate_fields[0].max_lines is None
+    assert candidate_fields[0].read_only is True
+
+
 def test_expanded_row_wraps_long_candidate_and_keeps_actions_reachable(tmp_path, monkeypatch):
     view, host = _view(tmp_path, width=1000, height=668)
     _install(monkeypatch)

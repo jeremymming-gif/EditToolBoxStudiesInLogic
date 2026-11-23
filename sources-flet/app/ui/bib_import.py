@@ -800,7 +800,12 @@ class BibImportView:
             params = ft.ListView(
                 expand=True, spacing=t.sp("2"), padding=0,
                 scroll=C.scrollbar(t), controls=list(params.controls))
-            layout = S.write_layout(t, params=params, preview=self._preview_col(),
+            # B-348：宽窗滚轮统一归右预览栏；长列表不再有内层滚动条。
+            # 预览栏本身是唯一的滚动容器，在预览/筛选/写入间保持挂载，
+            # 局部更新不重建它，避免丢滚动位置（延续 37b5c48）。
+            preview = self._preview_col(scrolled=True)
+            preview._bib_preview_scroller = True
+            layout = S.write_layout(t, params=params, preview=preview,
                                     confirm=None, narrow=False)
         self._layout = layout
         # P1-7：确认条满宽常驻在页面底部，不再缩在右预览栏；窄屏同样通栏。
@@ -1044,8 +1049,12 @@ class BibImportView:
             ]))
 
     # ── 渲染：右预览 ─────────────────────────────────────────────────
-    def _preview_col(self, *, narrow: bool = False) -> ft.Control:
+    def _preview_col(self, *, narrow: bool = False,
+                     scrolled: bool = False) -> ft.Control:
         t = self.t
+        # 滚动容器内的子项不能 expand（Flutter 无界高度会报错），
+        # 窄窗的页面级 ListView 与宽窗的自滚动预览栏都遵循这一约束。
+        auto_height = narrow or scrolled
         controls: list[ft.Control] = [
             C.section_label("预览结果", t,
                             note="预览" if self.payload is None else "预览 · 未写库"),
@@ -1054,12 +1063,12 @@ class BibImportView:
         if self.state == "success":
             controls.append(self._success_banner())
             controls.append(ft.Container(height=t.px(8)))
-            controls.append(self._payload_block(dim=True, narrow=narrow))
+            controls.append(self._payload_block(dim=True, narrow=auto_height))
         elif self.state == "nothing":
             controls.append(S.state_banner(
                 t, "empty", message=self.no_write_note or "没有需要写入的内容"))
             controls.append(ft.Container(height=t.px(8)))
-            controls.append(self._payload_block(dim=True, narrow=narrow))
+            controls.append(self._payload_block(dim=True, narrow=auto_height))
         elif self.state in ("loading",):
             controls.append(S.state_banner(t, "loading", message="运行中"))
         elif self.state == "failure":
@@ -1076,14 +1085,19 @@ class BibImportView:
                 t, "empty", message="尚未预览：选好来源后点「预览（不写库）」"))
         if self.payload is not None and self.state in ("ready", "stale", "running",
                                                        "cancelled"):
-            controls.append(self._payload_block(narrow=narrow))
+            controls.append(self._payload_block(narrow=auto_height))
         self._confirmation_slot = ft.Container(
             padding=ft.Padding(0, t.px(8), 0, 0),
             content=self._confirm_layer() if self.confirm_layer else None,
             visible=self.confirm_layer)
         controls.append(self._confirmation_slot)
-        controls.append(ft.Container(expand=not narrow))
+        controls.append(ft.Container(expand=not auto_height))
         # 确认条由外层 _body 通栏挂在页面底部，右栏不再重复。
+        # B-348：宽窗由预览栏整体滚动（scrolled=True），长列表不再内滚；
+        # 窄窗由唯一的页面级 ListView 滚动，保持 shrink-wrap 语义。
+        if scrolled:
+            return ft.Column(spacing=0, expand=not narrow,
+                             scroll=C.scrollbar(t), controls=controls)
         return ft.Column(spacing=0, expand=not narrow, controls=controls)
 
     def _payload_block(self, *, dim: bool = False, narrow: bool = False) -> ft.Control:
@@ -1148,21 +1162,20 @@ class BibImportView:
 
         def toggle_detail(key: str) -> None:
             self.expanded_change = "" if self.expanded_change == key else key
-            # Keep both the narrow page scroller and the wide table scroller mounted.
+            # 所有结果行都留在已挂载的表体里；局部刷新不重建滚动容器。
             body.controls = self._preview_rows(visible_rows, toggle_detail)
             body.update()
 
-        # 宽窗按未筛选行数选择滚动布局。筛选只更新表体，短结果自然限制滚动范围。
-        scrolling = len(rows) > 8 and not narrow
-        table = ft.Column(spacing=0, expand=scrolling,
-                          scroll=C.scrollbar(t) if scrolling else None,
-                          controls=[
-                              S.table_header_row(t, ["状态", "key", "题名", "审阅"],
-                                                 weights=[0.72, 1.2, 3.2, 1.0],
-                                                 mono=(1,)),
-                              body,
-                          ])
-        table._bib_shrink = len(rows) <= 8
+        # B-348：长列表不再自带内层滚动条。宽窗统一由右预览栏承载滚轮，
+        # 短列表仍 shrink-wrap；窄窗由唯一页面级 ListView 承载滚轮。
+        scrolling = False
+        table = ft.Column(spacing=0, controls=[
+            S.table_header_row(t, ["状态", "key", "题名", "审阅"],
+                               weights=[0.72, 1.2, 3.2, 1.0],
+                               mono=(1,)),
+            body,
+        ])
+        table._bib_shrink = True
 
         def more_footer() -> list[ft.Control]:
             remaining = len(visible_rows) - self.shown
