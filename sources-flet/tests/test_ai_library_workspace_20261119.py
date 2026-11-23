@@ -14,7 +14,7 @@ from services import engine_bridge as EB
 from ui import bib_ai_assist as AI
 from ui.bib_host import BibHost
 from ui import bib_normalize as N
-from test_bib_ai_assist_c_wiring_20261117 import _Host, _texts, _walk
+from test_bib_ai_assist_c_wiring_20261117 import _Host, _path_parts_without_anchor, _texts, _walk
 from test_b116_bib_host import FakeApp
 
 
@@ -199,7 +199,9 @@ def test_library_status_updates_loading_result_and_prefetch(library_workspace, m
     scroll = _scroll_owner(shell)
 
     async def read_status(work_dir):
-        assert work_dir == ai.work_dir
+        # 与同类跨平台测试同一判据：按路径分量核对，不把 Windows 的盘符/分隔符
+        # 差异误判成产品缺陷；仍须指向同一合成任务目录，不许放宽成仅非空。
+        assert _path_parts_without_anchor(work_dir) == _path_parts_without_anchor(ai.work_dir)
         assert host.view_slot.content is shell
         assert _scroll_owner(shell) is scroll
         assert "正在刷新任务状态…" in _texts(scroll)
