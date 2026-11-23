@@ -17,6 +17,25 @@ from ui import bib_health as HV
 from ui.tokens import Tokens
 
 
+EXPECTED_RULES = {
+    "conflict_pending": ("冲突待裁决", "警告"),
+    "near_duplicates": ("近似重复", "警告"),
+    "duplicate_content": ("内容重复", "警告"),
+    "missing_title": ("缺题名", "警告"),
+    "missing_author": ("缺作者", "警告"),
+    "missing_year": ("缺年份", "警告"),
+    "bad_doi": ("DOI 格式", "警告"),
+    "unknown_entry_type": ("未知条目类型", "警告"),
+    "alias_duplicate": ("别名重复", "警告"),
+    "alias_self": ("别名指向自身", "警告"),
+    "alias_ambiguous": ("别名歧义", "警告"),
+    "alias_conflict": ("别名冲突", "警告"),
+    "unverified": ("未核实", "提示"),
+    "needs_inversion": ("姓名未倒装", "提示"),
+    "health_ignore": ("忽略清单损坏", "警告"),
+}
+
+
 class _FakeStore:
     def __init__(self) -> None:
         self.data = {}
@@ -120,6 +139,20 @@ def _loaded(monkeypatch, data=None, width: int = 1160):
     view = HV.HealthView(host)
     asyncio.run(view._load())
     return host, view
+
+
+@pytest.mark.parametrize("code, expected", EXPECTED_RULES.items())
+def test_health_rule_labels_and_severities(code, expected):
+    expected_label, expected_severity = expected
+    assert HV.rule_label(code) == expected_label
+    assert HV.severity_of(code) == expected_severity
+
+
+def test_health_rule_mapping_is_complete():
+    assert set(HV.RULE_LABELS) == set(EXPECTED_RULES)
+    assert set(HV.WARN_CODES) == {
+        code for code, (_, severity) in EXPECTED_RULES.items() if severity == "警告"
+    }
 
 
 def test_health_unit_counts_and_keys():
