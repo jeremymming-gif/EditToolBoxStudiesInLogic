@@ -176,6 +176,51 @@ def test_log_buffer_capped_at_2000():
     assert page._log_buffer[-1] == "再新"
 
 
+# ── B-344：期目录全文 tooltip 与编辑回调契约 ─────────────────────────────
+def test_issue_dir_tooltip_tracks_typing_blur_and_picker(monkeypatch):
+    page, _root = _build_issue()
+    field = page.fields["issue_dir"][0]
+    assert field._value_tooltip is True
+    assert field.tooltip is None
+
+    field.value = "/tmp/期目录/" + ("很长的路径/" * 12)
+    field.on_change(SimpleNamespace(control=field))
+    assert field.tooltip == field.value
+    assert page.app.store.recent.get("issue_dir") == field.value
+    assert ("path_change", {"page": "issue", "field": "issue_dir", "value": field.value}) in page.app.marked
+
+    # 模拟文件选择器直接赋值（不触发 on_change），watcher 负责同步全文提示。
+    picked = "/tmp/选择器回填/" + ("更长的路径/" * 10)
+    field.value = picked
+    async def _no_wait(_seconds):
+        return None
+    monkeypatch.setattr(P.asyncio, "sleep", _no_wait)
+    import asyncio
+    asyncio.run(page._watch_issue_pick(page.fields["issue_dir"], "/tmp/旧值"))
+    assert field.tooltip == picked
+    assert page.app.store.recent.get("issue_dir") == picked
+
+
+def test_issue_dir_tooltip_initial_value_and_blur_commit_mark():
+    page, _root = _build_issue()
+    path = "/tmp/期目录/" + ("完整路径段/" * 8)
+    page.app.store.set("recent.issue_dir", path)
+    page2 = P.IssuePage(page.app)
+    page2.build()
+    field = page2.fields["issue_dir"][0]
+    assert field._value_tooltip is True
+    assert field.tooltip == path
+
+    updated = path + "/下一段"
+    field.value = updated
+    field.on_change(SimpleNamespace(control=field))
+    field.on_blur(SimpleNamespace(control=field))
+    assert field.tooltip == updated
+    assert page.app.store.recent.get("issue_dir") == updated
+    assert ("issue_changed", {"page": "issue", "issue": updated}) in page.app.marked
+    assert updated in page.app.store.get("issue_state")
+
+
 # ── 11. 六步详情都能真实构建（GUI 冒烟：曾因 ft.border / 字体角色错整页回退） ──
 def test_all_six_detail_pages_build_without_error():
     page, _root = _build_issue()

@@ -109,6 +109,28 @@ _MERGE_MARKER_RE = _re.compile(
     r"完成。合并文件：|⚠\s*有\s*\d+\s*个预期文件没找到：|❌\s*合并失败")
 
 
+def _sync_issue_tooltip(field, *, update: bool) -> None:
+    """同步期目录全文提示；输入中只记 dirty，不 patch 聚焦字段。"""
+    if field is None or not getattr(field, "_value_tooltip", False):
+        return
+    wanted = C._full_value_tooltip(getattr(field, "value", ""))
+    changed = getattr(field, "tooltip", None) != wanted
+    dirty = bool(getattr(field, "_clearable_dirty", False))
+    if changed:
+        field.tooltip = wanted
+    if not update:
+        if changed:
+            field._clearable_dirty = True
+        return
+    if not changed and not dirty:
+        return
+    field._clearable_dirty = False
+    try:
+        field.update()
+    except Exception:  # noqa: BLE001 构建期/未挂载字段无需 patch
+        pass
+
+
 def _level_of_line(text: str) -> str:
     line = text or ""
     if "❌" in line or "错误" in line or "Traceback" in line:
@@ -1943,7 +1965,9 @@ class IssuePage(BasePage):
             # R7-a：运行中身份不能变，输入框/持久 recent 也不能先变成另一期。
             if self._issue_change_locked():
                 self._reject_issue_change(e.control)
+                _sync_issue_tooltip(e.control, update=True)
                 return
+            _sync_issue_tooltip(e.control, update=False)
             self.app.store.set_recent("issue_dir", value)
             self.mark("path_change", field="issue_dir", value=e.control.value)
             # FIX2R2-3 K7：只重建期目录行下面的 `_step_box`（兄弟节点），
@@ -1960,8 +1984,10 @@ class IssuePage(BasePage):
             if self._issue_change_locked() and str(value or "").strip() != getattr(
                     self, "_last_issue", ""):
                 self._reject_issue_change(ref[0] if ref else None)
+                _sync_issue_tooltip(ref[0] if ref else None, update=True)
                 C.mark_event_updated("issue_path_blur")
                 return
+            _sync_issue_tooltip(ref[0] if ref else None, update=True)
             if self._commit_issue_identity(str(value or "")):
                 # MC-01：失焦提交后正文刷新要延后一拍。blur 与紧随的点击是
                 # 同一次按压：此刻立刻替换区块头/正文，抬起时的 tap 落到已
@@ -1977,6 +2003,8 @@ class IssuePage(BasePage):
             t, "期目录", value=value,
             hint="一期稿件的根目录，含 000 / 01 作者…",
             on_change=_changed, on_blur=_commit, expand=True, clearable=False)
+        field._value_tooltip = True
+        field.tooltip = C._full_value_tooltip(field.value)
         ref.append(field)
         self._issue_field = field
 
@@ -2011,7 +2039,9 @@ class IssuePage(BasePage):
                 # R7-a：选择器可能在开跑后才回填，运行中一律拒绝。
                 if self._issue_change_locked():
                     self._reject_issue_change(ref[0] if ref else None)
+                    _sync_issue_tooltip(ref[0] if ref else None, update=True)
                     return
+                _sync_issue_tooltip(ref[0] if ref else None, update=True)
                 self.app.store.set_recent("issue_dir", value)
                 self._on_issue_changed(None)
                 return
