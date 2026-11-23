@@ -418,7 +418,7 @@ class CleanupPanel:
                 C.section_label("撤销结果", t, note=_clock(restore.get("at") or "")),
                 C.hairline(t),
                 *self._restore_rows(rec),
-                *self._action_rows(rec),
+                *self._action_rows(rec, include_undo=False),
             ]
         rows: list = [
             C.section_label("清理结果", t,
@@ -475,17 +475,33 @@ class CleanupPanel:
                 state["selected"] = current
                 self._refresh_selection(scroller, state)
 
-            rows.append(ft.Checkbox(label=_entry_text(item), value=path in selected,
-                                    on_change=set_one))
+            label = C.text(
+                _entry_text(item), t, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                tooltip=ft.Tooltip(path, trigger_mode=ft.TooltipTriggerMode.MANUAL,
+                                   exclude_from_semantics=True),
+            )
+            rows.append(ft.Checkbox(label=label, value=path in selected, on_change=set_one))
         rows += [
             C.text(f"已选 {len(selected)} / {len(entries)} 项", t, "caption",
                    t.palette.text_muted),
         ]
         kept = _norm_kept(state.get("kept"))
         if kept:
-            rows.append(C.section_label(f"受保护（{len(kept)}）", t))
-            rows += [C.text(f"{item['path']} — {item['reason'] or item['kind']}",
-                            t, "caption", t.palette.text_faint) for item in kept]
+            disclosure = C.CollapsibleSection(
+                t, title="受保护", note=str(len(kept)),
+                content=ft.Column(controls=[
+                    C.text(f"{item['path']} — {item['reason'] or item['kind']}",
+                           t, "caption", t.palette.text_faint)
+                    for item in kept
+                ]),
+                expanded=bool(state.get("keptExpanded", False)))
+
+            def toggle_kept(_event=None) -> None:
+                disclosure.set_expanded(not disclosure.expanded)
+                state["keptExpanded"] = disclosure.expanded
+
+            disclosure._toggle_btn.on_click = toggle_kept
+            rows.append(disclosure.root)
 
         def cancel(_event=None) -> None:
             pending = self._pending_selection
@@ -665,27 +681,28 @@ class CleanupPanel:
     def _undo_enabled(self, rec: dict) -> bool:
         return bool(self._undo_target(rec)[0])
 
-    def _action_rows(self, rec: dict) -> list:
+    def _action_rows(self, rec: dict, *, include_undo: bool = True) -> list:
         t = self.page.t
-        restore_status = str(self._restore_of(rec).get("status") or "")
-        _trash, _op, is_last = self._undo_target(rec)
-        if restore_status == "success":
-            label = "已撤销本次清理" if self._restorable(rec) else "已撤销上次清理"
-        elif restore_status == "empty":
-            label = "无可撤销条目"
-        elif is_last:
-            label = "重试撤销上次清理" if restore_status else "撤销上次清理"
-        else:
-            label = "重试撤销" if restore_status else "撤销本次清理"
-        undo = C.secondary_button(
-            label,
-            lambda e: self.restore_last(), t,
-            icon="RESTORE", disabled=not self._undo_enabled(rec),
-            height=t.px(28))
-        return [ft.Row(spacing=t.sp("1"), controls=[
-            undo,
-            C.text_button("查看明细", lambda e: self.details_dialog(), t),
-        ])]
+        actions: list = []
+        if include_undo:
+            restore_status = str(self._restore_of(rec).get("status") or "")
+            _trash, _op, is_last = self._undo_target(rec)
+            if restore_status == "success":
+                label = "已撤销本次清理" if self._restorable(rec) else "已撤销上次清理"
+            elif restore_status == "empty":
+                label = "无可撤销条目"
+            elif is_last:
+                label = "重试撤销上次清理" if restore_status else "撤销上次清理"
+            else:
+                label = "重试撤销" if restore_status else "撤销本次清理"
+            undo = C.secondary_button(
+                label,
+                lambda e: self.restore_last(), t,
+                icon="RESTORE", disabled=not self._undo_enabled(rec),
+                height=t.px(28))
+            actions.append(undo)
+        actions.append(C.text_button("查看明细", lambda e: self.details_dialog(), t))
+        return [ft.Row(spacing=t.sp("1"), controls=actions)]
 
     # ── 主按钮 ──────────────────────────────────────────────────────────
     def phase_label(self) -> str:

@@ -41,6 +41,10 @@ def _panel(page):
     return panel
 
 
+def _checkbox_label(check):
+    return check.label.value if isinstance(check.label, ft.Text) else str(check.label or "")
+
+
 def _drive_selection(panel, paths):
     """Drive the inline chooser in legacy flow tests; None means select all."""
     refresh = panel._refresh_result
@@ -54,10 +58,9 @@ def _drive_selection(panel, paths):
             return
         handled_state = state
         assert state["selected"] == set()
-        panel._selection_preview_texts = _texts(panel._box) + [
-            str(ctl.label or "") for ctl in _walk(panel._box)
-            if isinstance(ctl, ft.Checkbox)]
         checks = [ctl for ctl in _walk(panel._box) if isinstance(ctl, ft.Checkbox)]
+        panel._selection_preview_texts = _texts(panel._box) + [_checkbox_label(check)
+                                                               for check in checks]
         if paths is None:
             checks[0].value = True
             checks[0].on_change(SimpleNamespace(control=checks[0]))
@@ -66,7 +69,7 @@ def _drive_selection(panel, paths):
             selected = set(paths)
             for check in checks[1:]:
                 check_path = next((item["path"] for item in state["entries"]
-                                   if item["path"] in str(check.label)), "")
+                                   if item["path"] in _checkbox_label(check)), "")
                 if check_path in selected:
                     check.value = True
                     check.on_change(SimpleNamespace(control=check))
@@ -406,10 +409,9 @@ def test_cleanup_empty_keeps_previous_batch_undo(tmp_path, monkeypatch):
     rec = panel.record()
     assert rec["restore"]["status"] == "success"
     assert not rec.get("lastTrashDir")
-    undo = _undo_button(panel.result())
-    assert undo is not None and undo.disabled is True
-    assert "已撤销上次清理" in str(undo.content)
     texts = _texts(panel.result())
+    assert _undo_button(panel.result()) is None
+    assert "查看明细" in texts
     assert any("已撤销上次清理：恢复 1 个文件。" in text for text in texts), texts
     assert not any("实际回收" in text for text in texts), texts
     assert not any("没有可清理的临时文件" in text for text in texts), texts
@@ -477,7 +479,7 @@ def test_cleanup_new_success_replaces_last_batch(tmp_path, monkeypatch):
     assert len(calls) == 6
     assert _args(calls[5]) == ["--folder", root, "--restore", batch2, "--json"]
     assert panel.record()["restore"]["status"] == "success"
-    assert _undo_button(panel.result()).disabled is True
+    assert _undo_button(panel.result()) is None
 
 
 def _restore_payload(root, batch, operation_id=OP, **over):
@@ -509,7 +511,7 @@ def test_cleanup_undo_then_empty_does_not_revive_undone_batch(tmp_path, monkeypa
     rec = panel.record()
     assert rec["restore"]["status"] == "success"
     assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
-    assert _undo_button(panel.result()).disabled is True
+    assert _undo_button(panel.result()) is None
 
     panel.start()  # 再清理得 empty：不得把刚撤销的批次当成「上次可撤销」
 
@@ -649,7 +651,7 @@ def test_cleanup_restore_bad_result_is_not_marked_undone(tmp_path, monkeypatch):
     assert len(calls) == 2
     assert _args(calls[1]) == ["--folder", root, "--restore", batch, "--json"]
     assert panel.record()["restore"]["status"] == "success"
-    assert _undo_button(panel.result()).disabled is True
+    assert _undo_button(panel.result()) is None
 
 
 def test_cleanup_restore_preflight_failure_keeps_batch_retryable(tmp_path, monkeypatch):
@@ -953,8 +955,11 @@ def test_cleanup_select_all_toggles_from_current_selection(
 
 def test_cleanup_checkbox_updates_mounted_candidate_list(tmp_path):
     panel = CLEANUP.CleanupPanel(make_page(tmp_path))
+    filename = "末尾 文件名.aux"
+    path = "/".join(["很长的中文目录" * 5] * 4 + [filename])
     state = {"root": panel.root, "token": panel._token, "previewId": "preview",
-             "entries": [{"path": f"fixture{i}.aux"} for i in range(40)],
+             "entries": ([{"path": f"fixture{i}.aux"} for i in range(39)]
+                         + [{"path": path, "kind": "aux"}]),
              "kept": [], "selected": set()}
     panel._selection = state
     panel._phase = "preview"
@@ -962,12 +967,68 @@ def test_cleanup_checkbox_updates_mounted_candidate_list(tmp_path):
     result = panel.result()
     scroller = result.controls[-1]
     scrollbar = scroller.scroll
-    checkbox = scroller.controls[40]
+
+    def check_candidate(candidate, *, selected):
+        assert isinstance(candidate, ft.Checkbox)
+        assert candidate.value is selected
+        label = candidate.label
+        assert isinstance(label, ft.Text)
+        assert label.value == f"[编译辅助文件] {path}"
+        assert label.max_lines == 1
+        assert label.overflow == ft.TextOverflow.ELLIPSIS
+        assert isinstance(label.tooltip, ft.Tooltip)
+        assert label.tooltip.message == path
+        assert label.tooltip.trigger_mode == ft.TooltipTriggerMode.MANUAL
+
+    checkbox = scroller.controls[-3]
+    check_candidate(checkbox, selected=False)
     checkbox.value = True
     checkbox.on_change(SimpleNamespace(control=checkbox))
 
-    assert state["selected"] == {"fixture39.aux"}
+    assert state["selected"] == {path}
     assert panel.result() is result
     assert result.controls[-1] is scroller
     assert scroller.scroll is scrollbar
-    assert scroller.controls[40].value is True
+    assert scroller.controls[0].value is None
+    check_candidate(scroller.controls[-3], selected=True)
+
+    panel._refresh_result()
+    refreshed = panel.result().controls[-1]
+    check_candidate(refreshed.controls[-3], selected=True)
+    checkbox = refreshed.controls[-3]
+    checkbox.value = False
+    checkbox.on_change(SimpleNamespace(control=checkbox))
+    assert state["selected"] == set()
+    check_candidate(refreshed.controls[-3], selected=False)
+
+
+def test_cleanup_protected_rows_default_collapsed_and_preserve_selection(tmp_path):
+    panel = CLEANUP.CleanupPanel(make_page(tmp_path))
+    state = {"root": panel.root, "token": panel._token, "previewId": "preview",
+             "entries": [{"path": "keepable.aux"}], "kept": [
+                 {"path": "nested/protected.tex", "reason": "被成品引用"}],
+             "selected": {"keepable.aux"}}
+    panel._selection = state
+    panel._phase = "preview"
+    panel._phase_root = panel.root
+
+    controls = panel._selection_controls(state)
+    initial_text = _texts(ft.Column(controls=controls))
+    assert "受保护" in initial_text
+    assert "1" in initial_text
+    body = next(control for control in _walk(ft.Column(controls=controls))
+                if isinstance(control, ft.Container) and control.visible is False)
+    assert body.visible is False
+    assert state["selected"] == {"keepable.aux"}
+
+    expand = next(control for control in _walk(ft.Column(controls=controls))
+                  if isinstance(control, ft.IconButton) and control.tooltip == "展开")
+    expand.on_click(None)
+    assert body.visible is True
+    expanded_text = _texts(ft.Column(controls=controls))
+    assert any("nested/protected.tex" in text and "被成品引用" in text
+               for text in expanded_text)
+    assert state["selected"] == {"keepable.aux"}
+
+    refreshed = _texts(ft.Column(controls=panel._selection_controls(state)))
+    assert any("nested/protected.tex" in text for text in refreshed)
