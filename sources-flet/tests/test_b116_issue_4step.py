@@ -3,7 +3,7 @@
 锁住的不变量（壳层，不建窗口、不跑引擎）：
 1. rail 4 视图（宽窗 216 栏 / 内容 <880 时 54 高横条），标签、caption、选中态；
 2. 视图状态聚合：任一步 error→红 / 有警告→琥珀 / running→动 / 全完成→绿 / 否则灰；
-3. 6 条 `issue:<step>` 深链 alias 全保留、22 路由不变；深链落到所属视图的两个区块；
+3. 6 条 `issue:<step>` 深链 alias 全保留；设置新增九路由后共 31 条；深链落到所属视图的两个区块；
 4. 01/02、03/04 同屏但**各自有运行入口**（不合并引擎调用、不合并确认）；
 5. 04 只读「前置页」卡：空态说明 + detect 结果（文件名/页数/缺失），不提供编辑；
 6. 03 编译成功 → 滚到 04 区块，但**不自动运行 04**（04 保留独立确认点）；
@@ -60,7 +60,7 @@ def test_issue_views_are_four_with_labels_and_captions():
 
 def test_issue_routes_still_22_and_six_deep_links():
     routes = IA.all_routes()
-    assert len(routes) == 22, "视图只影响呈现，不新增/删除路由"
+    assert len(routes) == 31, "仅设置增加九个详情路由，其余深链保持不变"
     assert len(IA.ISSUE_ROUTE_STEPS) == 6
     for step in IA.issue_step_keys():
         assert f"issue:{step}" in routes, f"深链 alias 必须保留：issue:{step}"

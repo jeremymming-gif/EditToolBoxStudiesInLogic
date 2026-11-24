@@ -35,6 +35,7 @@ from ui import dirpush as DIRPUSH
 from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
+from ui import settings_dispatch as SETTINGS_DISPATCH
 from ui import task_feedback as TF
 from ui.base_page import BasePage
 from ui.tokens import BREAK, SIDEBAR_W, ZOOM_MIN
@@ -4723,6 +4724,10 @@ class SettingsPage(BasePage):
         self.connection_slot = ft.Container()
         # P08 I-2：状态行 value 控件的引用（label → Text），供 refresh_status_rows 原地刷新。
         self._status_value_ctls: dict[str, ft.Text] = {}
+        self._status_slot = ft.Container(visible=False)
+        self._content_slot = ft.Container(expand=True)
+        self._dirty_slot = ft.Container()
+        self._active_view = ""
 
     def _status_rows(self) -> list[tuple[str, str, bool]]:
         """设置页顶部状态行（P08 I-2）：每次调用都从 store/engine 现取，不做构建期快照。
@@ -4778,6 +4783,7 @@ class SettingsPage(BasePage):
     def on_show(self) -> None:
         """每次导航回设置页都重取状态（I-2）。"""
         self.refresh_status_rows()
+        self._refresh_dirty_status()
 
     def _engine_note(self) -> ft.Row:
         engine = self.app.engine_status
@@ -4799,6 +4805,7 @@ class SettingsPage(BasePage):
         """「立即保存」：保存成功才刷新状态行（I-2）。"""
         if self.app.save_settings(toast=True):
             self.refresh_status_rows()
+            self._refresh_dirty_status()
 
     def build(self) -> ft.Control:
         t = self.t
@@ -4810,9 +4817,7 @@ class SettingsPage(BasePage):
             if ctl is not None:
                 self._status_value_ctls[label] = ctl
             engine_row_controls.append(row)
-        # 软件设置按通用、AI、引用库三类组织；组内仍沿用既有偏好控件。
-        self._engine_status_note = self._engine_note()
-        engine_rows = C.block(
+        status_rows = C.block(
             *engine_row_controls,
             ft.Row(spacing=t.sp("1"), controls=[
                 C.secondary_button("重新检测", lambda e: self._rescan(), t, icon="REFRESH"),
@@ -4820,100 +4825,43 @@ class SettingsPage(BasePage):
             ]),
             t=t, gap="1",
         )
-
-        options = self.app.store.get("options", {}) or {}
-        appearance = C.block(
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("深色模式", t, "body"),
-                ft.Container(expand=True),
-                C.switch(t, value=self.app.t.is_dark,
-                         on_change=self.app.on_theme_switch),
-            ]),
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("界面缩放", t, "body"),
-                # 批 112 A-05：滑块量程与屏幕钳制后的真实上限一致，不再先给 2.0× 再强钳。
-                ft.Slider(**self._zoom_slider_spec(t), active_color=t.palette.accent, expand=True,
-                          on_change=self._zoom_changed),
-                C.text(f"{self.app.effective_zoom:.2f}×（上限 {self.app.max_zoom:.2f}×）", t,
-                       "small", t.palette.text_muted, "medium"),
-            ]),
-            SHELL.button_palette_row(self),
-            C.text(f"屏幕工作区钳制：本屏最大 {self.app.max_zoom:.2f}×；更大缩放会被限制，窗口不会越界。", t,
-                   "caption", t.palette.text_faint),
-            t=t, gap="2",
-        )
-
-        tray = SHELL.tray_card(self)
-
-        paths = C.block(
-            C.section_label("路径", t, note="引擎目录留空 = 自动定位"),
-            C.hairline(t),
-            self._path_field("engine_override", "引擎目录（可空）", kind="dir"),
-            # 引擎认「有 cases/ 子目录」为笔记仓根（Engine/slcn/paths.py:160），
-            # 填成 <笔记仓>/bib_db 会一直报缺引用库 —— 提示必须写在这一行上。
-            self._path_field(
-                "notes_repo", "私有笔记仓（可空）", kind="dir",
-                hint="笔记仓根目录（含 cases/）",
-                note="填笔记仓根目录（里面要有 cases/），不要填它下面的 bib_db/。",
-            ),
-            t=t, gap="1",
-        )
-
-        about_version = C.kv_row(t, "应用版本", self.app.app_version, mono=True)
-        self._about_version = about_version.value_ctl
-        about_rows = [
-            ("Flet / Python", f"{self.app.flet_version} · {self.app.python_version}"),
-            ("窗口 / DPI", f"{self.app.window_w}×{self.app.window_h} @ {self.app.dpi} ({self.app.dpi / 96:.0%})"),
-            ("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
-            ("许可", "专有软件 · © 2026 Jeremymming（第三方许可见 THIRD_PARTY.md）"),
-        ]
-        about = C.block(
-            C.section_label("关于", t),
-            C.hairline(t),
-            about_version,
-            *[C.kv_row(t, label, value) for label, value in about_rows],
-            t=t, gap="1",
-        )
-
-        envcheck = SHELL.envcheck_card(self)
-        proxy = SHELL.proxy_card(self)
-        logs = SHELL.logs_card(self)
-        advanced = SHELL.advanced_card(self)
-        diagnostics = SHELL.diagnostics_card(self)
-
+        self._engine_status_note = None
+        self._about_version = None
+        self._status_slot.content = status_rows
         header = C.page_header(
-            "设置", "按通用、AI、引用库三类查看与维护偏好。", t,
+            "设置", "按类别查看与维护偏好。", t,
             actions=[C.primary_button("立即保存", lambda e: self._save_settings(), t,
                                       icon="SAVE_OUTLINED")],
         )
-        page = C.page_body(
-            header,
-            self._group("通用", t,
-                        self._engine_status_note,
-                        self._flat(envcheck, "环境检查"),
-                        engine_rows,
-                        appearance,
-                        self._flat(tray, "窗口与托盘"),
-                        self._flat(logs, "日志"),
-                        self._flat(diagnostics, "诊断包"),
-                        paths,
-                        self._flat(advanced, "高级"), about,
-                        note="跨流程的界面、环境、路径与本机默认行为"),
-            self._group("AI", t,
-                        self._flat(AIP.AiSettings(self).build(), "AI"),
-                        self._flat(proxy, "网络代理"),
-                        note="连接信息、模型、联网能力与请求预算"),
-            self._group("引用库", t,
-                        C.text("引用库路径、默认查库行为与库状态在引用库设置中维护。",
-                               t, "small", t.palette.text_muted),
-                        C.secondary_button(
-                            "打开引用库设置",
-                            lambda e: self.app.navigate("bib:settings", source="settings"),
-                            t, icon="MENU_BOOK"),
-                        note="只放稳定偏好与诊断信息；版本操作位于引用库工作页"),
-            t=t, gap=12, panel=True,
-        )
-        return page
+        self._refresh_dirty_status()
+        return C.page_body(header, self._status_slot, self._dirty_slot,
+                           self._content_slot, t=t, gap=12, panel=True)
+
+    def _refresh_dirty_status(self) -> None:
+        if self._dirty_slot is None:
+            return
+        dirty = bool(getattr(self.app.store, "dirty", False))
+        self._dirty_slot.content = C.inline_note(
+            "有未保存改动" if dirty else "所有设置已保存",
+            self.t, "warn" if dirty else "ok")
+        try:
+            self._dirty_slot.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def activate(self, view: str, source: str = "nav") -> None:
+        if view not in SETTINGS_DISPATCH.view_keys():
+            view = ""
+        self._active_view = view
+        self._status_slot.visible = view == "engine"
+        self._content_slot.content = SETTINGS_DISPATCH.build(self, view)
+        self.refresh_status_rows()
+        self._refresh_dirty_status()
+        for control in (self._status_slot, self._content_slot):
+            try:
+                control.update()
+            except Exception:  # noqa: BLE001 构建期/未挂载时静默跳过
+                pass
 
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _group(self, label: str, t, *controls, note: str | None = None) -> ft.Column:
@@ -4965,15 +4913,8 @@ class SettingsPage(BasePage):
         取 Container.content 的 Column，把首行该卡的 `section_title` 换成同文案的
         `section_label`（保留 note）；其余控件/回调原样返回。
         """
-        t = self.t
-        column, head = self._titled_column(control)
-        if column is None:
-            return control
-        if head is None or str(head.controls[0].value) != title:
-            return column
-        note = self._row_note(head, title)
-        column.controls = [C.section_label(title, t, note=note), *column.controls[1:]]
-        return column
+        from ui.settings_detail import flat
+        return flat(self, control, title)
 
     def _path_field(self, key: str, label: str, *, kind: str = "dir",
                     hint: str = "", note: str | None = None) -> ft.Container:
@@ -5079,6 +5020,7 @@ class SettingsPage(BasePage):
             self.app.set_check_done(True)
         # P08 I-2 / P01-4.1-④：env_check_done 已写盘（dirty=False），状态行必须跟着变。
         self.refresh_status_rows()
+        self._refresh_dirty_status()
         self._render_envcheck()
 
     @staticmethod

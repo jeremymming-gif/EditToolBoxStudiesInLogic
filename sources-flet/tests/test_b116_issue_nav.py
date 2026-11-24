@@ -4,7 +4,7 @@
 1. 侧栏「整期装配」是叶子：`NAV_TREE` 无 views，6 步在页内步骤栏；
 2. `issue` / `issue:overview` 是兼容别名，运行期落到 issue_state.last_step（无记录 → 第 1 步）；
 3. 显式 `issue:<step>` 与 `P2_ISSUE_STEP` 不被历史记忆覆盖；
-4. 22 条路由口径不变；搜索/命令面板仍保留 6 个步骤入口；
+4. 设置新增九个详情后共 31 条路由；搜索/命令面板仍保留 6 个步骤入口；
 5. 标题/面包屑永远是「整期装配 · <步骤名>」，没有任何「流水线总览」入口。
 """
 from __future__ import annotations
@@ -138,9 +138,9 @@ def test_issue_landing_routes_and_alias_predicate() -> None:
     assert IA.normalize_route("issue:toc") == ("issue", "toc")
 
 
-def test_route_count_stays_22_and_keeps_alias() -> None:
+def test_route_count_is_31_and_keeps_alias() -> None:
     routes = IA.all_routes()
-    assert len(routes) == 22
+    assert len(routes) == 31
     assert len(routes) == len(set(routes))
     issue_routes = [route for route in routes if route.startswith("issue:")]
     assert issue_routes == ["issue:overview", "issue:infocheck", "issue:toc",

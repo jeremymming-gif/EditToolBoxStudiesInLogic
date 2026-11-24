@@ -28,6 +28,12 @@ HINT_MUST = ("cases/",)
 NOTE_MUST = ("cases/", "bib_db")
 
 
+def _build_paths_settings(tmp_path):
+    page, root = _build_settings(tmp_path)
+    page.activate("paths")
+    return page, root
+
+
 def _picker_column(root: ft.Control, field: ft.Control) -> ft.Column:
     """找到直接承载该输入行的 `C.path_picker` 外层 Column（取最内层那个）。"""
     matches = []
@@ -50,7 +56,7 @@ def _caption_texts(column: ft.Column) -> list[str]:
 
 # ── 1. 用户能在字段上直接看到「填根目录、别填 bib_db」 ────────────────────
 def test_notes_repo_field_shows_root_dir_hint(tmp_path):
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     field = page.fields["notes_repo"][0]
     assert field.hint_text, "notes_repo 输入框必须有占位提示"
     for token in HINT_MUST:
@@ -66,7 +72,7 @@ def test_notes_repo_field_shows_root_dir_hint(tmp_path):
 
 def test_notes_repo_caption_is_not_the_paste_note(tmp_path):
     """本页 `show_note=False`；新说明是独立 caption，不复活「可粘贴」提示。"""
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     field = page.fields["notes_repo"][0]
     column = _picker_column(root, field)
     assert not any("可直接粘贴路径" in value for value in _caption_texts(column))
@@ -74,7 +80,7 @@ def test_notes_repo_caption_is_not_the_paste_note(tmp_path):
 
 # ── 2. 字段名 / 标签不变：老配置 `flet.paths.notes_repo` 继续有效 ──────────
 def test_notes_repo_key_and_label_unchanged(tmp_path):
-    page, _root = _build_settings(tmp_path)
+    page, _root = _build_paths_settings(tmp_path)
     assert "notes_repo" in page.fields, "设置键名不能改"
     field = page.fields["notes_repo"][0]
     assert getattr(field, "_form_label", None) == "私有笔记仓（可空）"
@@ -105,7 +111,7 @@ def test_path_field_without_hint_matches_old_tree(tmp_path):
 
 
 def test_engine_override_field_has_no_extra_caption(tmp_path):
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     field = page.fields["engine_override"][0]
     column = _picker_column(root, field)
     assert _caption_texts(column) == []

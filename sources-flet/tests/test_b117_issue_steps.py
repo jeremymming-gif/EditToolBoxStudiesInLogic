@@ -282,9 +282,9 @@ def test_dirpush_failure_without_artifact_shows_reason():
     assert "还没有推送记录" not in labels
 
 
-# ── 15. 22 路由 + 6 条 alias：落到对应功能页并展开该区块 ─────────────
+# ── 15. 31 路由 + 6 条 alias：落到对应功能页并展开该区块 ─────────────
 def test_routes_and_issue_aliases_stay_intact():
-    assert len(IA.all_routes()) == 22
+    assert len(IA.all_routes()) == 31
     assert IA.issue_step_keys() == ["infocheck", "toc", "compileall",
                                     "merge", "cleantemp", "dirpush"]
     page = _issue_page()

@@ -368,10 +368,11 @@ def test_connection_probe_and_defaults_copy(tmp_path):
 # ── 接线：pages.py 只委托，新模块持有实现 ────────────────────────────────
 def test_pages_delegates_and_no_delete_flags():
     pages = (APP / "ui" / "pages.py").read_text(encoding="utf-8")
+    settings_detail = (APP / "ui" / "settings_detail.py").read_text(encoding="utf-8")
     assert "ASM.build_step_call(self, key)" in pages
     assert "ASM.run_step(self, key)" in pages
     assert "ASM.after_step(" in pages
-    assert "SHELL.logs_card(self)" in pages
+    assert "SHELL.logs_card(page)" in settings_detail
     assert "--delete" not in pages and "--empty-trash" not in pages
     assert "--restore" not in pages
     signature = inspect.signature(EB.cleantemp_call)

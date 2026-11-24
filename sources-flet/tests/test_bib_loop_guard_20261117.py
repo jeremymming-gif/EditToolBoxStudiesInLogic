@@ -240,6 +240,12 @@ def test_prefix_behaviour_kicks_forever(monkeypatch):
 
 
 # ── 4. R1：notes_repo 填成 bib_db 子目录 → 提示但不断保存 ──────────────────
+def _build_paths_settings(tmp_path):
+    page, root = _build_settings(tmp_path)
+    page.activate("paths")
+    return page, root
+
+
 def _notes_column(page, root) -> ft.Column:
     field = page.fields["notes_repo"][0]
     matches = [ctl for ctl in _walk(root) if isinstance(ctl, ft.Column)
@@ -263,14 +269,14 @@ def _type(page, key: str, value: str) -> None:
 
 
 def test_empty_notes_repo_is_valid_and_silent(tmp_path):
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     warn = _warn_text(page, root)
     assert str(warn.value or "") == ""
     assert warn.visible is False, "合法（空）时提示位不占高度"
 
 
 def test_notes_repo_pointing_at_bib_db_warns_but_saves(tmp_path):
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     warn = _warn_text(page, root)
     bad = tmp_path / "notes" / "bib_db"
     bad.mkdir(parents=True)
@@ -286,7 +292,7 @@ def test_notes_repo_pointing_at_bib_db_warns_but_saves(tmp_path):
 
 
 def test_notes_repo_root_with_cases_is_silent(tmp_path):
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     warn = _warn_text(page, root)
     good = tmp_path / "notes"
     (good / "cases").mkdir(parents=True)
@@ -300,7 +306,7 @@ def test_notes_repo_root_with_cases_is_silent(tmp_path):
 
 def test_warning_clears_after_fixing_typo(tmp_path):
     """先填错再改对：提示必须撤掉，不能一直挂着。"""
-    page, root = _build_settings(tmp_path)
+    page, root = _build_paths_settings(tmp_path)
     warn = _warn_text(page, root)
     bad = tmp_path / "notes" / "bib_db"
     bad.mkdir(parents=True)

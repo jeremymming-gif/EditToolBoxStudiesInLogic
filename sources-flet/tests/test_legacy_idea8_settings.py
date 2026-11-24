@@ -180,6 +180,7 @@ class _SettingsApp:
             describe=lambda: "测试引擎")
         self.effective_zoom = 1.0
         self.max_zoom = 1.5
+        self.tray_enabled = False
         self.flet_version = "test"
         self.python_version = "test"
         self.window_w, self.window_h, self.dpi = 1200, 800, 96
@@ -197,24 +198,22 @@ def test_settings_page_renders_three_groups_and_links_to_bib_preferences(
         tmp_path, monkeypatch):
     app = _SettingsApp()
     app.store.path = str(tmp_path / "settings.json")
+    monkeypatch.setattr(SHELL, "log_buffer",
+                        lambda _app: SimpleNamespace(count=lambda: 0))
     page = SettingsPage(app)
     page._status_rows = lambda: []
-    monkeypatch.setattr(SHELL, "envcheck_card", lambda _page: ft.Text("环境检查内容"))
-    monkeypatch.setattr(SHELL, "button_palette_row", lambda _page: ft.Text("按钮配色"))
-    monkeypatch.setattr(SHELL, "tray_card", lambda _page: ft.Text("窗口与托盘内容"))
-    monkeypatch.setattr(SHELL, "proxy_card", lambda _page: ft.Text("网络代理内容"))
-    monkeypatch.setattr(SHELL, "logs_card", lambda _page: ft.Text("日志内容"))
-    monkeypatch.setattr(SHELL, "advanced_card", lambda _page: ft.Text("高级内容"))
-    monkeypatch.setattr(SHELL, "diagnostics_card", lambda _page: ft.Text("诊断包内容"))
 
     root = page.build()
+    page.activate("")
     texts = _texts(root)
     assert all(label in texts for label in ("通用", "AI", "引用库"))
-    assert all(label in texts for label in ("AI 功能总开关", "环境检查内容",
-                                             "引用库路径、默认查库行为与库状态在引用库设置中维护。"))
+    assert all(label in texts for label in ("外观", "引擎与环境", "路径", "日志与诊断",
+                                             "高级与关于", "窗口与托盘", "语言与地区",
+                                             "AI 与模型", "网络代理", "引用库偏好"))
+    assert "AI 功能总开关" not in texts
     links = [control for control in _walk(root)
              if isinstance(control, (ft.Button, ft.OutlinedButton, ft.TextButton))
-             and _button_label(control) == "打开引用库设置"]
+             and "引用库偏好" in _texts(control)]
     assert len(links) == 1
     links[0].on_click(None)
     assert app.routes == [("bib:settings", "settings")]

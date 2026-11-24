@@ -282,7 +282,7 @@ def test_narrow_nav_two_rows_full_titles():
 
 
 def test_rail_does_not_regress_routes_or_tree():
-    assert len(IA.all_routes()) == 22
+    assert len(IA.all_routes()) == 31
     assert IA.issue_step_keys() == ["infocheck", "toc", "compileall",
                                     "merge", "cleantemp", "dirpush"]
     assert [view["key"] for view in IA.issue_views()] == ["catalog", "produce",

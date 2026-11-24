@@ -35,7 +35,7 @@ from __future__ import annotations
 #   · 引用库在侧栏只剩一个叶子（图标保留、右侧待处理徽标）；原来的 3 组视图
 #     与 9 个子行全部移入 Bib 页内的二级导航（BIB_INPAGE_GROUPS），组名由分隔线和首项提示表达；
 #   · 引用库视图在 NAV_TREE 里平铺并带 group，设置 route_only 只服务深链/⌘K；
-#     nav_views() 仍返回 10 项，22 条路由与既有顺序不变。
+#     nav_views() 仍返回 10 项；设置另有 9 个详情视图，路由共 31 条。
 NAV_TREE: list[dict] = [
     {"group": "工作区", "entries": [
         {"key": "home", "label": "工作台", "icon": "AUTO_AWESOME"},
@@ -69,7 +69,22 @@ NAV_TREE: list[dict] = [
          ]},
     ]},
     {"group": "系统", "entries": [
-        {"key": "settings", "label": "设置", "icon": "SETTINGS_OUTLINED"},
+        {"key": "settings", "label": "设置", "icon": "SETTINGS_OUTLINED",
+         "groups": [
+             {"key": "general", "label": "通用", "views": [
+                 {"key": "appearance", "label": "外观"},
+                 {"key": "engine", "label": "引擎与环境"},
+                 {"key": "paths", "label": "路径"},
+                 {"key": "diagnostics", "label": "日志与诊断"},
+                 {"key": "advanced", "label": "高级与关于"},
+                 {"key": "window", "label": "窗口与托盘"},
+                 {"key": "language", "label": "语言与地区"},
+             ]},
+             {"key": "ai", "label": "AI", "views": [
+                 {"key": "ai", "label": "AI 与模型"},
+                 {"key": "proxy", "label": "网络代理"},
+             ]},
+         ]},
         {"key": "help", "label": "帮助与关于", "icon": "HELP_OUTLINE"},
     ]},
 ]
@@ -256,10 +271,10 @@ def group_views(page_key: str) -> list[dict]:
 
 
 def all_routes() -> list[str]:
-    """全部可持久化/可深链的路由（含父项默认视图、无子视图页面与旧别名）。
+    """全部可持久化/可深链的路由（含父项默认视图、父落点與旧别名）。
 
-    批 115 D1-115-26：整期装配侧栏叶子化后，22 条路由口径不变——
-    `issue:overview` 兼容别名 + 6 个页内步骤路由，共 7 条。
+    设置没有默认视图时保留裸父路由作为总览，并枚举全部子路由。
+    `issue:overview` 兼容别名 + 6 个页内步骤路由仍共 7 条。
     """
     routes: list[str] = []
     for entry in nav_parent_entries():
@@ -275,6 +290,8 @@ def all_routes() -> list[str]:
         default = str(entry.get("default", "") or "")
         if default:
             routes.append(f"{page}:{default}")
+        else:
+            routes.append(page)
         routes.extend(f"{page}:{view['key']}" for view in views
                       if view["key"] != default)
     return routes

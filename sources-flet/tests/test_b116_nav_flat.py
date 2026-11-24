@@ -5,7 +5,7 @@
    单篇点击沿用上次视图，整期点击走上次步骤。
 2. 引用库（批 116 BIB-NAV2 决策）：侧栏只留 1 个叶「引用库」；3 组 9 视图
    改由 Bib 白面板顶部的页内导航承载（见 test_b116_bib_inpage_nav.py）。
-3. 22 条路由与 issue 深链 alias 口径不变。
+3. 原路由与 issue 深链 alias 口径不变；设置另增 9 条详情路由。
 4. SinglePage h1 固定「单篇稿件」，convert/proofcheck 改为 28 高页内 chip。
 5. 整期行右侧不再有「完成/4」进度徽标（批 120 B-353 删除）；行高仍 28。
 6. 主题切换后深色模式开关的 thumb/track 四态颜色跟随新 Tokens（控件原位重建）。
@@ -177,7 +177,7 @@ def test_bib_leaf_stays_visible_when_other_page_collapsed() -> None:
 
 # ── 3. 路由口径不变 ────────────────────────────────────────────────────────
 def test_all_routes_and_issue_alias_unchanged() -> None:
-    assert len(IA.all_routes()) == 22
+    assert len(IA.all_routes()) == 31
     assert "single:convert" in IA.all_routes()
     assert "single:proofcheck" in IA.all_routes()
     assert "issue:overview" in IA.all_routes()

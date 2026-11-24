@@ -146,11 +146,12 @@ def test_search_index_covers_pages_commands_recent_and_paths():
     entries = _sample_index()
     kinds = {entry.kind for entry in entries}
     assert kinds == {"page", "command", "recent", "path"}
-    # 父项 6 + 子项 18（单篇 2 + 整期 6 + 引用库 10）；父项 action 仍可直接 goto。
+    # 父项 6 + 可搜索子项（单篇 / 引用库 / 设置）；父项 action 仍可直接 goto。
     pages = [entry for entry in entries if entry.kind == "page"]
     parents = {entry.key for entry in pages if ":" not in entry.key}
     assert parents == {"home", "single", "issue", "bib", "settings", "help"}
-    assert len(pages) == 6 + len(IA.nav_views("single")) + len(IA.nav_views("issue")) + len(IA.nav_views("bib"))
+    assert len(pages) == (6 + len(IA.nav_views("single")) + len(IA.nav_views("issue"))
+                         + len(IA.nav_views("bib")) + len(IA.nav_views("settings")))
     assert all(entry.action.startswith("goto:") for entry in pages)
     # 10 个命令 + 引用库 10 视图 + 整期 6 步骤
     commands = [entry for entry in entries if entry.kind == "command"]

@@ -123,10 +123,14 @@ def test_nav_tree_views_and_bib_groups_are_three_level() -> None:
 
 def test_all_routes_cover_parent_defaults_and_children() -> None:
     routes = IA.all_routes()
-    assert len(routes) == 22
+    assert len(routes) == 31
     assert set(routes) >= {"home", "settings", "help", "single:convert", "single:proofcheck",
                            "issue:overview", "issue:toc", "bib:overview", "bib:edit",
                            "bib:settings"}   # 设置仅从侧栏移除，深链路由不减少
+    assert {f"settings:{key}" for key in (
+        "appearance", "engine", "paths", "diagnostics", "advanced", "window",
+        "language", "ai", "proxy",
+    )} <= set(routes)
     assert len(set(routes)) == len(routes)
 
 
@@ -450,9 +454,9 @@ def test_bib_page_activate_keeps_group_memory() -> None:
 def test_search_index_lists_parents_and_children_with_routes() -> None:
     entries = SI.build_index(nav_tree=IA.NAV_TREE)
     pages = [entry for entry in entries if entry.kind == "page"]
-    # 批 115 D1-115-31/32：父项 6 + 单篇 2 + 整期 0 + 引用库 10
-    # （9 叶 + 设置仅路由；设置仍可经 ⌘K/搜索直达，只是不在侧栏）。
-    assert len(pages) == 6 + 2 + 0 + 10
+    # 父项 6 + 单篇 2 + 整期 0 + 引用库 10 + 设置详情 9；
+    # 设置父项仍只在侧栏出现一次，九个详情经搜索可直达。
+    assert len(pages) == 6 + 2 + 0 + 10 + 9
     actions = {entry.action for entry in pages}
     assert "goto:single" in actions
     assert "goto:single:proofcheck" in actions

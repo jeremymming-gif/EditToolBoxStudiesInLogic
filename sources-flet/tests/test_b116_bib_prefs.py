@@ -11,6 +11,7 @@ import pytest
 
 import services.engine_bridge as EB
 from ui import bib_prefs as BP
+from ui import settings_detail as SD
 from ui.pages import SettingsPage
 from ui.tokens import Tokens
 
@@ -223,7 +224,7 @@ def test_only_save_is_primary(tmp_path, monkeypatch):
 
 
 def test_software_settings_page_does_not_offer_bib_git_actions():
-    source = inspect.getsource(SettingsPage.build)
+    source = inspect.getsource(SettingsPage.build) + inspect.getsource(SD)
     assert "提交…" not in source
     assert "推送…" not in source
 

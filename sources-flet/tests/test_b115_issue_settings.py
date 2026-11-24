@@ -9,8 +9,8 @@
    只重建总览一次。
 4. 步骤页去重复标题与「← 流水线总览」返回键，保留 `_progress_band()` 与详情头
    的唯一主按钮；进度带仍 54 高、6 段、无 chip。
-5. SettingsPage build：`page_body(panel=True)` + 4 组发丝分区（引擎与环境 / 外观 /
-   窗口与托盘 / 路径与关于），组内不再有 `C.card` / `C.section_title`；引擎状态
+5. SettingsPage build：`page_body(panel=True)` + 设置总览三组入口行；九类详情由
+   `settings_detail.py` 构建，复用控件且不再有 `C.card` / `C.section_title`；引擎状态
    用 inline_note，键值行统一 `C.kv_row`（32 高）。
 """
 from __future__ import annotations
@@ -25,7 +25,10 @@ import flet as ft
 import pytest
 
 from app.ui import components as C
+from app.ui import ia_map as IA
 from app.ui import pages as P
+from app.ui import settings_detail as SD
+from app.ui import settings_hub as HUB
 from test_b112_post_b import _FakeApp, _build_issue, _walk
 
 
@@ -76,6 +79,7 @@ def _build_settings(tmp_path: Path):
     app = _SettingsApp(tmp_path)
     page = P.SettingsPage(app)
     root = page.build()
+    page.activate("")
     return page, root
 
 
@@ -246,7 +250,7 @@ def test_issue_nav_bar_uses_chips_not_progress_band():
     assert "status_chip" not in _calls(P.IssuePage._nav_bar)
 
 
-# ── 3. SettingsPage 白面板 / 三类设置 / kv_row ─────────────────────────
+# ── 3. 设置总览 / 详情视图 ─────────────────────────────────────────────
 def test_settings_page_white_sheet_and_three_groups(tmp_path):
     page, root = _build_settings(tmp_path)
     t = page.t
@@ -255,35 +259,35 @@ def test_settings_page_white_sheet_and_three_groups(tmp_path):
     assert root.border_radius.top_left == t.radius("panel")
     body = root.content
     assert isinstance(body, ft.Column)
-    # 批 118 P1-1：滚动 Column 内先包一层右缘 6px 留白容器，再是原内容。
-    groups = body.controls[0].content.controls[1:]
+    groups = page._content_slot.content.controls
     assert len(groups) == 3
-    labels = [group.controls[0].controls[0].controls[0].value for group in groups]
+    labels = [next(str(ctl.value) for ctl in _walk(group)
+                   if isinstance(ctl, ft.Text)) for group in groups]
     assert labels == ["通用", "AI", "引用库"]
     # 每组都以 section_label + 发丝线开头。
     for group in groups:
-        head = group.controls[0]
-        assert isinstance(head, ft.Column)
-        assert isinstance(head.controls[1], ft.Container)
-        assert head.controls[1].height == 1  # hairline
+        hairline = group.controls[1]
+        assert isinstance(hairline, ft.Container)
+        assert hairline.height == 1
 
 
 def test_settings_engine_rows_merge_envcheck_and_use_kv_row(tmp_path):
     page, root = _build_settings(tmp_path)
     t = page.t
-    body = root.content
-    engine_group = body.controls[0].content.controls[1]
-    note = engine_group.controls[1]
+    page.activate("engine")
+    detail = page._content_slot.content
+    engine_group = detail.controls[1]
+    note = engine_group.controls[2]
     assert isinstance(note, ft.Row)  # inline_note：状态点 + 状态/版本
     note_text = [str(ctl.value) for ctl in note.controls if isinstance(ctl, ft.Text)]
     assert any("引擎" in value and ("就绪" in value or "未就绪" in value)
                for value in note_text)
     # 环境检查并入组首：去壳后是 Column 且首行是 section_label。
-    envcheck = engine_group.controls[2]
+    envcheck = engine_group.controls[3]
     assert isinstance(envcheck, ft.Column)
     assert isinstance(envcheck.controls[0], ft.Row)
     assert envcheck.controls[0].controls[0].value == "环境检查"
-    saved_rows = [ctl for ctl in _walk(engine_group)
+    saved_rows = [ctl for ctl in _walk(page._status_slot.content)
                   if isinstance(ctl, ft.Container) and ctl.height == t.row_h("table")
                   and isinstance(ctl.content, ft.Row) and len(ctl.content.controls) == 3]
     assert len(saved_rows) >= 5  # 运行方式/目录/版本/问题/设置文件
@@ -293,22 +297,35 @@ def test_settings_page_methods_have_no_cards_or_section_titles(tmp_path):
     calls = _calls(P.SettingsPage.build)
     assert "card" not in calls
     assert "section_title" not in calls
-    assert "section_label" in calls
-    assert "hairline" in calls
-    assert "kv_row" in calls
-    assert "_engine_note" in calls
+    module_calls = set()
+    for source in (inspect.getsource(HUB), inspect.getsource(SD)):
+        tree = ast.parse(source)
+        module_calls.update(node.func.attr for node in ast.walk(tree)
+                            if isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute))
+    assert "section_label" in module_calls
+    assert "hairline" in module_calls
+    assert "kv_row" in module_calls
+    assert "_engine_note" in _calls(SD._engine)
     assert "inline_note" in _calls(P.SettingsPage._engine_note)
-    assert "_flat" in calls  # settings_shell / ai_panel 的卡片统一去壳
-    assert "button_palette_row" in calls
+    assert "button_palette_row" in _calls(SD._appearance)
+    diagnostics_tree = ast.parse(textwrap.dedent(inspect.getsource(SD._diagnostics)))
+    flat_calls = [node for node in ast.walk(diagnostics_tree)
+                  if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name) and node.func.id == "flat"]
+    assert len(flat_calls) == 2  # 日志与诊断卡仍在详情模块中去壳
     src = inspect.getsource(P.SettingsPage.build)
     assert "panel=True" in src
-    assert src.count("self._group(") == 3
+    assert "self._group(" not in src
+    assert len(IA.group_views("settings")) == 2
 
 
 def test_engine_display_refresh_keeps_settings_scroller(tmp_path):
     page, root = _build_settings(tmp_path)
     body = root.content
+    page.activate("engine")
     engine_note = page._engine_status_note
+    page.activate("advanced")
     page.app.engine_status.ok = False
     page.app.engine_status.version = "1.8.0"
     page.app.app_version = "1.8.1"
