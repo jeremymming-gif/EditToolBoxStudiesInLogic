@@ -844,7 +844,17 @@ def insert_custom_macros(template_text: str, macros: list[tuple[str, str, str]])
     if not add:
         return template_text, []
 
-    block = "\n".join(src for _, _, src in add)
+    snippets = []
+    for _, _, src in add:
+        # B-391：收集器保留原始切片，改名/renew→new 完成后才在插入层补 catcode。
+        # 普通宏原样保留；已有完整外层包裹的定义不再套一层。
+        clean = PRE.strip_comments(src).strip()
+        wrapped = re.fullmatch(
+            r"\\makeatletter(?![A-Za-z@])[\s\S]*\\makeatother(?![A-Za-z@])", clean)
+        if PRE.at_control_words(src) and not wrapped:
+            src = "\\makeatletter\n" + src + "\n\\makeatother"
+        snippets.append(src)
+    block = "\n".join(snippets)
     lines = template_text.split("\n")
     for idx, ln in enumerate(lines):
         if HYPERREF_ANCHOR in ln or PRE.is_hyperref_line(ln):

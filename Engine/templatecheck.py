@@ -42,6 +42,7 @@ from slcn import platform as _plat  # noqa: E402
 from slcn import fsutil as _fsutil  # noqa: E402
 from slcn import bibparse as _bibparse  # noqa: E402
 from slcn import templates as _templates  # noqa: E402
+from slcn import preamble as _preamble  # noqa: E402
 from slcn.proofcheck import raw_mask  # noqa: E402
 
 
@@ -59,7 +60,7 @@ RULES: tuple[Rule, ...] = (
     Rule("T1", "必备结构",
          "初排产物口径（`docs/ENGINE_API.md` 产物段、初排交接单）：documentclass + "
          "begin/end{document} + 参考文献 + 正文非空；不强制 \\section（实测 66/69 有，"
-         "余 3 篇是书评/短文，不能当 FAIL）",
+         "余 3 篇是书评/短文，不能当 FAIL）；导言区含 @ 控制词的顶层宏须有 makeatletter 保护",
          "按模板重新生成（模板合规是生成器的责任，不是人工逐条补）"),
     Rule("T2", "题名/作者/单位",
          "本刊模板 CN_template.tex / EN_template.tex 的字段注释；占位符清单逐字取自模板"
@@ -434,6 +435,33 @@ def _has_text(s: str) -> bool:
     return len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", t)) >= 2
 
 
+def _check_at_macro_catcodes(text: str, res: RuleResult) -> None:
+    """T1 子检查：只报告顶层宏的 @ token，不扩成通用 TeX lint/编译闸门。"""
+    active = False
+    previous = 0
+    command_text = list(_preamble.mask_definition_containers(text))
+    macros = _preamble.top_level_macros(text)
+    for macro in macros:
+        for i in range(*macro.span):
+            if command_text[i] != "\n":
+                command_text[i] = " "
+    command_text = "".join(command_text)
+    for macro in macros:
+        # Ignore comment and recognized declaration bodies while tracking catcode scope.
+        for token in re.finditer(r"\\([A-Za-z@]+|[^\n])", command_text[previous:macro.span[0]]):
+            if token.group(1) == "makeatletter":
+                active = True
+            elif token.group(1) == "makeatother":
+                active = False
+        if not active:
+            words = _preamble.at_control_words(text[macro.span[0]:macro.span[1]])
+            if words:
+                pos, name = words[0]
+                res.add_fail(line_of(text, macro.span[0] + pos), "\\" + name,
+                             "顶层宏含 @ 控制词但缺少 \\makeatletter…\\makeatother 保护")
+        previous = macro.span[1]
+
+
 def check_structure(ctx: Context) -> RuleResult:
     res = RuleResult(RULES[0])
     masked = ctx.masked
@@ -463,6 +491,7 @@ def check_structure(ctx: Context) -> RuleResult:
     paras = [ln for ln in body.splitlines() if _has_text(ln)]
     if not paras:
         res.add_fail(0, "（全文）", "document 环境里没有正文（≥1 段）")
+    _check_at_macro_catcodes(masked[:begin] if begin >= 0 else masked, res)
     if res.status == STATUS_FAIL:
         res.summary = f"{res.count} 项结构问题"
     else:

@@ -297,6 +297,19 @@ def _clean_line(line: str) -> str:
     return "".join(out)
 
 
+def at_control_words(text: str) -> list[tuple[int, str]]:
+    r"""返回含 @ 的控制词位置/名称；忽略注释、转义反斜杠及单独的 `\@`。
+
+    单独的 `\@` 本来就是合法控制符，不需要把 @ 临时设为字母。
+    保留原文偏移，供插入层和 report-only 检查共用。
+    """
+    return [
+        (m.start(), name)
+        for m in re.finditer(r"%[^\n]*|\\([A-Za-z@]+|[^\n])", text)
+        if (name := m.group(1)) and "@" in name and len(name) > 1
+    ]
+
+
 def source_preamble(text: str) -> str:
     """取 `.tex` 源稿 `\\begin{document}` 之前的部分。
 

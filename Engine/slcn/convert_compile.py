@@ -1,7 +1,7 @@
 """SLCN convert 拆分（B-229）：编译/清理/页数。纯搬运自 v1.4.0 `Engine/convert.py`，判据/文案/输出未改。"""
 from __future__ import annotations
 
-import os, shutil, subprocess
+import os, re, shutil, subprocess
 
 
 def pdf_page_count(pdf_path: str) -> int:
@@ -44,17 +44,17 @@ def clean_stale_compile_artifacts(out_dir: str, stem: str) -> list[str]:
 
 
 def _tail_log_lines(path: str, *, prefix: str = "!", contains: str = "") -> list[str]:
-    """读日志里最多 3 行错误（`prefix` = 行首标记；`contains` = 行内关键词）。"""
-    if not os.path.exists(path):
-        return []
+    """读最多 3 条错误；TeX 错误附本段最后一条 l.###，不越过下一条 !。"""
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return [
-                ln.strip() for ln in fh
-                if (ln.startswith(prefix) if prefix else True) and contains in ln
-            ][:3]
-    except OSError:
-        return []
+        with open(path, encoding="utf-8", errors="replace") as fh: text = fh.read()
+    except OSError: return []
+    if prefix != "!": return [ln.strip() for ln in text.splitlines() if ln.startswith(prefix) and contains in ln][:3]
+    errors = []
+    for first, context in re.findall(r"(?m)^(![^\n]*)((?:\n(?!\!)[^\n]*)*)", text):
+        if contains not in first: continue
+        locations = re.findall(r"(?m)^l\.\d+\b[^\n]*", context)
+        errors.append(first.strip() + (" " + locations[-1].strip() if locations else ""))
+    return errors[:3]
 
 
 def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:

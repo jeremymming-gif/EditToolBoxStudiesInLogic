@@ -70,6 +70,48 @@ check("③ 别的 stem 的文件不动（other.aux）",
       os.path.exists(os.path.join(TMP, "other.aux")))
 check("④ 幂等：第二次调用返回空", convert.clean_stale_compile_artifacts(TMP, "Demo") == [])
 
+
+# B-391：每条 TeX 错误只配到下一条 ! 之前的最后一个 l.###。
+from slcn import convert_compile as CC  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+_log_path = os.path.join(TMP, "Demo.log")
+_log_text = """l.9 before any error
+! First error.
+context
+l.10 earlier location
+l.11 nearest location
+! Second error has no location.
+context
+! Third error.
+l.30 third location
+! Fourth error.
+l.40 must not leak
+"""
+with open(_log_path, "w", encoding="utf-8") as f:
+    f.write(_log_text)
+_expected = ["! First error. l.11 nearest location", "! Second error has no location.",
+             "! Third error. l.30 third location"]
+check("B-391 最多三条、最近行号、无行号保持原文且不误配下一错",
+      CC._tail_log_lines(_log_path) == _expected, str(CC._tail_log_lines(_log_path)))
+check("B-391 contains 过滤也不能跨过未选中的下一条 !",
+      CC._tail_log_lines(_log_path, contains="Second") == [_expected[1]])
+with patch.object(CC.shutil, "which", return_value="fake-xelatex"), \
+        patch("slcn.platform.run_no_window", return_value=SimpleNamespace(returncode=1)):
+    _ok, _msg = CC.compile_pdf(TMP, "Demo")
+check("B-391 编译失败文案保留三条错误及各自行号",
+      not _ok and all(part in _msg for part in _expected) and "l.40" not in _msg)
+with open(_log_path, "w", encoding="utf-8") as f:
+    f.write("No errors\nl.99 not an error\n")
+check("B-391 无错日志行为不变", CC._tail_log_lines(_log_path) == [])
+check("B-391 缺失/不可读日志返回空",
+      CC._tail_log_lines(os.path.join(TMP, "missing.log")) == [] and CC._tail_log_lines(TMP) == [])
+with open(_log_path, "w", encoding="utf-8") as f:
+    f.write("INFO\nERROR one\nl.1 ignored\nERROR two\nERROR three\nERROR four\n")
+check("B-391 biber ERROR 提取保持原样",
+      CC._tail_log_lines(_log_path, prefix="", contains="ERROR") == ["ERROR one", "ERROR two", "ERROR three"])
+
 import shutil  # noqa: E402
 
 shutil.rmtree(TMP, ignore_errors=True)

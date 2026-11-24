@@ -1243,7 +1243,13 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
         if opts["compile"]:
             ok, msg = convert_compile.compile_pdf(candidate, stem)
             if not ok:
-                raise ValueError(f"编译失败：{msg}")
+                details = []
+                for label, filename in (("候选 .tex", tex_path),
+                                        ("编译 .log", os.path.join(candidate, stem + ".log"))):
+                    if os.path.isfile(filename):
+                        details.append(f"{label}：{os.path.abspath(filename)}")
+                suffix = ("；" + "；".join(details)) if details else ""
+                raise ValueError(f"编译失败：{msg}{suffix}")
             compile_status = "编译成功"
         source_pdf_status = _source_pdf(candidate, conversion) if opts["source_pdf"] else "未要求导出原稿 PDF"
         if opts["clean"]:

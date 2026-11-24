@@ -1188,6 +1188,99 @@ check("⑨ 挖空容器：长度与换行数不变（报错行号不漂移）、
       and "qedsymbol" not in _masked,
       f"{len(_masked)}/{len(_SCOPE_TEXT)}")
 
+
+# B-391：collect+insert 的完整输出；原始切片与改名/降级链不变。
+_AT_DEF = r"\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}{1ex}{1ex}{\bfseries}}"
+_PLAIN_DEF = r"\newcommand{\plain}{A}"
+_AT_SOURCE = r"""\documentclass{article}
+\makeatletter
+\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}{1ex}{1ex}{\bfseries}}
+\makeatother
+\newcommand{\plain}{A}
+"""
+_AT_TEMPLATE = r"""\documentclass{article}
+\usepackage{hyperref}
+\begin{document}
+x
+\end{document}
+"""
+_at_macros = PRE.collect_top_level_custom_macros(_AT_SOURCE)
+check("B-391 收集器仍返回原始切片（不前置包裹）",
+      _at_macros == [("renewcommand", "paragraph", _AT_DEF), ("newcommand", "plain", _PLAIN_DEF)])
+_at_output, _at_added = build.insert_custom_macros(_AT_TEMPLATE, _at_macros)
+_at_block = r"""\makeatletter
+\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}{1ex}{1ex}{\bfseries}}
+\makeatother
+\newcommand{\plain}{A}
+"""
+check("B-391 collect+insert 完整输出：只保护 @ 宏，普通宏逐字节不变且位于包裹外",
+      _at_added == ["paragraph", "plain"]
+      and _at_output == _AT_TEMPLATE.replace(r"\begin{document}", _at_block + r"\begin{document}"))
+check("B-391 真正 @ 控制词判定：前缀/后缀/宏名都认",
+      [name for _, name in PRE.at_control_words(r"\@startsection \z@ \foo@bar")] == ["@startsection", "z@", "foo@bar"])
+_plain_macros = [
+    ("newcommand", "email", r"\newcommand{\email}{user@example.test}"),
+    ("newcommand", "comment", "\\newcommand{\\comment}{A% \\z@\nB}"),
+    ("newcommand", "controlsymbol", r"\newcommand{\controlsymbol}{\@}"),
+    ("newcommand", "escaped", r"\newcommand{\escaped}{\\z@}"),
+]
+_plain_block = "\n".join(src for _, _, src in _plain_macros) + "\n"
+_plain_output, _ = build.insert_custom_macros(_AT_TEMPLATE, _plain_macros)
+check("B-391 反例：普通 @ 文本、注释、裸 \\@、转义反斜杠不触发包裹",
+      _plain_output == _AT_TEMPLATE.replace(r"\begin{document}", _plain_block + r"\begin{document}"))
+_wrapped = r"""% outer comment
+\makeatletter
+\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}{1ex}{1ex}{\bfseries}}
+\makeatother % end
+"""
+_wrapped_output, _ = build.insert_custom_macros(_AT_TEMPLATE, [("renewcommand", "paragraph", _wrapped)])
+check("B-391 已有包裹逐字节保留、不重复套",
+      _wrapped in _wrapped_output and _wrapped_output.count(r"\makeatletter") == 1
+      and _wrapped_output.count(r"\makeatother") == 1)
+_fallback = _AT_TEMPLATE.replace(r"\usepackage{hyperref}" + "\n", "")
+_fallback_output, _ = build.insert_custom_macros(_fallback, _at_macros)
+check("B-391 无 hyperref 时仍插在 begin document 前",
+      _fallback_output == _fallback.replace(r"\begin{document}", _at_block + r"\begin{document}"))
+_named_at = r"\newcommand{\foo@bar}{A}"
+_named_output, _ = build.insert_custom_macros(_AT_TEMPLATE, [("newcommand", "foo@bar", _named_at)])
+check("B-391 定义目标含 @ 同样受保护",
+      r"\makeatletter" + "\n" + _named_at + "\n" + r"\makeatother" in _named_output)
+write("atmacro/rename.tex", r"""\documentclass{article}
+\makeatletter
+\renewcommand{\prop}{\z@}
+\makeatother
+\begin{document}
+Use $\prop$.
+\end{document}
+""")
+_at_result, _at_renamed = build_one("atmacro/rename.tex", "atrename")
+check("B-391 端到端：改名后 renew→new 锚点仍生效，再包裹",
+      r"\makeatletter" + "\n" + r"\newcommand{\slcnprop}{\z@}" + "\n" + r"\makeatother" in _at_renamed
+      and r"\renewcommand{\slcnprop}" not in _at_renamed)
+
+# 静态检查沿用 T1 report-only 子检查，不增加 T9。
+import templatecheck as TC  # noqa: E402
+
+def _at_findings(text):
+    path = write("atmacro/static.tex", text)
+    before = open(path, "rb").read()
+    report = TC.check_product(path)
+    check("B-391 静态检查不修改输入", open(path, "rb").read() == before)
+    return report, [f for r in report.results for f in r.findings if "@ 控制词" in f.issue]
+
+_bad_report, _bad_at = _at_findings(_AT_TEMPLATE.replace("\\begin{document}", _AT_DEF + "\n\\begin{document}"))
+check("B-391 未包裹 @ 宏命中 T1，行号准确，规则仍 T1..T8",
+      [r.rule.id for r in _bad_report.results] == [f"T{i}" for i in range(1, 9)]
+      and len(_bad_at) == 1 and _bad_at[0].line == 3
+      and any(r.rule.id == "T1" and _bad_at[0] in r.findings for r in _bad_report.results))
+_, _good_at = _at_findings(_at_output)
+check("B-391 安全包裹不误报", not _good_at)
+_, _plain_at = _at_findings(_plain_output)
+check("B-391 普通/注释 @ 不误报", not _plain_at)
+_fake_open = r"\newcommand{\later}{\makeatletter}" + "\n% \\makeatletter\n"
+_, _fake_at = _at_findings(_AT_TEMPLATE.replace("\\begin{document}", _fake_open + _AT_DEF + "\n\\begin{document}"))
+check("B-391 宏体/注释里的 makeatletter 不冒充已执行保护", len(_fake_at) == 1)
+
 shutil.rmtree(TMP, ignore_errors=True)
 
 

@@ -368,6 +368,78 @@ def test_r03_same_stem(tmp: str) -> None:
           r2.returncode == 2 and "参考文献库" in r2.stderr, _tail(r2))
 
 
+
+def test_b391_compile_failure_paths(tmp: str) -> None:
+    """走真实 R3 暂存/交付链，只替换 TeX 执行器；失败不推广最终目录。"""
+    from pathlib import Path
+    from unittest.mock import patch
+    from slcn import ai_workflow_convert as workflow
+
+    base = Path(tmp) / "b391"
+    base.mkdir()
+    source = base / "input.tex"
+    source.write_text(r"""\documentclass{article}
+\title{A Synthetic Example}
+\author{Alice Example}
+\begin{document}
+Synthetic body content stays in the candidate file.
+\end{document}
+""", encoding="utf-8")
+    work = base / "work"
+    prepared = _run(tmp, "--source", str(source), "--out", str(base / "out"),
+                    "--name", "Candidate", "--lang", "en", "--force", "--no-bibdb-apply",
+                    "--ai-taskbook-version", "3", "--ai-execute", "typeset",
+                    "--ai-work-dir", str(work), "--compile")
+    if not check("B-391 真实 R3 第一段暂存成功", prepared.returncode == 0, _tail(prepared)):
+        return
+    state = json.loads((work / ".aiw" / "state.json").read_text(encoding="utf-8"))
+    final = Path(state["conversion"]["final_dir"])
+    stage = state["conversion"]["stage_dir"]
+    frozen = _tree(stage)
+    for tex_exists, log_exists in ((True, True), (True, False), (False, True)):
+        observed = {}
+
+        def fail_compile(candidate, stem):
+            tex = Path(candidate) / state["conversion"]["tex_name"]
+            log = Path(candidate) / (stem + ".log")
+            observed.update(tex=tex, log=log)
+            if not tex_exists:
+                tex.unlink()
+            if log_exists:
+                log.write_text("PRIVATE LOG BODY\n! Synthetic error.\nl.42 location\n", encoding="utf-8")
+            return False, "xelatex 第 1 步失败（退出码 1）：! Synthetic error. l.42 location"
+
+        with patch.dict(os.environ, _env(tmp)), \
+                patch.object(workflow.convert_compile, "compile_pdf", side_effect=fail_compile):
+            result = workflow.deliver(work_dir=str(work), preview_id="", use_original=True)
+        error = result.get("error", "")
+        tag = f"tex={tex_exists}, log={log_exists}"
+        check("B-391 编译失败保留原错误及行号 " + tag,
+              not result.get("ok") and not result.get("delivered")
+              and "! Synthetic error. l.42 location" in error, error)
+        for kind, exists in (("tex", tex_exists), ("log", log_exists)):
+            path = observed.get(kind)
+            check(f"B-391 只回传存在的 .{kind} 绝对路径 " + tag,
+                  path is not None and path.is_absolute() and path.is_file() == exists
+                  and (str(path) in error) == exists, error)
+        check("B-391 失败不泄漏正文、不改暂存、不推广最终目录 " + tag,
+              "PRIVATE LOG BODY" not in error and "Synthetic body content" not in error
+              and _tree(stage) == frozen and not final.exists())
+
+    def compile_ok(candidate, stem):
+        pdf = Path(candidate) / (stem + ".pdf")
+        pdf.write_bytes(b"synthetic PDF")
+        return True, str(pdf)
+
+    with patch.dict(os.environ, _env(tmp)), \
+            patch.object(workflow.convert_compile, "compile_pdf", side_effect=compile_ok):
+        success = workflow.deliver(work_dir=str(work), preview_id="", use_original=True)
+    check("B-391 成功交付契约不变，不附失败定位文案",
+          success.get("ok") and success.get("delivered")
+          and success.get("compile_status") == "编译成功"
+          and "error" not in success and final.is_dir(), str(success))
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 
@@ -376,6 +448,7 @@ def main() -> int:
         test_r01_bib_declaration(tmp)
         test_r02_stale_pdf(tmp)
         test_r03_same_stem(tmp)
+        test_b391_compile_failure_paths(tmp)
     print()
     print(f"断言通过 {PASS} 项，失败 {len(FAILS)} 项")
     for f in FAILS:
