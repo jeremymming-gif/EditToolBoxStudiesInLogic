@@ -28,12 +28,16 @@ class _TaskView:
         self.delivery_ok = False
         self.error = ""
         self.render_flags = []
+        self.previous_boxes = []
 
     def activate(self):
         pass
 
-    def body_only(self, *, compact=False, pinned_actions=False):
+    def body_only(self, *, compact=False, pinned_actions=False, previous=None):
         self.render_flags.append((compact, pinned_actions))
+        self.previous_boxes.append(previous)
+        if previous is not None:
+            return previous
         return ft.Column(expand=True, controls=[ft.Text("当前 AI 任务")])
 
 
@@ -105,12 +109,33 @@ def test_ai_workspace_reuses_parent_fields_and_has_only_inner_task_scroll(monkey
     assert page._norm_row.visible is False
     assert page._run_btn.visible is False
     page._aiw_view.page._render()
+    assert page._aiw_view.previous_boxes[-1] is page._aiw_box.content
     assert all(page.fields[key][0] is value for key, value in refs.items())
     assert page.field("single_source") == "/tmp/anonymous/article.tex"
     assert page.field("single_out") == "/tmp/anonymous/delivery"
     visible_text = [control.value for control in _visible(root) if isinstance(control, ft.Text)]
     assert "当前 AI 任务" in visible_text
     assert page.fields["single_source"][0] not in list(_visible(root))
+
+
+def test_ai_host_render_refreshes_workspace_in_place_without_rerendering_flow(monkeypatch):
+    """B-393 #1/#2: 视图内部刷新必须复用 AI 工作区子树，不重建整棵 flow。"""
+    page, _ = _build(monkeypatch)
+    page._toggle_ai_workflow()
+    original_box = page._aiw_box.content
+    counts = {"rerender": 0}
+    real_rerender = page._rerender_flow
+
+    def counted_rerender():
+        counts["rerender"] += 1
+        return real_rerender()
+
+    page._rerender_flow = counted_rerender
+    page._aiw_view.page._render()
+    assert counts["rerender"] == 0
+    assert page._aiw_view.previous_boxes[-1] is original_box
+    assert page._aiw_box.content is original_box
+    page._rerender_flow = real_rerender
 
 
 def test_editing_conversion_inputs_temporarily_owns_the_single_outer_scroll(monkeypatch):

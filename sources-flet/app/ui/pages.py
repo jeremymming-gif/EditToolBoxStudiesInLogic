@@ -543,8 +543,36 @@ class _SingleAiHost:
         self._single._cleanup_meta_temp()
 
     def _render(self) -> None:
-        # 折叠区展开/收起的真实重绘入口；视图内部状态变更后由这里重排 flow。
-        self._single._rerender_flow()
+        # 视图内部状态变更后的刷新入口（B-393）。优先就地替换 AI 工作区子树：
+        # 传 previous=_aiw_box.content 让视图复用同一滚动容器（不回顶、不丢焦点）。
+        # 仅在未挂载/折叠时才退回整棵 flow 重排。
+        single = self._single
+        view = getattr(single, "_aiw_view", None)
+        box = getattr(single, "_aiw_box", None)
+        if getattr(single, "_aiw_open", False) and view is not None and box is not None \
+                and getattr(box, "content", None) is not None:
+            try:
+                try:
+                    content = view.body_only(compact=True, pinned_actions=True,
+                                             previous=box.content)
+                except TypeError as exc:
+                    if "previous" not in str(exc) and "pinned_actions" not in str(exc):
+                        raise
+                    try:
+                        content = view.body_only(compact=True, previous=box.content)
+                    except TypeError as exc:
+                        if "previous" not in str(exc):
+                            raise
+                        content = view.body_only(compact=True)
+                box.content = content
+                try:
+                    box.update()
+                except RuntimeError:  # 未挂载到真实 page（测试/假宿主）：内存态已更新即可
+                    pass
+                return
+            except Exception:  # noqa: BLE001 - body_only 绘制失败才退回整树重排
+                pass
+        single._rerender_flow()
 
     def notify(self, message: str) -> None:
         toast = getattr(self.app, "toast", None)

@@ -1517,6 +1517,11 @@ class BibAiAssistView:
         def _handler(e) -> None:
             value = str(getattr(e.control, "value", "") or "").strip()
             if self._set_path(field, value):
+                if field == "result_path":
+                    # B-393 #2: 结果路径每字输入/✕清空/浏览回填都不重绘整树，
+                    # 否则输入框会被新控件替换而丢失焦点，且滚动位置归零。
+                    # 值已写入 self.result_path；✕ 可见性由 sync_clearable 就地维护。
+                    return
                 self._refresh()
         return _handler
 

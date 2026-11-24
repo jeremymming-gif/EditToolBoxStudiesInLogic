@@ -328,6 +328,57 @@ def test_conflict_expression_metadata_is_optional_and_validated_by_type(
     assert "logical library" in visible
 
 
+def test_decision_change_refreshes_workspace_in_place_not_via_full_rerender(tmp_path):
+    """B-393 #1: 字段差异三选一必须就地刷新；裁决/横幅正确且宿主不整树重排。"""
+    view = render_view(tmp_path, state="ready", purpose="initial")
+    view._receive_library({"conflicts": [{
+        "conflict_id": "cf-b393", "key": "K01", "field": "number",
+        "original": "3", "library": "4", "reply": "7",
+    }]})
+    scroll = view.body_only(compact=True, pinned_actions=True)
+    rendered = []
+
+    real_host_render = view.page._render
+
+    def fake_page_render():
+        rendered.append(True)
+        real_host_render()  # _Host._render() 无副作用；真实宿主走 _SingleAiHost
+
+    view.page._render = fake_page_render
+    group = view._conflict_groups["cf-b393"]
+    group.on_change(SimpleNamespace(control=SimpleNamespace(value="library")))
+
+    assert view.decisions["cf-b393"] == "library"
+    assert view._preview_dirty is True
+    assert len(rendered) == 1, "视图只应请求一次宿主刷新（就地刷新由宿主实现）"
+    refreshed = view.body_only(compact=True, pinned_actions=True, previous=scroll)
+    assert refreshed is scroll, "就地刷新必须复用同一滚动容器（offset 不归零）"
+    assert any("已改选" in n.value for n in _walk(refreshed)
+               if isinstance(n, ft.Text)), "横幅必须出现"
+
+
+def test_result_path_on_change_and_clear_never_rerender_full_flow(tmp_path):
+    """B-393 #2: 路径每字输入/✕清空只刷新视图内存状态，不触发整树重排。"""
+    view = render_view(tmp_path, state="waiting", purpose="initial")
+    view.body_only(compact=True)
+    renders = []
+    view.page._render = lambda: renders.append(True)
+    field = view._refs["result_path"][0]
+
+    for ch in "/anonymous/very/long/path/to/result.bib":
+        field.value = field.value + ch
+        field.on_change(SimpleNamespace(control=field))
+    assert view.result_path == "/anonymous/very/long/path/to/result.bib"
+    assert renders == [], "结果路径输入不得触发任何整树重排（含就地重绘），以保住焦点与滚动"
+
+    before_clear = len(renders)
+    field._clear_button.on_click(SimpleNamespace(control=field._clear_button))
+    assert view.result_path == ""
+    assert renders == [], "✕ 清空同样不得触发重排"
+    assert field._clear_button is not None
+    assert field._clear_button.visible is False, "清空后 ✕ 应隐藏"  # sync_clearable 就地生效
+
+
 def test_conflict_selection_invalidates_candidate_and_sends_only_decisions(tmp_path):
     view = render_view(tmp_path, state="ready", purpose="initial")
     view._receive_library({"conflicts": [{
