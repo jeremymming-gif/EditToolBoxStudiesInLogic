@@ -57,7 +57,7 @@ def _tail_log_lines(path: str, *, prefix: str = "!", contains: str = "") -> list
     return errors[:3]
 
 
-def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
+def compile_pdf(out_dir: str, stem: str, *, run_xelatex=None) -> tuple[bool, str]:
     """xelatex → biber -l=zh_pinyin → xelatex ×2。
 
     B-290 F5：biber 的退出码**不再无条件容忍**。无参考文献的稿子（没有 `.bcf`）biber
@@ -77,7 +77,10 @@ def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
         if shutil.which(cmd[0]) is None:
             return False, f"找不到命令 {cmd[0]}，请确认已安装 TeX Live"
         from . import platform as _plat, sortlocale as _sort  # noqa: PLC0415  控制台窗口（B300-03）
-        r = _plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False)
+        if i != 2 and run_xelatex is not None:
+            r = run_xelatex(_plat.run_no_window, cmd, out_dir, i)
+        else:
+            r = _plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False)
         if i == 2 and (err := _sort.guard_after_biber(out_dir, stem)): return False, err
         if r.returncode == 0:
             continue
