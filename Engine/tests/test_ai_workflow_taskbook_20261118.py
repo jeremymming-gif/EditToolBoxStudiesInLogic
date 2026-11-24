@@ -25,7 +25,9 @@
       tests/test_ai_workflow_taskbook_20261118.py
 """
 
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -408,12 +410,52 @@ class TaskbookRenderTest(unittest.TestCase):
         self.assertIn("不把网页年份当出版年", text, "适用规则应带入具体体例")
         self.assertIn("所有已提供字段的事实与拼写", text)
 
-    def test_bib_only_reply_has_identity_and_no_json(self):
+    def test_contract_front_contains_actual_reply_templates(self):
+        ctx = _build(tex=TEX_ALL11, state=_state(exec_cats=("bib_verify", "typeset")))
+        text = render_taskbook(context=ctx)
+        front = text.split("## 输入材料，仅供查证，不得回传", 1)[0]
+        self.assertLessEqual(len(front.splitlines()), 40)
+        self.assertIn("% TASK-ID: AIW-R3TEST00001", front)
+        self.assertEqual(len(re.findall(r"(?m)^```bibtex$", front)), 1)
+        self.assertEqual(len(re.findall(r"(?m)^```json$", front)), 1)
+        self.assertIn('"schema": "slcn.ai_result/3"', front)
+        self.assertIn('"typeset"', front)
+        self.assertNotIn('"text"', front)
+
+    def test_material_uses_bibtex_input(self):
         text = render_taskbook(context=_build(tex=TEX_ALL11))
-        section = text.split("## 回传格式与自检", 1)[1]
-        self.assertIn("首行原样复制 `% TASK-ID: AIW-R3TEST00001`", section)
-        self.assertIn("待核条目齐全", section)
-        self.assertNotIn("json", section)
+        material = text.split("## 输入材料，仅供查证，不得回传", 1)[1]
+        material = material.split("## 软件保全说明", 1)[0]
+        self.assertNotRegex(material, r"(?m)^```bibtex$")
+        self.assertGreaterEqual(len(re.findall(r"(?m)^```bibtex-input$", material)), 11)
+        self.assertEqual(len(re.findall(r"(?m)^```bibtex$", text)), 1)
+        for key in (f"K{i:02d}" for i in range(1, 12)):
+            self.assertIn("{" + key + ",", material)
+
+    def test_bib_only_no_json(self):
+        text = render_taskbook(context=_build(tex=TEX_ALL11))
+        front = text.split("## 输入材料，仅供查证，不得回传", 1)[0]
+        self.assertIn("首行原样复制 `% TASK-ID: AIW-R3TEST00001`", front)
+        self.assertIn("待核条目齐全", front)
+        self.assertNotIn("```json", front)
+        self.assertNotIn('"schema": "slcn.ai_result/3"', front)
+
+    def test_json_by_category(self):
+        cases = (
+            (("typeset",), ("typeset",)),
+            (("text",), ("text",)),
+            (("typeset", "text"), ("typeset", "text")),
+        )
+        for selected, expected in cases:
+            with self.subTest(selected=selected):
+                state = _state(exec_cats=selected, adopt_cats=())
+                text = render_taskbook(context=_build(bib="", state=state))
+                front = text.split("## 输入材料，仅供查证，不得回传", 1)[0]
+                blocks = re.findall(r"(?ms)^```json\n(.*?)\n```$", front)
+                self.assertEqual(len(blocks), 1)
+                payload = json.loads(blocks[0])
+                self.assertEqual(payload["schema"], "slcn.ai_result/3")
+                self.assertEqual({key for key in payload if key != "schema"}, set(expected))
 
     def test_offline_note_no_duplicated_prefix(self):
         """离线发现提示不得出现重复的“离线发现：”前缀（回归 lead 审阅发现）。"""

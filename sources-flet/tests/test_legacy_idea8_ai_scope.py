@@ -100,7 +100,7 @@ def test_chat_and_api_use_the_same_scoped_taskbook_payload(monkeypatch):
            "title={NEVER_DISCLOSE_UNCITED_SENTINEL}, publisher={P}, year={2020}}")
     context = build_context(
         state={"task_id": "T-SYNTHETIC-1", "entry": "convert",
-               "scope": {"exec": ["bib_verify"], "adopt": []},
+               "scope": {"exec": ["bib_verify", "typeset"], "adopt": []},
                "safe_hit_keys": [], "allowed_keys": ["Fillable"], "cite_keys": []},
         bib_text=bib,
         tex_text=r"\cite{Cited,Fillable,Unauthorized}",
@@ -112,7 +112,16 @@ def test_chat_and_api_use_the_same_scoped_taskbook_payload(monkeypatch):
     )
     taskbook = render_taskbook(context=context)
     scope = AI.r3_task_scope(taskbook)
+    contract_front, material_area = taskbook.split("## 输入材料，仅供查证，不得回传", 1)
 
+    assert "% TASK-ID: T-SYNTHETIC-1" in contract_front
+    assert contract_front.index("## 回传格式与自检") < taskbook.index("## 输入材料，仅供查证，不得回传")
+    assert contract_front.count("```bibtex\n") == 1
+    assert contract_front.count("```json\n") == 1
+    assert '"schema": "slcn.ai_result/3"' in contract_front
+    assert '"typeset"' in contract_front and '"text"' not in contract_front
+    assert "```bibtex-input" in material_area
+    assert "```bibtex\n" not in material_area
     assert "待核条目 1 条" in taskbook
     assert "Fillable · 确认为同一来源后可按原键交回完整条目" in taskbook
     assert "Unauthorized · 待人工确认，本次未授权补条" in taskbook
@@ -477,7 +486,7 @@ def test_budget_estimate_uses_existing_token_caps_and_never_claims_price():
 ])
 def test_r3_output_estimate_matches_engine_environment_semantics(
         monkeypatch, request_env, expected, source):
-    from slcn import llm
+    from Engine.slcn import llm
 
     if "SLCN_LLM_MAX_TOKENS" in request_env:
         monkeypatch.setenv("SLCN_LLM_MAX_TOKENS", request_env["SLCN_LLM_MAX_TOKENS"])

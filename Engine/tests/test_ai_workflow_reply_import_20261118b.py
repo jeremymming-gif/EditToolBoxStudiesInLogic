@@ -178,6 +178,52 @@ class LocatableRejectionTest(unittest.TestCase):
             self.assertIn("整份", result["branch_hint"])
 
 
+class ReplyFormatRegressionTest(unittest.TestCase):
+    """任务书前置模板的合法边界与类别交付状态。"""
+
+    def test_fifteen_bib_fences_without_identity_and_with_prose_are_rejected(self):
+        keys = [f"K{i:02d}" for i in range(1, 16)]
+        reply = "外部模型结果如下：\n"
+        reply += "\n".join(f"```bibtex\n{entry(key)}\n```" for key in keys)
+        result = r.parse_reply(text=reply, context=ctx(keys=keys, t=keys))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["identity_status"], "unverified")
+        self.assertEqual(result["branch"], r.BRANCH_REJECTED)
+        self.assertEqual(result["bib_text"], "")
+        self.assertTrue(result["rejected"])
+        self.assertTrue(result["coverage"]["rejected"])
+        self.assertEqual(result["errors"][0]["code"], "conflicting_bibtex_blocks")
+
+    def test_single_bib_fence_template_reply_has_complete_entry_coverage(self):
+        keys = [f"K{i:02d}" for i in range(1, 16)]
+        bib = "\n".join(entry(key, f"Title {key}") for key in keys)
+        reply = (f"% TASK-ID: {TID}\n```bibtex\n{bib}```\n"
+                 "```json\n" + json_typeset(status="partial", reason="部分检查") + "\n```\n")
+        result = r.parse_reply(text=reply, context=ctx(keys=keys, t=keys))
+        returned, problems = r.entries_by_key(result["bib_text"])
+
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(result["identity_status"], "verified")
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(result["coverage"]["missing_t"], [])
+        self.assertFalse(problems)
+        self.assertEqual(set(returned), set(keys))
+        self.assertEqual(result["typeset"]["status"], "partial")
+
+    def test_verified_bib_only_reply_leaves_selected_typeset_not_run(self):
+        keys = [f"K{i:02d}" for i in range(1, 16)]
+        bib = "\n".join(entry(key) for key in keys)
+        reply = f"% TASK-ID: {TID}\n```bibtex\n{bib}```\n"
+        result = r.parse_reply(text=reply, context=ctx(keys=keys, t=keys, typeset=True))
+
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(result["identity_status"], "verified")
+        self.assertEqual(result["coverage"]["missing_t"], [])
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(result["typeset"]["status"], "not_run")
+
+
 class UnverifiedPlainBibTest(unittest.TestCase):
     """(e)：未验证身份只收纯 Bib。"""
 

@@ -27,7 +27,13 @@ from ui.tokens import Tokens
 DECOY_LINE = "诱饵日志行 LINE_ONLY_SENTINEL：任务书：/tmp/decoy.md"
 FULL_TEXT = (
     "标题：Studies in Logic 卷 12\n\n"
-    "@article{zhang2026, author={张三}, title={真实任务书}, year={2026}}\n\n"
+    "## 任务与交付\n% TASK-ID: T-COPY-42\n\n"
+    "## 回传格式与自检\n"
+    "首行原样复制 `% TASK-ID: T-COPY-42`。\n"
+    "```bibtex\n\n```\n"
+    '```json\n{"schema": "slcn.ai_result/3", "typeset": {"status": "not_run", "items": [], "reason": "待填写"}}\n```\n\n'
+    "## 输入材料，仅供查证，不得回传\n"
+    "```bibtex-input\n@article{zhang2026, author={Zhang, A.}, title={Sample}, year={2026}}\n```\n\n"
     "规则 1：引用必须逐条核实。\n"
     "规则 2：源正文永不回写。\n"
     "规则 3：交付只经只读内容桥取回全文。\n"
@@ -340,6 +346,14 @@ def test_copy_task_text_copies_engine_full_text_not_stale_or_path(monkeypatch):
     assert asyncio.run(view.copy_task_text()) is True
     assert host.copied == [FULL_TEXT]
     assert host.page.clipboard == FULL_TEXT
+    copied_text = host.copied[0]
+    assert "## 回传格式与自检" in copied_text
+    assert "% TASK-ID: T-COPY-42" in copied_text
+    assert "```bibtex\n\n```" in copied_text
+    assert '"schema": "slcn.ai_result/3"' in copied_text
+    assert '"typeset"' in copied_text
+    assert "## 输入材料，仅供查证，不得回传" in copied_text
+    assert "```bibtex-input" in copied_text
     assert DECOY_LINE not in "".join(host.copied)
     assert FAKE_PATH not in host.copied
     assert STALE_TEXT not in host.copied

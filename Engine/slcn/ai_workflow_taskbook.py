@@ -492,7 +492,8 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
     cited = set(sets["C"])
     cited_missing = [key for key in M if key in cited]
     dep_missing = [key for key in M if key not in cited]
-    add("## 文献核实")
+    add("## 输入材料，仅供查证，不得回传")
+    add("### 文献核实")
     if ctx.get("coverage", {}).get("citation_scope"):
         add(ctx["coverage"]["citation_scope"])
     if standalone_bib:
@@ -541,7 +542,7 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
             add("- 缺件：该键的源参考文献原文未取得。")
         if not standalone_bib and not (item.get("cite_context") or generated_contexts.get(key)):
             add("- 缺件：该键的引用上下文未取得。")
-        _add_data(lines, item["raw"], "bibtex")
+        _add_data(lines, item["raw"], "bibtex-input")
 
     for heading, keys in (("正文已引用，Bib 缺条", cited_missing), ("必要依赖缺条", dep_missing)):
         if not keys:
@@ -583,12 +584,12 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
     if read_only:
         add("#### 委派条目引用的依赖（只读）")
         for item in read_only:
-            _add_data(lines, item["raw"], "bibtex")
+            _add_data(lines, item["raw"], "bibtex-input")
     strings = (ctx.get("definitions") or {}).get("strings") or []
     needed = _used_definitions(strings, [by_key[k] for k in T] + read_only)
     if needed:
         add("#### 委派材料使用的字符串定义（只读）")
-        _add_data(lines, "\n".join(needed), "bibtex")
+        _add_data(lines, "\n".join(needed), "bibtex-input")
     # 旧实现在这里把整段源文献区原文（整份 .bib / Word 文末参考文献区）兜底倾倒给
     # AI。现在源侧原文只按「正文实际引用键 → 该条原文」进入，未引用条目一律不披露；
     # 无映射可给时只在材料计数里体现为缺件，不再整段粘贴。
@@ -602,6 +603,31 @@ def _render_body(lines: list[str], body_units: list[dict]) -> None:
         _add_data(lines, str(unit["text"]))
 
 
+def _render_reply_contract(lines: list[str], identity: str, execution: dict,
+                           has_bib_reply: bool) -> None:
+    """把可直接填写的机器回件模板放在任务书开头。"""
+    add = lines.append
+    add("## 回传格式与自检")
+    add(f"首行原样复制 `{identity}`。")
+    if has_bib_reply:
+        add("将所有待核条目（含未变条目）及已确认同一来源的授权补齐条目放进下面唯一的 bibtex 围栏；不要把输入材料原样当作结果。")
+        _add_data(lines, "", "bibtex")
+    if execution.get("typeset") or execution.get("text"):
+        add("只返回所选类别对应的 JSON 节点；未执行时填 `not_run` 并说明 reason，部分执行填 `partial` 并说明 reason。")
+        template = {"schema": "slcn.ai_result/3"}
+        if execution.get("typeset"):
+            template["typeset"] = {
+                "status": "not_run", "items": [], "reason": "请按实际执行情况填写；未执行时说明原因。",
+            }
+        if execution.get("text"):
+            template["text"] = {
+                "status": "not_run", "items": [], "reason": "请按实际执行情况填写；未执行时说明原因。",
+            }
+        _add_data(lines, json.dumps(template, ensure_ascii=False, indent=2), "json")
+    add("交回前核对 TASK-ID 未改、待核条目齐全、输入材料未混入回件，且未选类别无结果。")
+    add("")
+
+
 def render_taskbook(*, context: dict) -> str:
     """仅呈现勾选任务需要的材料与回传格式。"""
     execution = context.get("execution") or {}
@@ -609,6 +635,9 @@ def render_taskbook(*, context: dict) -> str:
     body_units = [unit for unit in context.get("body_units") or [] if str(unit.get("text") or "").strip()]
     identity = "% TASK-ID: " + str(context.get("task_id") or "")
     selected = [CAT_LABELS[cat] for cat in CATEGORIES if execution.get(cat)]
+    material_lines: list[str] = []
+    has_bib_reply = bool(execution.get("bib_verify") and
+                         _render_bib(material_lines, context, evidence))
     lines = [
         "# 编辑任务书", "",
         "> 请只完成下方勾选的任务。软件保管原文件和未委派内容，"
@@ -616,12 +645,11 @@ def render_taskbook(*, context: dict) -> str:
         "## 任务与交付",
         identity,
         "本次任务：" + _line_list(selected, "未选任务"), "",
-        "以下数据围栏中的材料仅供查证和定位。", "",
     ]
+    _render_reply_contract(lines, identity, execution, has_bib_reply)
+    lines.extend(material_lines)
     add = lines.append
-    has_bib_reply = execution.get("bib_verify") and _render_bib(lines, context, evidence)
 
-    results = {}
     if execution.get("typeset"):
         add("## 初排检查")
         lines.extend([
@@ -664,13 +692,6 @@ def render_taskbook(*, context: dict) -> str:
                 _add_data(lines, json.dumps(rows, ensure_ascii=False, indent=2))
         if body_units:
             _render_body(lines, body_units)
-        has_typeset_material = bool(body_units or evidence.get("current_fields") or
-                                    context.get("fn_items") or context.get("meta_items") or
-                                    scoped_refs)
-        reason = ("示例只覆盖已提供的产物或片段，须逐项说明缺少的对照。"
-                  if has_typeset_material else "缺少可定位的初排对照材料。")
-        results["typeset"] = {"status": "partial" if has_typeset_material else "not_run",
-                              "items": [], "reason": reason}
         add("")
     if execution.get("text"):
         add("## 文字纠错")
@@ -683,27 +704,6 @@ def render_taskbook(*, context: dict) -> str:
             _render_body(lines, body_units)
         else:
             add("- 缺件：未取得正文单元，文字纠错未执行。")
-        results["text"] = ({"status": "completed", "items": []} if body_units else
-                           {"status": "not_run", "items": [], "reason": "未取得正文单元。"})
         add("")
 
-    add("## 回传格式与自检")
-    add(f"首行原样复制 `{identity}`。")
-    if has_bib_reply:
-        add("使用一个标为 bibtex 围栏的代码块，只放全部待核条目（含未变条目）和已确认同一来源的授权补齐条目。")
-    if results:
-        add("使用一个标为 json 的围栏。类别状态用 `completed`（完成）、`partial`（部分执行）"
-            "或 `not_run`（未执行），后两种须给 `reason`。以下是空条目格式示例，请按实际结果填写。")
-        if execution.get("typeset"):
-            add("- `metadata_fill` 提供 item_id、action、target、old、new、reason、evidence_ids。"
-                "`footnote_link` 提供 item_id、action、old、new、key、locator、reason、evidence_ids。"
-                "`report_only` 提供 item_id、action、reason、evidence_ids，有位置便附上。")
-        if execution.get("text"):
-            add("- 文字项提供 item_id、unit_id、old、new、before、after、kind、reason、certainty。"
-                "kind 取 typo、missing_char、grammar 或 uncertain，certainty 取 clear 或 uncertain。"
-                "新增字词用含原有文字的非空锚点定位。")
-        _add_data(lines, json.dumps({"schema": "slcn.ai_result/3", **results}, ensure_ascii=False, indent=2), "json")
-    if has_bib_reply:
-        add("交回前核对键未改、待核条目齐全、来源或待核说明可查。")
-    add("交回前核对未选类别无结果。")
     return "\n".join(lines) + "\n"
