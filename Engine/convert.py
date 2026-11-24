@@ -590,16 +590,13 @@ def main() -> int:
     # ⑧ 源稿归档到 original/（与往期文件夹命名一致）
     if not args.no_original:
         print("\n⑧ 归档源稿到 original/")
-        # 第 120 条：多文件 LaTeX 稿（展开了 \input）的正文来自整个文件夹，只归档主文件
-        # 会丢分节稿 —— 这种情况自动按整目录归档（等价 --copy-dir）。
-        auto_copy_dir = bool(getattr(res, "expanded_inputs", 0)) and not args.copy_dir
-        if auto_copy_dir:
-            print("   （正文源是多文件稿：已按整目录归档，同 --copy-dir）")
+        # B-392：所有源稿（不判格式、单/多文件）都整目录归档，--copy-dir 与默认等价（恒 True）；
+        # --no-original 仍是显式跳过归档的逃生口（上方分支不变）。
         stage_original(
             out_dir,
             [(source, "正文源")] + ([(metadata, "元数据源")] if metadata else [])
             + [(p, "补充信息源") for p in _meta_paths[1:]],
-            copy_dir=args.copy_dir or auto_copy_dir,
+            copy_dir=True,
         )
 
     if res.warnings:

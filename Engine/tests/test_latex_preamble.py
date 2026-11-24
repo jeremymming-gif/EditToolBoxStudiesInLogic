@@ -1281,6 +1281,154 @@ _fake_open = r"\newcommand{\later}{\makeatletter}" + "\n% \\makeatletter\n"
 _, _fake_at = _at_findings(_AT_TEMPLATE.replace("\\begin{document}", _fake_open + _AT_DEF + "\n\\begin{document}"))
 check("B-391 宏体/注释里的 makeatletter 不冒充已执行保护", len(_fake_at) == 1)
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# B-392：源稿整目录无条件归档到 original/<稿名>/（TDD 红灯，先 RED）
+# --------------------------------------------------------------------------
+# 需求（用户授权范围）：所有源稿（tex / docx / 其他，不判定格式）无条件以
+# 「正文源文件所在文件夹」为单位整目录递归复制进 original/<稿名>/，含子目录、
+# 配套资源、旧稿/临时文件；不覆盖、不删源、不改源文件；--copy-dir 与默认行为
+# 无差异；--no-original 是显式跳过归档的逃生口。
+# 本段只读 fixtures 与系统临时目录，不碰稿件库、不联网、不改实现。
+# ══════════════════════════════════════════════════════════════════════════
+import contextlib
+import hashlib
+import io
+
+_B392_FIX = os.path.join(_HERE, "fixtures", "original_archive")
+
+
+def _b392_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _b392_tree(root):
+    """root 下所有文件的 {相对路径(/ 分隔): sha256}，用于逐字节比较。"""
+    out = {}
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            p = os.path.join(base, name)
+            out[os.path.relpath(p, root).replace(os.sep, "/")] = _b392_sha256(p)
+    return out
+
+
+def _b392_stage(src_dir, body, extra=(), copy_dir="default"):
+    """在独立临时 out 上调用 stage_original；开发者的 out 不复用，避免串味。"""
+    out = tempfile.mkdtemp(prefix="slcn_b392_out_")
+    files = [(os.path.join(src_dir, body), "正文源")]
+    files += [(os.path.join(src_dir, name), "配套源") for name in extra]
+    kw = {} if copy_dir == "default" else {"copy_dir": copy_dir}
+    dest, copied = convert.stage_original(out, files, verbose=False, **kw)
+    return out, dest, copied
+
+
+def _b392_run_cli(src, out, *args):
+    """在进程内跑一次 convert.main（离线；stdout 收回，避免刷屏）。"""
+    old_argv = sys.argv
+    sys.argv = ["convert.py", "--source", src, "--out", out,
+                "--name", "B392Case", "--lang", "en", *args]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                rc = convert.main()
+            except SystemExit as exc:
+                rc = exc.code
+    finally:
+        sys.argv = old_argv
+    return rc
+
+
+# ① 单文件 tex 正反例：正文源在含 sub/ + NCMLEN.sty + old.tex 的文件夹里，
+#    默认（未给 --copy-dir）就必须整目录归档到 original/<稿名>/。
+_b392_tex_src = os.path.join(_B392_FIX, "tex")
+_b392_tex_before = _b392_tree(_b392_tex_src)
+_b392_o1, _b392_d1, _ = _b392_stage(_b392_tex_src, "main.tex")
+_b392_tex_arch = os.path.join(_b392_d1, "tex")
+_b392_tex_after = _b392_tree(_b392_tex_arch) if os.path.isdir(_b392_tex_arch) else {}
+check("B-392 ① tex 单文件稿默认整目录归档到 original/<稿名>/（含 sub/ + sty + 旧稿）",
+      _b392_tex_after == _b392_tex_before,
+      "缺/多：" + str(sorted(set(_b392_tex_before) ^ set(_b392_tex_after))))
+check("B-392 ① 反例：归档形态是 original/<稿名>/ 子目录、不是把 main.tex 平铺到 original/",
+      os.path.isdir(_b392_d1) and os.listdir(_b392_d1) == ["tex"],
+      str(os.listdir(_b392_d1)))
+
+# 反例边界：文件夹里只有正文源文件时，整目录归档 = 只有该文件（不误建多余层）。
+_b392_plain = os.path.join(TMP, "b392_plain")
+os.makedirs(_b392_plain, exist_ok=True)
+with open(os.path.join(_b392_plain, "main.tex"), "w", encoding="utf-8") as fh:
+    fh.write("\\documentclass{article}\n\\begin{document}x\\end{document}\n")
+_b392_o1b, _b392_d1b, _ = _b392_stage(_b392_plain, "main.tex")
+check("B-392 ① 反例：仅含正文源的文件夹整目录归档不报错、内容正确",
+      _b392_tree(os.path.join(_b392_d1b, "b392_plain")) == _b392_tree(_b392_plain)
+      and os.listdir(_b392_d1b) == ["b392_plain"])
+
+# ② 单文件 docx 正反例：含 media/ 与配套资源的文件夹，默认同样整目录归档。
+_b392_docx_src = os.path.join(_B392_FIX, "docx")
+_b392_docx_before = _b392_tree(_b392_docx_src)
+_b392_o2, _b392_d2, _ = _b392_stage(_b392_docx_src, "main.docx")
+_b392_docx_arch = os.path.join(_b392_d2, "docx")
+_b392_docx_after = _b392_tree(_b392_docx_arch) if os.path.isdir(_b392_docx_arch) else {}
+check("B-392 ② docx 稿默认整目录归档（含 media/ + sub/ + notes.txt）",
+      _b392_docx_after == _b392_docx_before,
+      "缺/多：" + str(sorted(set(_b392_docx_before) ^ set(_b392_docx_after))))
+
+# ③ 多文件稿一致性：多输入仍只按正文源文件夹整目录复制一份；
+#    --copy-dir=True 与默认行为逐字节无差异。
+_b392_o3, _b392_d3, _ = _b392_stage(
+    _b392_tex_src, "main.tex", extra=("NCMLEN.sty", "refs.bib"))
+_b392_d3_arch = os.path.join(_b392_d3, "tex")
+check("B-392 ③ 多输入（正文+sty+bib）仍只整目录复制一份到 original/<稿名>/",
+      os.path.isdir(_b392_d3) and os.listdir(_b392_d3) == ["tex"]
+      and (_b392_tree(_b392_d3_arch) if os.path.isdir(_b392_d3_arch) else {}) == _b392_tex_before,
+      str(os.listdir(_b392_d3)))
+_b392_o4, _b392_d4, _ = _b392_stage(
+    _b392_tex_src, "main.tex", extra=("NCMLEN.sty", "refs.bib"), copy_dir=True)
+_b392_d4_arch = os.path.join(_b392_d4, "tex")
+check("B-392 ③ --copy-dir 与默认行为逐字节无差异（同一整目录树）",
+      (_b392_tree(_b392_d4_arch) if os.path.isdir(_b392_d4_arch) else {}) ==
+      (_b392_tree(_b392_d3_arch) if os.path.isdir(_b392_d3_arch) else {}))
+
+# ④ 源目录只读：归档前后逐文件 sha256 一致（不覆盖、不删源、不改源文件）。
+check("B-392 ④ 归档前后 tex/docx 源目录逐文件 sha256 不变（不删/不覆盖/不改源）",
+      _b392_tree(_b392_tex_src) == _b392_tex_before
+      and _b392_tree(_b392_docx_src) == _b392_docx_before)
+
+# CLI 层：默认归档 / --no-original 逃生口。
+_b392_cli_out_default = tempfile.mkdtemp(prefix="slcn_b392_cli_def_")
+_b392_cli_src = os.path.join(_b392_cli_out_default, "DocxSource")
+shutil.copytree(_b392_docx_src, _b392_cli_src)
+_b392_final_default = os.path.join(_b392_cli_out_default, "final")
+_b392_rc_default = _b392_run_cli(os.path.join(_b392_cli_src, "main.docx"),
+                                 _b392_final_default)
+_b392_default_dirs = [d for d in os.listdir(_b392_final_default)
+                      if os.path.isdir(os.path.join(_b392_final_default, d))]
+_b392_default_arch = os.path.join(_b392_final_default, "B392Case", "original", "DocxSource")
+check("B-392 CLI 默认（无 --copy-dir）整目录归档 docx 稿及其 media/",
+      _b392_rc_default == 0 and _b392_tree(_b392_default_arch) == _b392_docx_before,
+      f"rc={_b392_rc_default}; final={_b392_default_dirs}")
+
+_b392_cli_out_skip = tempfile.mkdtemp(prefix="slcn_b392_cli_skip_")
+_b392_cli_src2 = os.path.join(_b392_cli_out_skip, "DocxSource")
+shutil.copytree(_b392_docx_src, _b392_cli_src2)
+_b392_final_skip = os.path.join(_b392_cli_out_skip, "final")
+_b392_rc_skip = _b392_run_cli(os.path.join(_b392_cli_src2, "main.docx"),
+                              _b392_final_skip, "--no-original")
+check("B-392 CLI --no-original 显式跳过：不生成 original/ 目录",
+      _b392_rc_skip == 0
+      and not os.path.exists(os.path.join(_b392_final_skip, "B392Case", "original")),
+      f"rc={_b392_rc_skip}")
+check("B-392 CLI --no-original 下源目录同样未被改动",
+      _b392_tree(_b392_cli_src2) == _b392_docx_before)
+
+for _o in (_b392_o1, _b392_o1b, _b392_o2, _b392_o3, _b392_o4,
+           _b392_cli_out_default, _b392_cli_out_skip):
+    shutil.rmtree(_o, ignore_errors=True)
+
 shutil.rmtree(TMP, ignore_errors=True)
 
 

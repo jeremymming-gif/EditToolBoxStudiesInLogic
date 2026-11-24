@@ -66,7 +66,7 @@ def stage_original(
     仓库根 README 早期写作「原稿」，现行为 `original/`）。
 
     files     [(路径, 角色说明), ...]，即 --source / --metadata / --bib
-    copy_dir  True 时把源文件所在**整个目录**也复制进来。
+    copy_dir  保留参数以兼容既有调用方；B-392 起无论入参取何值都**无条件**整目录归档。
               LaTeX 投稿常是「一个文件夹里放 main.tex + 旧稿 + bib + sty + pdf」，
               往期就是这么整包归档的（如 03 Jie_Zhou/original/03示例悖论（定稿）/）。
     """
@@ -76,22 +76,25 @@ def stage_original(
     copied: list[str] = []
     copied_dir = ""
 
-    # 先复制整目录（若启用）——这样后面的单文件复制就能判断「是否已包含在内」，
-    # 避免同一个文件既平铺一份、又随目录一份。
-    if copy_dir and files:
+    # 先复制整目录（B-392：无条件，不看 copy_dir 入参）——后面的单文件复制据此判断
+    # 「是否已包含在内」，避免重复；copy_dir 形参仅为兼容，语义恒为 True。
+    if files:
         parent = os.path.dirname(os.path.abspath(files[0][0]))
         parent_abs = os.path.abspath(parent) if parent else ""
+        # 护栏比较统一走 realpath：R3 下 Path.resolve()(/private/var/…) 与 abspath(/var/…) 符号链接根不同会让前缀判断双双落空、copytree 递归到 Errno 63；仅用于护栏比较，不改 copied_dir / 逐文件口径。
+        dest_real, parent_real = os.path.realpath(dest_abs), os.path.realpath(parent_abs) if parent_abs else ""
         if parent and os.path.isdir(parent):
-            if parent_abs == dest_abs or parent_abs.startswith(dest_abs + os.sep):
+            if parent_real == dest_real or parent_real.startswith(dest_real + os.sep):
                 # 源目录本来就在 original/ 内（重跑上次归档的多文件稿）→ 不能再整目录复制：
                 # 否则 sub 恰等于 parent，下面 rmtree(sub) 会把源目录删掉（第 120 条评审发现）。
                 if verbose:
                     print("   · 源文件已在 original/ 内：跳过整目录归档")
-            elif not dest_abs.startswith(parent_abs + os.sep):
+            elif not dest_real.startswith(parent_real + os.sep):
                 sub = os.path.join(dest, os.path.basename(parent))
                 sub_abs = os.path.abspath(sub)
-                if sub_abs not in (parent_abs, dest_abs) and not parent_abs.startswith(
-                    sub_abs + os.sep
+                sub_real = os.path.realpath(sub_abs)
+                if sub_real not in (parent_real, dest_real) and not parent_real.startswith(
+                    sub_real + os.sep
                 ):
                     if os.path.exists(sub):
                         shutil.rmtree(sub)
