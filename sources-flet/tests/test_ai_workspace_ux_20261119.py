@@ -567,3 +567,123 @@ def test_stepper_never_expands_flex_children_under_wrapping_row(tmp_path, monkey
     invalid = [n for n in _walk(tree) if isinstance(n, ft.Row) and n.wrap
                and any(getattr(child, "expand", None) is not None for child in n.controls)]
     assert not invalid, "Flet maps expand=False to Expanded(0); Wrap children must omit expand"
+
+
+# ── B-394 字段差异区批量选择按钮（全选库值 / 全选 AI 值）────────────────────
+def _conflicts_with_choices():
+    """显式给 choices：ready fixture 无 choices 键会被当全支持，测不出跳过。"""
+    return A.parse_conflicts({"conflicts": [
+        {"conflict_id": "cf-lib", "key": "K1", "field": "number",
+         "original": "3", "library": "4", "reply": "7",
+         "choices": ["library", "reply", "original"], "default": "original"},
+        {"conflict_id": "cf-nolib", "key": "K2", "field": "title",
+         "original": "A", "library": "", "reply": "B",
+         "choices": ["reply", "original"], "default": "original"},
+        {"conflict_id": "cf-third", "key": "K3", "field": "volume",
+         "original": "1", "library": "2", "reply": "3",
+         "choices": ["library", "reply", "original"], "default": "original"},
+    ]})
+
+
+def _batch_ready_view(tmp_path, conflicts=None):
+    view = render_view(tmp_path, state="ready")
+    view._receive_library({"conflicts": conflicts or _conflicts_with_choices()})
+    return view
+
+
+def _batch_button(tree, label):
+    buttons = [n for n in _walk(tree)
+               if isinstance(n, ft.OutlinedButton) and getattr(n, "content", "") == label]
+    assert len(buttons) == 1, f"批量按钮「{label}」应恰好出现一次，实际 {len(buttons)} 次"
+    return buttons[0]
+
+
+def test_batch_select_library_changes_supported_skips_others(tmp_path):
+    view = _batch_ready_view(tmp_path)
+    assert view.set_decisions_for_value("library") == (2, 1, 0)
+    assert view.decisions == {"cf-lib": "library", "cf-third": "library"}
+    assert view.decisions.get("cf-nolib") is None, "无库值条目不得写入裁决"
+    assert view.decision_scope()["cf-nolib"] == "original", "跳过项保留默认 original"
+    assert view._preview_dirty is True and view.preview_id == ""
+
+
+def test_batch_select_reply_maps_to_reply_and_skips_unsupported(tmp_path):
+    conflicts = _conflicts_with_choices()
+    # 让 cf-third 不支持 reply，测跳过；其余两条支持 reply。
+    conflicts[2]["choices"] = ["library", "original"]
+    view = _batch_ready_view(tmp_path, conflicts)
+    assert view.set_decisions_for_value("reply") == (2, 1, 0)
+    assert view.decisions == {"cf-lib": "reply", "cf-nolib": "reply"}
+    assert view.decision_scope()["cf-third"] == "original"
+    assert ("bib_ai_batch_decision", {"value": "reply", "changed": 2,
+                                      "skipped": 1, "already": 0, "total": 3}) in view.page.marks
+
+
+def test_batch_decision_mark_and_visible_skip_notice(tmp_path):
+    view = _batch_ready_view(tmp_path)
+    tree = view.body_only(compact=True, pinned_actions=True)
+    _batch_button(tree, "全选库值").on_click(None)
+    assert ("bib_ai_batch_decision", {"value": "library", "changed": 2,
+                                      "skipped": 1, "already": 0, "total": 3}) in view.page.marks
+    refreshed = view.body_only(compact=True)
+    assert any(isinstance(n, ft.Text) and "1 条无库值已跳过" in n.value
+               for n in _walk(refreshed)), "跳过提示必须是冲突区内可见控件（A1）"
+    assert "无库值已跳过" not in view.notice, "跳过提示不得只写通用 notice（R3 不渲染）"
+
+
+def test_batch_buttons_disabled_when_running_or_no_support(tmp_path):
+    conflicts = _conflicts_with_choices()
+    for item in conflicts:
+        item["choices"] = ["reply", "original"]  # 全部无库值
+    view = _batch_ready_view(tmp_path, conflicts)
+    tree = view.body_only(compact=True, pinned_actions=True)
+    lib_btn = _batch_button(tree, "全选库值")
+    assert lib_btn.disabled and lib_btn.tooltip
+    assert not _batch_button(tree, "全选 AI 值").disabled
+    view.running = True
+    tree = view.body_only(compact=True, pinned_actions=True)
+    for label in ("全选库值", "全选 AI 值", "全部保留原值"):
+        btn = _batch_button(tree, label)
+        assert btn.disabled, f"running 时「{label}」必须置灰"
+        if label != "全部保留原值":  # 既有按钮保持原样，不补 tooltip
+            assert btn.tooltip, f"批量按钮禁用时须给 tooltip 说明（A6）"
+
+
+def test_batch_decision_no_op_does_not_invalidate(tmp_path):
+    conflicts = _conflicts_with_choices()
+    for item in conflicts:
+        item["default"] = "library"  # 所有支持 library 的条目已选中
+    view = _batch_ready_view(tmp_path, conflicts)
+    before_dirty = view._preview_dirty
+    marks_before = len(view.page.marks)
+    assert view.set_decisions_for_value("library") == (0, 1, 2)
+    assert view._preview_dirty == before_dirty, "空操作不得失效预览（A8）"
+    assert len(view.page.marks) == marks_before, "空操作不得打点（A8）"
+
+
+def test_batch_decision_refreshes_in_place_not_full_tree(tmp_path):
+    view = _batch_ready_view(tmp_path)
+    scroll = view.body_only(compact=True, pinned_actions=True)
+    rendered = []
+    real_host_render = view.page._render
+
+    def fake_page_render():
+        rendered.append(True)
+        real_host_render()
+
+    view.page._render = fake_page_render
+    _batch_button(scroll, "全选库值").on_click(None)
+
+    assert view.decisions == {"cf-lib": "library", "cf-third": "library"}
+    assert len(rendered) == 1, "批量点击只应请求一次宿主就地刷新"
+    refreshed = view.body_only(compact=True, pinned_actions=True, previous=scroll)
+    assert refreshed is scroll, "就地刷新必须复用同一滚动容器（offset 不归零）"
+    assert {"cf-lib", "cf-nolib", "cf-third"} <= set(view._conflict_groups), \
+        "折叠区条目（cf-third）仍须在冲突组里重建"
+
+
+def test_batch_unknown_value_never_falls_back_to_original(tmp_path):
+    view = _batch_ready_view(tmp_path)
+    assert view.set_decisions_for_value("ai") == (0, 0, 0), "入口只认 library/reply（A4）"
+    assert view.decisions == {}, "未知值不得静默改稿成 original"
+    assert not view.page.marks

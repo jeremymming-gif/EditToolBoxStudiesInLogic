@@ -775,6 +775,10 @@ class BibAiAssistView:
         self.taskbook_path = ""
         self.log: list[str] = []
         self.notice = ""
+        # B-394：批量裁决的跳过提示状态。R3 路径不渲染通用 notice，必须在
+        # _conflict_section 内以可见控件呈现，所以单独存这里，每次点击覆盖（含 0）。
+        self._batch_skip_notice = 0
+        self._batch_last_value = ""
         self.error = ""
         self.running = False
         self.imported = False
@@ -1058,7 +1062,8 @@ class BibAiAssistView:
         self.accept[key] = bool(value)
         self._invalidate_preview()
 
-    def set_decision(self, conflict_id: str, value: str) -> bool:
+    def set_decision(self, conflict_id: str, value: str, *,
+                     invalidate: bool = True) -> bool:
         """改一条冲突的裁决；返回是否真的变了。
 
         裁决是**预览的输入**（合同 §2：`--decide cf-…=…` 参与 preview_id 的
@@ -1066,6 +1071,10 @@ class BibAiAssistView:
         preview_id/candidate_bib 并进 stale/waiting，让「应用/交付/对比」变灰，
         必须重新「生成拟应用结果」。这里不静默重算——重算要跑引擎，用户点了
         才跑。
+
+        `invalidate` 默认 True 保持逐条路径与合同测试逐字节不变；批量路径传
+        False，循环结束后只失效一次（B-394，避免第二次起因 phase 已变而吞掉
+        自定义 notice）。
         """
         if callable(self._initial_call) and self.running:
             return False
@@ -1079,8 +1088,50 @@ class BibAiAssistView:
         if self.decisions.get(cid) == chosen:
             return False
         self.decisions[cid] = chosen
-        self._invalidate_preview(notice="冲突裁决已改；请重新生成拟应用结果。")
+        if invalidate:
+            self._invalidate_preview(notice="冲突裁决已改；请重新生成拟应用结果。")
         return True
+
+    def _decision_supported(self, item: dict, value: str) -> bool:
+        """与 `set_decision` 的 choices 白名单同口径；value 必须已归一化。"""
+        return value in (item.get("choices") or DECISION_VALUES)
+
+    def set_decisions_for_value(self, value: str) -> tuple[int, int, int]:
+        """批量把支持该值的冲突切到该裁决；返回 `(changed, skipped, already)`。
+
+        入口只接受 `library`/`reply` 两个字面量（A4：绝不把文案/错字喂给
+        `normalize_decision` 兜底成 original = 静默改稿）；running 时二次拒绝
+        （A5：library 入口无 `_initial_call`，逐条 set_decision 的 running guard
+        不生效）。预扫描分出三态：不支持计 skipped、已选中计 already（不算
+        skipped），待改才收集。空操作不失效/不打点/不刷新（A8）。
+        """
+        if value not in ("library", "reply"):
+            return (0, 0, 0)
+        if self.running:
+            return (0, 0, 0)
+        changed = skipped = already = 0
+        to_change: list[str] = []
+        for item in self.conflicts:
+            cid = str(item.get("conflict_id") or "")
+            if not cid.startswith("cf-"):
+                continue
+            if not self._decision_supported(item, value):
+                skipped += 1
+                continue
+            if decision_for(item, self.decisions) == value:
+                already += 1
+                continue
+            to_change.append(cid)
+        if not to_change:
+            return (changed, skipped, already)
+        for cid in to_change:
+            if self.set_decision(cid, value, invalidate=False):
+                changed += 1
+        # A2：循环后唯一一次失效，自定义 notice 不会被后续调用吞掉。
+        self._invalidate_preview(notice="冲突裁决已改；请重新生成拟应用结果。")
+        self._mark("bib_ai_batch_decision", value=value, changed=changed,
+                   skipped=skipped, already=already, total=len(self.conflicts))
+        return (changed, skipped, already)
 
     def reset_decisions(self) -> None:
         """把全部裁决恢复成条目默认值（「保留原值」）。"""
@@ -1451,11 +1502,30 @@ class BibAiAssistView:
         controls: list[ft.Control] = [
             S.section(t, f"字段差异 · {len(self.conflicts)} 项"),
             self._caption("默认保留原稿；需要时逐项改选。改选后须重新生成拟应用结果。"),
-            *rows[:2],
         ]
+        # A1：跳过提示必须是冲突区内可见控件（R3 路径不渲染通用 notice）。
+        skipped = self._batch_skip_notice
+        if skipped > 0:
+            note = (f"{skipped} 条无库值已跳过，保留原裁决"
+                    if self._batch_last_value == "library" else
+                    f"{skipped} 条无 AI 结果已跳过，保留原裁决")
+            controls.append(C.inline_note(note, t, "warn"))
+        controls.extend(rows[:2])
         if len(rows) > 2:
             controls.append(self._disclosure(
                 "more_differences", f"其余 {len(rows) - 2} 项字段差异", rows[2:]))
+
+        def _has_support(value: str) -> bool:
+            return any(self._decision_supported(item, value) for item in self.conflicts)
+
+        for label, value in (("全选库值", "library"), ("全选 AI 值", "reply")):
+            btn = C.secondary_button(
+                label, self._on_batch_decision(value), t, height=28,
+                disabled=self.running or not _has_support(value))
+            if btn.disabled:
+                btn.tooltip = ("正在处理任务，暂不可批量选择" if self.running else
+                               f"当前 {len(self.conflicts)} 项字段差异均不支持该值")
+            controls.append(btn)
         controls.append(C.secondary_button(
             "全部保留原值", lambda e: self._on_reset_decisions(), t,
             height=28, disabled=self.running))
@@ -1467,6 +1537,14 @@ class BibAiAssistView:
             if self.set_decision(conflict_id, value):
                 self._mark("bib_ai_decision", conflict_id=conflict_id, decision=value)
                 _refresh_workspace(self)
+        return _handler
+
+    def _on_batch_decision(self, value: str):
+        def _handler(e) -> None:
+            _changed, skipped, _already = self.set_decisions_for_value(value)
+            self._batch_skip_notice = skipped
+            self._batch_last_value = value
+            _refresh_workspace(self)
         return _handler
 
     def _on_reset_decisions(self) -> None:
