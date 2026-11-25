@@ -3907,7 +3907,7 @@ class BibAiAssistView:
                 buttons[-1].disabled = self.running or self._compile_fix_prepared is None
             button("导入本地回件…", lambda e: CFD.show_reply_dialog(
                 self._flet(), t, lambda text: operation("import", reply_text=text, **ids)))
-        if status in {"imported", "reviewed"}:
+        if status in {"imported", "reviewed", "compile_failed"}:
             button("审阅回件差异…", lambda e: self._task(lambda: self._review_compile_fix(identity, ids)))
         if status == "compiled":
             controls.append(C.inline_note("隔离复编已通过；请先打开 PDF 验版，再确认交付。", t, "info"))

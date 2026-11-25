@@ -553,6 +553,24 @@ def test_result_path_typing_and_clear_keep_field_and_task_identity(ui_harness):
     assert view._refs["result_path"] == [field] and view._initial_action_context() == profile
 
 
+def test_terms_fields_use_readable_floating_layout(ui_harness):
+    """The three policy fields must be full-height floating fields, not squished single-line boxes."""
+    from ui import compile_fix_dialog as CFD
+    from ui.tokens import Tokens
+
+    _, page, _, _ = ui_harness
+    dialog = CFD.show_authorization_dialog(page, Tokens(), _prepared("R-height", ["D1"]),
+                                           lambda *args: None)
+    fields = _terms_fields(dialog)
+    assert len(fields) == 3
+    for field in fields:
+        assert field.height == Tokens().px(48)
+        assert field.dense is False
+        assert field.label
+        assert field.hint_text
+        assert field.max_length == 240
+
+
 @pytest.mark.parametrize("base", ["https://api.deepseek.com/v1", "https://api.deepseek.com.proxy.invalid/v1"])
 def test_terms_disclosure_requires_target_specific_reference_and_reconfirmation(ui_harness, base):
     from ui import compile_fix_dialog as CFD

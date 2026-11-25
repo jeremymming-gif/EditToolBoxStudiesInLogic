@@ -248,6 +248,36 @@ class PublicationContractTests(unittest.TestCase):
         self.assertTrue(result["compile_fix"]["eligible"])
         self.assert_original()
 
+    def test_review_retry_from_compile_failed_reuses_bound_reply(self):
+        prepared = self.prepare()
+        ids = {key: prepared[key] for key in ('evidence_id', 'request_id')}
+        body = json.loads(prepared['body'])
+        book = json.loads(body['messages'][1]['content'])
+        action = {'action': 'edit', 'evidence_id': 'e1', 'old': 'Synthetic & evidence.',
+                  'new': 'Synthetic \\& evidence.', 'before': '\n', 'after': '\n'}
+        reply = {'identity': book['identity'], 'actions': [action]}
+        imported = self.operate('import', **ids, reply_text=json.dumps(reply))
+        self.assertTrue(imported['ok'], imported)
+        reviewed = self.operate('review', **ids)
+        self.assertTrue(reviewed['ok'], reviewed)
+        review_sha = reviewed['compile_fix']['review_sha256']
+        round_no = reviewed['compile_fix']['round_number']
+
+        # An isolated recompile failure must not consume the bound reply.
+        with patch.object(l2_r3.compiler, 'compile_candidate', return_value=SimpleNamespace(
+                state='failed', candidate_sha256=digest(AFTER), phase='xelatex-1', run_id='run')):
+            failed = self.operate('apply', **ids, review_sha256=review_sha)
+        self.assertFalse(failed['ok'])
+        self.assertEqual(failed['compile_fix']['status'], 'compile_failed')
+
+        # Retrying review reuses the SAME reply and review hash; no new paid round.
+        retried = self.operate('review', **ids)
+        self.assertTrue(retried['ok'], retried)
+        self.assertEqual(retried['compile_fix']['status'], 'reviewed')
+        self.assertEqual(retried['compile_fix']['review_sha256'], review_sha)
+        self.assertEqual(retried['compile_fix']['round_number'], round_no)
+        self.assert_original()
+
     def test_same_filesystem_publish_and_reject_repeat(self):
         args = self.apply()
         code, result = self.deliver(*args)

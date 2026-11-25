@@ -669,7 +669,9 @@ def operate(work, action, *, preview_id="", evidence_id="", request_id="", recor
                     raise RepairError("回件必须是未超限的 UTF-8 文本")
                 _import(path, record, raw, reply)
             elif action == "review":
-                _require(record, request_id, {"imported", "reviewed"})
+                # A failed isolated recompile does not consume the bound reply; let the
+                # existing review be reopened without a new paid round.
+                _require(record, request_id, {"imported", "reviewed", "compile_failed"})
                 _, review = _review(path, record, raw)
                 record.update(status="reviewed", review=review)
                 put_json(path, record)

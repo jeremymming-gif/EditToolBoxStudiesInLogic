@@ -145,17 +145,23 @@ def _invoke(command, cwd, env, leases):
             process.wait()
 
 
+_BIBER_DTD = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+
+
 def _biber_sources(path, cwd, support):
+    """Validate the Biber control file; return True when it has no datasource entries."""
     content = read(path, TEXT_LIMIT)
-    if b"<!" in content or b"\0" in content:
+    if b"\0" in content or _BIBER_DTD.search(content):
         raise RepairError("Biber 控制文件有外部实体或不受控编码")
     try:
         root = ElementTree.fromstring(content)
     except ElementTree.ParseError as exc:
         raise RepairError("Biber 控制文件无法解析") from exc
+    datasources = 0
     for element in root.iter():
         if element.tag.rsplit("}", 1)[-1] != "datasource":
             continue
+        datasources += 1
         name = element.text or ""
         if (not _BIB_NAME.fullmatch(name) or name not in support
                 or element.get("type", "file") != "file"
@@ -163,6 +169,7 @@ def _biber_sources(path, cwd, support):
             raise RepairError("Biber 仅允许已冻结的本地 Bib 文件")
         if digest(read(cwd / name, ARTIFACT_LIMIT)) != support[name]:
             raise RepairError("Biber 输入身份已变化")
+    return datasources == 0
 
 
 def _verify_recorder(recorder, cwd, stem, support, tex_executable, tex_path, artifact_dir):
@@ -243,7 +250,7 @@ def compile_candidate(cwd, stem, expected_hash, support, private_dir, *, leases=
                     raise RepairError("编译文件记录出现未冻结的输入或输出")
                 if step == 1 and (artifact_dir / f"{stem}.bcf").exists():
                     phase = "biber"
-                    _biber_sources(artifact_dir / f"{stem}.bcf", cwd, support)
+                    entryless_bcf = _biber_sources(artifact_dir / f"{stem}.bcf", cwd, support)
                     biber = shutil.which("biber")
                     if biber is None:
                         return CompileResult("unknown", expected_hash, start, "missing_biber")
@@ -252,7 +259,12 @@ def compile_candidate(cwd, stem, expected_hash, support, private_dir, *, leases=
                         return CompileResult("failed", expected_hash, start, phase, code)
                     from ..sortlocale import guard_after_biber
 
-                    if not read(artifact_dir / f"{stem}.bbl") or guard_after_biber(str(artifact_dir), stem):
+                    bbl = read(artifact_dir / f"{stem}.bbl")
+                    # A zero-citation biblatex document has an entryless .bcf and biber
+                    # legitimately writes a 0-byte .bbl.  B-377: such documents must not
+                    # be turned into compile failures merely for lacking entries.
+                    bbl_missing = not bbl and not entryless_bcf
+                    if bbl_missing or guard_after_biber(str(artifact_dir), stem):
                         return CompileResult("failed", expected_hash, start, phase, code)
         phase = "bind"
         pdf = read(artifact_dir / f"{stem}.pdf", ARTIFACT_LIMIT)

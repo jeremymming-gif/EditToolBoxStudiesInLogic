@@ -282,7 +282,15 @@ def edit_candidate(candidate, book, actions):
         before, after = item["before"], item["after"]
         if (start - len(before) < bounds[0] or end + len(after) > bounds[1]
                 or text[start - len(before):start] != before or text[end:end + len(after)] != after):
-            raise RepairError("上下文锚点不匹配或超出正文")
+            # A taskbook signed from a bare excerpt may leave the model unable
+            # to supply literal adjacent anchors (it can mistake before/after for
+            # the old/new values). When old is unique and the source-line and
+            # line-context checks below still bind the edit, fall back to empty
+            # anchors instead of rejecting an otherwise well-formed edit.
+            # Explicit, correct anchors are still honoured verbatim above.
+            before, after = "", ""
+            if start < bounds[0] or end > bounds[1]:
+                raise RepairError("上下文锚点不匹配或超出正文")
         anchor = evidence[item["evidence_id"]]["source_line"]
         if not text.count("\n", 0, start) + 1 <= anchor <= text.count("\n", 0, end - 1) + 1:
             raise RepairError("替换位置不在签发的诊断锚点")

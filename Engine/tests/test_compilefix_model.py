@@ -138,6 +138,21 @@ class CompileFixModelTests(unittest.TestCase):
                     with self.assertRaises(files.RepairError):
                         files.read(candidate, limit)
 
+    def test_edit_candidate_recovers_when_model_misreads_anchor_fields(self):
+        """A real reply put old/new into before/after; unique old + source_line must still allow review."""
+        from slcn.compilefix import model
+
+        candidate = document("A & B\n").encode()
+        log = f"./{STEM}.tex:3: Misplaced alignment tab character &.\n".encode()
+        diagnostics = model.diagnostics(candidate, log, STEM)
+        self.assertEqual(diagnostics[0]["classification"], "editable")
+        book = model.taskbook("synthetic", candidate, diagnostics)
+        action = {"action": "edit", "evidence_id": "e1", "old": "&",
+                  "new": "\\&", "before": "&", "after": "\\&"}
+        patched, diff = model.edit_candidate(candidate, book, [action])
+        self.assertIn(b"A \\& B", patched)
+        self.assertIn(b"-A & B", diff)
+
     def test_support_manifest_limits_count_and_total_bytes_separately(self):
         from slcn.compilefix import compiler, files
 

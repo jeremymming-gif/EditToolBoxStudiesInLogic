@@ -79,7 +79,9 @@ def show_authorization_dialog(page, tokens, prepared: dict, on_send) -> ft.Alert
     terms_note = (f"{target_label} · 实际目标：{target}。需人工按下方来源核验适用条款；"
                   "工具不联网，也不验证来源真实性或条款内容。"
                   if target_matches else "实际发送目标无效或与配置地址不匹配；本次不能发送。")
-    terms_fields = [C.text_field(t, label=label, hint_text=hint, max_length=240, clearable=False)
+    # 三个核验输入框带浮动标签 + 提示语 + max_length 计数器；用单行 28px 的
+    # C.text_field 会被挤扁（m01324 用户实拍），改用统一的 48px 浮动标签输入框。
+    terms_fields = [C.floating_field(t, label, hint=hint, max_length=240, clearable=False)
                     for label, hint in (
                         ("可核对条款来源（本次目标/账号）", "填政策名称/版本及可核对 URL 或章节定位；工具不验证真实性"),
                         ("留存条款核验记录", "按上述来源人工记录适用对象、期限/触发条件及例外"),
