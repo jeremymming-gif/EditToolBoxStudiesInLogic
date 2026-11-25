@@ -977,7 +977,8 @@ def _changed_message(before: dict[str, str], after: dict[str, str], *, what: str
 
 def _render_check_note(state: dict, *, use_original: bool, n_applied: int,
                        adopted: list[dict], deferred: list[dict],
-                       compile_status: str) -> str:
+                       compile_status: str, compile_fix=None) -> str:
+    from .compilefix.l2_r3 import note_lines
     execution = state.get("scope", {}).get("exec", [])
     coverage = state.get("category_results") or {}
     cov_parts = []
@@ -1006,6 +1007,7 @@ def _render_check_note(state: dict, *, use_original: bool, n_applied: int,
         "",
         "## 编译状态",
         f"- {compile_status}",
+        *note_lines(compile_fix),
         "",
         "> 编译成功 / 引文闭合 / 模型自报通过 / 实际交付为四个独立事实，此处只记录本模块的真实写入与调用结果。",
         "",
@@ -1136,7 +1138,8 @@ def _record_delivery_state(work, state, journal):
     ai_workflow.save_state(work, state)
 
 
-def deliver(*, work_dir: str, preview_id: str, use_original: bool = False) -> dict:
+def deliver(*, work_dir: str, preview_id: str, use_original: bool = False,
+            compile_fix_enabled=False, repair=None) -> dict:
     """只交付冻结的原始产物，或上次预览校验过的 TeX/Bib 文件。"""
     from slcn import ai_workflow
     from slcn.ai_workflow_state_v3 import request_lock
@@ -1146,32 +1149,108 @@ def deliver(*, work_dir: str, preview_id: str, use_original: bool = False) -> di
     with request_lock(work_dir) as acquired:
         if not acquired:
             return {"ok": False, "delivered": False, "error": "任务正在处理"}
-        return _deliver(work_dir=work_dir, preview_id=preview_id, use_original=use_original)
+        return _deliver(work_dir=work_dir, preview_id=preview_id, use_original=use_original,
+                        compile_fix_enabled=compile_fix_enabled, repair=repair)
 
 
-def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
+def _recover_compile_preview(work):
+    import copy
+
+    from . import ai_workflow
+    from .compilefix.l1_r3 import recover_preview
+    from .compilefix import l1_r3
+
+    sync_path = Path(work) / ".aiw" / "l1-preview-recovery.json"
+    delivery_path = _journal_path(work)
+
+    def recovery_state():
+        current = ai_workflow.load_state(work) or {}
+        sync = l1_r3.read_json(sync_path, optional=True)
+        receipt = _read_journal(delivery_path)
+        if (not sync or sync.get("state") in {"completed", "rolled_back"}
+                or not receipt.get("delivered")
+                or receipt.get("undone") or receipt.get("task_id") != current.get("task_id")):
+            return current
+
+        # A receipt written before PreviewSync.commit is authoritative only when
+        # every local identity and installed-tree fingerprint agrees. Otherwise
+        # return a deliberately unmatched snapshot so recover_preview fails
+        # closed without rolling either side back.
+        preview = current.get("preview") or {}
+        conversion = current.get("conversion") or {}
+        final = conversion.get("final_dir", "")
+        tex_name = conversion.get("tex_name", "")
+        after_state = sync.get("after")
+        state_matches = current == after_state
+        if (not state_matches and current.get("phase") == "delivered"
+                and current.get("delivery") == receipt):
+            state_matches = l1_r3._known_delivery_transition(current, after_state)
+        syncing_matches = (
+            sync.get("state") == "syncing"
+            and sync.get("task_id") == current.get("task_id")
+            and state_matches
+            and Path(tex_name).name == tex_name
+            and receipt.get("preview_id") == preview.get("preview_id")
+            and receipt.get("final") == final
+            and preview.get("text_new_sha256") == sync.get("after_sha256")
+            and bool(final and tex_name)
+            and os.path.isfile(os.path.join(final, tex_name))
+            and hashlib.sha256(Path(final, tex_name).read_bytes()).hexdigest() == sync.get("after_sha256")
+            and os.path.isdir(final)
+            and _tree_shas(final) == receipt.get("shas")
+        )
+        if not syncing_matches:
+            return {**current, "_preview_recovery_receipt_mismatch": True}
+
+        if current.get("phase") == "delivered" and current.get("delivery") == receipt:
+            return current
+
+        delivered = copy.deepcopy(current)
+        delivered["phase"] = "delivered"
+        delivered["delivery"] = receipt
+        delivered.setdefault("history", []).append({"at": "receipt-recovery", "event": "delivered"})
+        return delivered
+
+    def is_delivered(value, sha):
+        if value.get("_preview_recovery_receipt_mismatch"):
+            return False
+        receipt = _read_journal(delivery_path)
+        return (
+            bool(receipt.get("delivered")) and not receipt.get("undone")
+            and receipt.get("task_id") == value.get("task_id")
+            and receipt.get("preview_id") == value.get("preview", {}).get("preview_id")
+            and value.get("preview", {}).get("text_new_sha256") == sha
+            and value.get("delivery") == receipt
+            and os.path.isdir(receipt.get("final", ""))
+            and _tree_shas(receipt["final"]) == receipt.get("shas")
+        )
+
+    recover_preview(work, load_state=recovery_state,
+                    save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
+                    is_delivered=is_delivered)
+
+
+def _deliver(*, work_dir: str, preview_id: str, use_original: bool,
+             compile_fix_enabled=False, repair=None) -> dict:
     from slcn import ai_workflow
     from slcn.convert_metadata import is_own_product
 
     work = str(Path(work_dir).resolve())
     path = _journal_path(work)
     transaction = {}
-    l1_sync = None
+    preview_sync = None
+    receipt_written = False
+    eligibility = compile_event = None
     try:
-        from slcn.compilefix.l1_r3 import PreviewSync, recover_preview
+        from slcn.compilefix import compiler, l2_r3
+        from slcn.compilefix.l1_r3 import PreviewSync
         from slcn.compilefix.files import RepairError
-        recover_preview(work, load_state=lambda: ai_workflow.load_state(work) or {},
-                        save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
-                        is_delivered=lambda value, sha: (
-                            value.get("preview", {}).get("text_new_sha256") == sha
-                            and bool((receipt := _read_journal(path)).get("delivered"))
-                            and not receipt.get("undone") and receipt.get("task_id") == value.get("task_id")
-                            and (value.get("phase") != "delivered" or receipt == value.get("delivery"))
-                            and _tree_shas(receipt["final"]) == receipt["shas"]))
+        _recover_compile_preview(work)
         state = ai_workflow.load_state(work) or {}
         conversion = state.get("conversion") or {}
         if state.get("entry") != "convert" or not conversion:
             raise ValueError("工作区没有 R3 初排任务")
+        l2_r3.expire_retained_locked(work, state)
         old = _read_journal(path)
         if old.get("delivered") and not old.get("undone"):
             if (state.get("delivery") != old and os.path.isdir(old["final"])
@@ -1212,6 +1291,11 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                                             incoming=inputs["fingerprint"])
         if blocked:
             raise ValueError(blocked)
+        if repair is not None:
+            if not compile_fix_enabled or use_original or not opts["compile"]:
+                raise ValueError("编译修复交付必须启用 L2 并使用活动预览")
+            l2_r3.require_same_fs(work, final)
+            l2_path, l2_record = l2_r3.for_publication(work, preview_id, *repair)
 
         candidate = tempfile.mkdtemp(prefix="delivery-", dir=os.path.join(work, ".aiw"))
         transaction = {"delivered": False, "candidate": candidate, "final": final,
@@ -1251,11 +1335,29 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
         validated_bib = coop.sha256_file(bib_path) if bib_path else ""
 
         compile_status = "未要求编译"
-        if opts["compile"]:
+        repaired = None
+        if repair is not None:
+            repaired, compile_event = l2_r3.install_verified(work, state, preview, Path(candidate), l2_path, l2_record)
+            _check_references(tex_path, bib_path)
+            compile_status = "编译成功"
+        elif opts["compile"]:
             from slcn.compilefix import compile_with_l1
+            support = None
+            if compile_fix_enabled and not use_original:
+                try:
+                    support = compiler.support_manifest(Path(candidate), stem)
+                except (OSError, RepairError):
+                    pass  # L2 ineligibility may not change the existing compiler attempt.
             ok, msg, l1_capture = compile_with_l1(convert_compile.compile_pdf, candidate, stem,
                                                 source=inputs["source"])
             if not ok:
+                if support is not None:
+                    try:
+                        eligibility = l2_r3.record_failure(
+                            work, state, preview, candidate, capture=l1_capture, validated_bib=validated_bib,
+                            support=support, prior_shas=prior_shas, had_final=had_final)
+                    except (OSError, ValueError, RepairError):
+                        pass  # Keep the original compilation failure if evidence cannot be saved.
                 details = []
                 for label, filename in (("候选 .tex", tex_path),
                                         ("编译 .log", os.path.join(candidate, stem + ".log"))):
@@ -1264,15 +1366,17 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                 suffix = ("；" + "；".join(details)) if details else ""
                 raise ValueError(f"编译失败：{msg}{suffix}")
             if l1_capture and l1_capture.get("l1_repaired"):
-                if not use_original:
-                    l1_sync = PreviewSync(work, state, preview, Path(tex_path).read_bytes(),
-                                          load_state=lambda: ai_workflow.load_state(work) or {},
-                                          save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
-                                          read_candidate=lambda: _read_candidate(work, state, preview, kind="tex"))
-                validated_tex = coop.sha256_file(tex_path)
-                if l1_sync and validated_tex != preview["text_new_sha256"]:
-                    raise ValueError("L1 候选与预览哈希未同步")
+                repaired = Path(tex_path).read_bytes()
             compile_status = "编译成功"
+        if repaired is not None:
+            if not use_original and repair is None:
+                preview_sync = PreviewSync(work, state, preview, repaired,
+                                           load_state=lambda: ai_workflow.load_state(work) or {},
+                                           save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
+                                           read_candidate=lambda: _read_candidate(work, state, preview, kind="tex"))
+            validated_tex = hashlib.sha256(repaired).hexdigest()
+            if preview_sync and validated_tex != preview["text_new_sha256"]:
+                raise ValueError("编译修复候选与预览哈希未同步")
         source_pdf_status = _source_pdf(candidate, conversion) if opts["source_pdf"] else "未要求导出原稿 PDF"
         if opts["clean"]:
             clean.clean(candidate)
@@ -1285,20 +1389,44 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
         latest = ai_workflow.load_state(work) or {}
         if latest != state:
             raise ValueError("准备交付时任务状态已变动")
+        if compile_event:
+            for suffix in ("pdf", "log"):
+                if coop.sha256_file(os.path.join(candidate, stem + "." + suffix)) != compile_event[suffix + "_sha256"]:
+                    raise ValueError("准备交付时复编产物已变化")
+            preview_sync = PreviewSync(work, state, preview, repaired, repair_kind="L2",
+                                       load_state=lambda: ai_workflow.load_state(work) or {},
+                                       save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
+                                       read_candidate=lambda: _read_candidate(work, state, preview, kind="tex"))
+            if validated_tex != preview["text_new_sha256"]:
+                raise ValueError("编译修复候选与预览哈希未同步")
         note = _render_check_note(state, use_original=use_original, n_applied=len(adopted),
                                   adopted=adopted, deferred=deferred,
-                                  compile_status=compile_status + "；" + source_pdf_status)
+                                  compile_status=compile_status + "；" + source_pdf_status,
+                                  compile_fix=compile_event)
         coop.atomic_write_text(os.path.join(candidate, CHECK_NOTE_FILENAME), note)
         transaction.update(promoting=True, had_prior_final=had_final,
                            prior_shas=prior_shas, shas=_tree_shas(candidate))
         coop.atomic_write_json(path, transaction)
 
+        backup_installed = False
+
         def rename(src, dst):
+            nonlocal backup_installed
             if src == final:
                 if not had_final or _tree_shas(final) != prior_shas:
                     raise ValueError("准备推广时最终目录已被外部修改")
                 transaction["backup"] = dst
                 coop.atomic_write_json(path, transaction)
+                os.replace(src, dst)
+                backup_installed = True
+                return
+            if dst == final:
+                if src != transaction.get("backup") and had_final and (
+                        not backup_installed or not os.path.isdir(transaction["backup"])
+                        or _tree_shas(transaction["backup"]) != prior_shas):
+                    raise ValueError("准备推广时缺少本事务核验过的旧交付备份")
+                if os.path.lexists(final):
+                    raise ValueError("准备推广时最终目录已被外部创建")
             os.replace(src, dst)
 
         # Legacy promoter consults this transient payload to carry the source fingerprint.
@@ -1313,18 +1441,24 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                      "backup": promotion["backup"], "n_applied": len(adopted),
                      "adopted": adopted, "deferred": deferred, "use_original": use_original,
                      "compile_status": compile_status, "source_pdf_status": source_pdf_status}
+        if compile_event:
+            completed["compile_fix"] = {**compile_event, "status": "delivered"}
         coop.atomic_write_json(path, completed)
+        receipt_written = True
         _record_delivery_state(work, state, completed)
-        if l1_sync:
-            l1_sync.commit()
+        if preview_sync:
+            preview_sync.commit()
         return completed
     except (OSError, ValueError, KeyError, ai_workflow.WorkflowError, RepairError) as exc:
         error = str(exc)
-        if l1_sync:
+        if receipt_written:
+            # Once committed, leave the tree and preview for receipt-driven recovery.
+            return {"ok": False, "delivered": True, "error": f"交付已发布，任务状态待恢复：{error}"}
+        if preview_sync:
             try:
-                l1_sync.rollback(expected_state=state)
+                preview_sync.rollback(expected_state=state)
             except (OSError, ValueError, RepairError) as recovery:
-                error += f"；L1 预览恢复中断：{recovery}"
+                error += f"；编译修复预览恢复中断：{recovery}"
         if transaction:
             try:
                 if transaction.get("promoting"):
@@ -1333,7 +1467,10 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                 coop.atomic_write_json(path, {**transaction, "error": error})
             except (OSError, ValueError) as recovery:
                 error += f"；恢复中断：{recovery}"
-        return {"ok": False, "delivered": False, "n_applied": 0, "error": error}
+        failed = {"ok": False, "delivered": False, "n_applied": 0, "error": error}
+        if eligibility is not None:
+            failed["compile_fix"] = eligibility
+        return failed
 
 
 def undo_delivery(*, work_dir: str) -> dict:
@@ -1351,6 +1488,7 @@ def undo_delivery(*, work_dir: str) -> dict:
 
 def _undo_delivery(*, work_dir: str) -> dict:
     from slcn import ai_workflow
+    from .compilefix.files import RepairError
 
     work = str(Path(work_dir).resolve())
     path = _journal_path(work)
@@ -1364,6 +1502,10 @@ def _undo_delivery(*, work_dir: str) -> dict:
             raise ValueError("交付目录已经外改，无法撤销")
         if backup and (not os.path.isdir(backup) or _tree_shas(backup) != journal["prior_shas"]):
             raise ValueError("上次交付备份已经外改，无法撤销")
+        _recover_compile_preview(work)
+        state = ai_workflow.load_state(work) or {}
+        if state.get("delivery") != journal:
+            _record_delivery_state(work, state, journal)
         keep = _move_to_keep(work, final)
         try:
             if backup:
@@ -1375,5 +1517,5 @@ def _undo_delivery(*, work_dir: str) -> dict:
         coop.atomic_write_json(path, journal)
         _record_delivery_state(work, state, journal)
         return journal
-    except (OSError, ValueError, KeyError, ai_workflow.WorkflowError) as exc:
+    except (OSError, ValueError, KeyError, ai_workflow.WorkflowError, RepairError) as exc:
         return {"ok": False, "undone": False, "reason": str(exc)}

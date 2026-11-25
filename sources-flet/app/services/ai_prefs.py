@@ -62,6 +62,7 @@ MODE_DIRECT = "direct"
 
 AI_DEFAULTS = {
     "enabled": False,
+    "compile_fix_enabled": False,
     "key": "",
     "base": DEFAULT_BASE,
     "model": DEFAULT_MODEL,
@@ -93,6 +94,7 @@ def normalize(ai: dict | None) -> dict:
             if key in ai and ai[key] is not None:
                 data[key] = ai[key]
     data["enabled"] = bool(data["enabled"])
+    data["compile_fix_enabled"] = data["compile_fix_enabled"] is True
     data["thinking"] = bool(data["thinking"])
     data["key"] = str(data["key"] or "").strip()
     data["base"] = str(data["base"] or "").strip() or DEFAULT_BASE

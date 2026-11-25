@@ -701,6 +701,9 @@ class AiSettings:
         self._enabled_row = enabled
         rows = [
             enabled,
+            C.option_row("AI 辅助编译修复", "仅限初排本地修复未成功后的逐稿确认", t,
+                         icon="BUILD_OUTLINED", checked=ai["compile_fix_enabled"],
+                         on_change=lambda e: self._save({"compile_fix_enabled": e.control.value is True})),
             key_row,
             self._key_label,
             self._text_row("base", "接口地址", ai["base"]),

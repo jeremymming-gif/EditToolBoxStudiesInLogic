@@ -229,6 +229,10 @@ def _op_import(a) -> dict:
 
 
 def _op_preview(a) -> dict:
+    from .compilefix.l2_r3 import expire_retained
+
+    work = os.path.abspath(a.work_dir)
+    cleanup_error = expire_retained(work)
     adopt = None if a.adopt is None else _scope_of(a.adopt)
     decisions = _decisions_of(getattr(a, "decide", None), getattr(a, "decide_json", ""))
     if a.reply:
@@ -247,7 +251,8 @@ def _op_preview(a) -> dict:
             "conflicts": _sv3.conflicts_of(state),
             "decisions": _sv3.decisions_of(state),
             "bib": {k: v for k, v in pv.bib.items() if k != "text"},
-            "text": {k: v for k, v in pv.text.items() if k != "text"}}
+            "text": {k: v for k, v in pv.text.items() if k != "text"},
+            **({"compile_fix_cleanup_error": cleanup_error} if cleanup_error else {})}
 
 
 def _op_apply(a) -> dict:
@@ -289,7 +294,12 @@ def _op_deliver(a) -> dict:
     work = os.path.abspath(a.work_dir)
     preview_id = getattr(a, "preview_id", "") or ""
     use_original = bool(getattr(a, "use_original", False))
-    out = _awc.deliver(work_dir=work, preview_id=preview_id, use_original=use_original)
+    repair = tuple(getattr(a, name, "") for name in ("evidence_id", "request_id", "review_sha256"))
+    enabled = bool(getattr(a, "ai_enabled", False) and getattr(a, "compile_fix_enabled", False))
+    kwargs = {}
+    if any(repair) or enabled:
+        kwargs.update(compile_fix_enabled=enabled, repair=repair if any(repair) else None)
+    out = _awc.deliver(work_dir=work, preview_id=preview_id, use_original=use_original, **kwargs)
     # ACCEPTANCE:22 第 9 条：旧预览的 deliver 必须被拒，且错误要能定位到**旧 ID**。
     # `ai_workflow_convert.deliver` 的文案只说「不是最后校验通过的活动预览」、不含 ID，
     # 且该文件属 A 包写域 —— 这里只在**已判拒**的前提下补「旧 ID / 当前 ID」两个值，
@@ -305,8 +315,50 @@ def _op_deliver(a) -> dict:
     return {"op": "deliver", **out}
 
 
+def _op_compile_fix(a) -> dict:
+    from .compilefix import l2_r3
+    from .compilefix.files import TEXT_LIMIT, RepairError, decode_json
+
+    try:
+        options = {}
+        api_key = None
+        if a.action not in {"retained", "delete"} and not a.preview_id:
+            raise RepairError("操作需要明确指定预览编号")
+        if a.action in {"prepare", "send"}:
+            api_key = os.environ.pop(l2_r3.API_KEY_ENV, "")
+            if not api_key:
+                raise RepairError("未通过专用环境提供当前配置的 API key；未发送")
+        if a.action in {"prepare", "send", "import"}:
+            raw = sys.stdin.buffer.read(TEXT_LIMIT + 1)
+            if len(raw) > TEXT_LIMIT:
+                raise RepairError("编译修复操作输入超限")
+            options = decode_json(raw)
+            allowed = {"reply_text", "evidence_id", "request_id"} if a.action == "import" else {"settings", "scope"}
+            if type(options) is not dict or options.keys() - allowed:
+                raise RepairError("编译修复操作输入字段无效")
+        if a.action == "import":
+            for key in ("evidence_id", "request_id"):
+                if key in options and getattr(a, key) and options[key] != getattr(a, key):
+                    raise RepairError("回件操作的请求身份不一致")
+        result = l2_r3.operate(
+            os.path.abspath(a.work_dir), a.action, preview_id=a.preview_id,
+            evidence_id=a.evidence_id or options.get("evidence_id", ""),
+            request_id=a.request_id or options.get("request_id", ""), request_sha256=a.request_sha256,
+            authorization_id=a.authorization_id, review_sha256=a.review_sha256,
+            terms_ack=a.compile_fix_terms_ack, record_key=a.record_key,
+            settings=options.get("settings"), scope=options.get("scope"),
+            reply_text=options.get("reply_text"), timeout=a.timeout, response_limit=a.response_limit,
+            api_key=api_key)
+    except (OSError, RepairError) as exc:
+        result = {"ok": False, "error": str(exc)}
+    return {"op": "compile-fix", **result}
+
+
 def _op_status(a) -> dict:
+    from .compilefix.l2_r3 import expire_retained
+
     work = os.path.abspath(a.work_dir)
+    cleanup_error = expire_retained(work)
     st = _w.status(work)
     state = _w.load_state(work) or {}
     preview = state.get("preview") or {}
@@ -323,7 +375,8 @@ def _op_status(a) -> dict:
             "candidate_bib_sha256": digest,
             "library": _sv3.library_of(state),
             "conflicts": _sv3.conflicts_of(state),
-            "decisions": _sv3.decisions_of(state)}
+            "decisions": _sv3.decisions_of(state),
+            **({"compile_fix_cleanup_error": cleanup_error} if cleanup_error else {})}
 
 
 _OPS = {
@@ -420,8 +473,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preview-id", default="", help="预览编号（默认取 state）")
     p.add_argument("--use-original", action="store_true",
                    help="保留原 Bib，不采纳 AI 候选，仍走检查/交付")
+    p.add_argument("--ai-enabled", action="store_true")
+    p.add_argument("--compile-fix-enabled", action="store_true")
+    for flag in ("--evidence-id", "--request-id", "--review-sha256"):
+        p.add_argument(flag, default="")
     p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="机器可读输出（bridge 用）")
     p.set_defaults(func=_op_deliver)
+    from .compilefix.l2_r3 import ACTIONS
+
+    p = sub.add_parser("compile-fix", help="逐稿编译修复；不会自动发送、采纳或交付")
+    p.add_argument("action", choices=ACTIONS)
+    p.add_argument("--preview-id", default="", help="预览编号（retained/delete 不需要）")
+    p.add_argument("--record-key", default="", help="本地保留记录稳定键（仅 delete）")
+    for flag in ("--evidence-id", "--request-id", "--request-sha256", "--authorization-id", "--review-sha256"):
+        p.add_argument(flag, default="")
+    p.add_argument("--compile-fix-terms-ack", action="store_true")
+    # Bridge sends these flags as well as the explicit settings in stdin.
+    p.add_argument("--ai-enabled", action="store_true")
+    p.add_argument("--compile-fix-enabled", action="store_true")
+    p.add_argument("--timeout", type=int)
+    p.add_argument("--response-limit", type=int)
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    p.set_defaults(func=_op_compile_fix)
     return ap
 
 

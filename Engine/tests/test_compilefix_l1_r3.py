@@ -162,18 +162,28 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(self.candidate.read_bytes(), RAW)
         self.assertFalse(self.fixture.final.exists())
 
-    def test_commit_marker_failure_restores_final_preview_and_state(self):
+    def test_commit_marker_failure_after_receipt_keeps_delivery_and_recovers_preview(self):
         with patch("slcn.compilefix.compile_with_l1", side_effect=self.repaired), \
                 patch.object(PreviewSync, "commit", side_effect=OSError("injected commit marker failure")):
             result = self.deliver()
         self.assertFalse(result["ok"], result)
+        self.assertTrue(result["delivered"], result)
         self.assertIn("injected commit marker", result["error"])
-        self.assertNotIn("恢复中断", result["error"])
-        self.assertEqual(workflow.load_state(self.work), self.before)
-        self.assertEqual(self.candidate.read_bytes(), RAW)
-        self.assertFalse(self.fixture.final.exists())
+        delivered = workflow.load_state(self.work)
+        self.assertEqual(delivered["phase"], "delivered")
+        self.assertEqual(self.candidate.read_bytes(), NEW)
+        self.assertEqual((self.fixture.final / delivered["conversion"]["tex_name"]).read_bytes(), NEW)
+        receipt = conv._read_journal(conv._journal_path(self.work))
+        self.assertTrue(receipt["delivered"])
+        self.assertFalse(receipt["promoting"])
+        sync_path = Path(self.work) / ".aiw" / "l1-preview-recovery.json"
+        self.assertEqual(conv.json.loads(sync_path.read_text(encoding="utf-8"))["state"], "syncing")
 
-    def test_delivered_state_write_failure_after_save_restores_all(self):
+        conv._recover_compile_preview(self.work)
+        self.assertEqual(conv.json.loads(sync_path.read_text(encoding="utf-8"))["state"], "completed")
+        self.assertEqual(workflow.load_state(self.work), delivered)
+
+    def test_delivered_state_write_failure_after_receipt_keeps_delivery_and_recovers_preview(self):
         original_save = workflow.save_state
         failed = False
         def save_then_fail(work, state):
@@ -188,10 +198,18 @@ class EntryTests(unittest.TestCase):
             result = self.deliver()
         self.assertTrue(failed)
         self.assertFalse(result["ok"], result)
-        self.assertNotIn("恢复中断", result["error"])
-        self.assertEqual(workflow.load_state(self.work), self.before)
-        self.assertEqual(self.candidate.read_bytes(), RAW)
-        self.assertFalse(self.fixture.final.exists())
+        self.assertTrue(result["delivered"], result)
+        delivered = workflow.load_state(self.work)
+        self.assertEqual(delivered["phase"], "delivered")
+        self.assertEqual(delivered["delivery"], conv._read_journal(conv._journal_path(self.work)))
+        self.assertEqual(self.candidate.read_bytes(), NEW)
+        self.assertEqual((self.fixture.final / delivered["conversion"]["tex_name"]).read_bytes(), NEW)
+        sync_path = Path(self.work) / ".aiw" / "l1-preview-recovery.json"
+        self.assertEqual(conv.json.loads(sync_path.read_text(encoding="utf-8"))["state"], "syncing")
+
+        conv._recover_compile_preview(self.work)
+        self.assertEqual(conv.json.loads(sync_path.read_text(encoding="utf-8"))["state"], "completed")
+        self.assertEqual(workflow.load_state(self.work), delivered)
 
     def test_crash_after_completed_journal_recovers_synchronized_delivery(self):
         with patch("slcn.compilefix.compile_with_l1", side_effect=self.repaired), \
@@ -209,17 +227,23 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(conv._read_candidate(self.work, latest, latest["preview"], kind="tex"), NEW)
         self.assertEqual((self.fixture.final / latest["conversion"]["tex_name"]).read_bytes(), NEW)
 
-    def test_crash_after_delivery_state_recovers_without_rollback(self):
+    def test_crash_after_delivery_state_first_undo_recovers_preview_and_delivery(self):
         with patch("slcn.compilefix.compile_with_l1", side_effect=self.repaired), \
                 patch.object(PreviewSync, "commit", side_effect=SystemExit(95)):
             with self.assertRaises(SystemExit):
                 self.deliver()
-        before = workflow.load_state(self.work)
-        result = self.deliver()
-        self.assertFalse(result["ok"], result)
-        self.assertIn("任务已经交付", result["error"])
-        self.assertEqual(workflow.load_state(self.work), before)
+
+        result = conv.undo_delivery(work_dir=self.work)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["undone"], result)
+        state = workflow.load_state(self.work)
+        self.assertEqual(state["phase"], "undone")
+        self.assertFalse(self.fixture.final.exists())
+        self.assertEqual((Path(result["undo_keep"]) / state["conversion"]["tex_name"]).read_bytes(), NEW)
         self.assertEqual(self.candidate.read_bytes(), NEW)
+        self.assertTrue(conv._read_journal(conv._journal_path(self.work))["undone"])
+        sync_path = Path(self.work) / ".aiw" / "l1-preview-recovery.json"
+        self.assertEqual(conv.json.loads(sync_path.read_text(encoding="utf-8"))["state"], "completed")
 
     def test_compile_failure_keeps_r3_valueerror_path_and_original_preview(self):
         with patch("slcn.compilefix.compile_with_l1", return_value=(False, "synthetic compile failure", {})):

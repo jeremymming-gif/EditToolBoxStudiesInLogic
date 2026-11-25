@@ -15,6 +15,7 @@ argv 语义与旧 Tk 壳 `sources-win/engine.py`（历史文件，2026-11-01 已
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -496,7 +497,9 @@ class EngineCall:
     entry: str
     argv: list[str]
     label: str = ""
-    stdin_text: str | None = None
+    stdin_text: str | None = field(default=None, repr=False)
+    explicit_api_only: bool = False
+    explicit_ai_key: str = field(default="", repr=False)
 
     @property
     def display(self) -> str:
@@ -779,6 +782,8 @@ def checkbib_call(
 # engine_main.ENTRIES / build_win_sidecar.ps1 / 本文件 ENTRIES 三处互相钉死）。
 # 路径一律进 argv；API Key 只走 env（`env_for_run(api=...)`），绝不进命令行。
 _AI_WF_FLAG = "--ai-workflow"
+COMPILE_FIX_TIMEOUT_SECONDS = 60
+COMPILE_FIX_RESPONSE_LIMIT = 65536
 
 
 def _aiw_args(work_dir: str, op: str, *parts: str) -> list[str]:
@@ -1012,7 +1017,9 @@ def ai_taskbook_call(*, work_dir: str, task_id: str = "") -> EngineCall:
 
 
 def ai_deliver_call(*, work_dir: str, preview_id: str = "",
-                    use_original: bool = False) -> EngineCall:
+                    use_original: bool = False, compile_fix_enabled: bool = False,
+                    ai_enabled: bool = False, evidence_id: str = "", request_id: str = "",
+                    review_sha256: str = "") -> EngineCall:
     """交付新 Bib：`ai-workflow --work-dir DIR deliver --json [--preview-id P] [--use-original]`。
 
     `use_original` 表示保留原 Bib 而不采纳 AI 候选（对应界面「不采纳，继续原初排」）。
@@ -1020,7 +1027,257 @@ def ai_deliver_call(*, work_dir: str, preview_id: str = "",
     args = _aiw_args(work_dir, "deliver", "--json")
     _append_opt(args, "--preview-id", preview_id)
     _append_flag(args, "--use-original", use_original)
+    if compile_fix_enabled and ai_enabled and preview_id and not use_original:
+        args.extend(("--compile-fix-enabled", "--ai-enabled"))
+        _append_opt(args, "--evidence-id", evidence_id)
+        _append_opt(args, "--request-id", request_id)
+        _append_opt(args, "--review-sha256", review_sha256)
     return _call("convert.py", args, "交付 AI 新 Bib")
+
+
+def compile_fix_settings(ai: dict) -> dict:
+    """Project the explicit settings; never fall back to inherited API settings."""
+    from . import ai_prefs
+
+    values = ai_prefs.r3_request_settings(ai)
+    values["ai_enabled"] = ai.get("enabled") is True
+    values["compile_fix_enabled"] = ai.get("compile_fix_enabled") is True
+    values.pop("enabled")
+    for source, target in (("webSearch", "web_search"), ("searchTool", "search_tool"),
+                           ("responsesPath", "responses_path"), ("maxTokens", "max_tokens")):
+        if source in ai:
+            values[target] = ai[source]
+    return values
+
+
+def ai_compile_fix_call(*, action: str, work_dir: str, settings: dict, preview_id: str = "",
+                        evidence_id: str = "", request_id: str = "", request_sha256: str = "",
+                        authorization_id: str = "", terms_ack: bool = False,
+                        review_sha256: str = "", reply_text: str = "", evidence_ids=None,
+                        timeout=None, response_limit=None, record_key: str = "") -> EngineCall:
+    if action not in {"prepare", "send", "import", "review", "apply", "status", "cancel", "delete", "retained"}:
+        raise ValueError("不支持的编译修复操作")
+    if action == "retained":
+        if (not work_dir or preview_id or record_key or evidence_id or request_id or request_sha256
+                or authorization_id or review_sha256 or reply_text or evidence_ids):
+            raise ValueError("留存清单只接受当前任务工作区")
+        call = _call("convert.py", _aiw_args(work_dir, "compile-fix", "retained", "--json"), "读取编译修复留存记录")
+        call.explicit_api_only = True
+        return call
+    if action == "delete":
+        if (not work_dir or preview_id or evidence_id or request_id or request_sha256
+                or authorization_id or review_sha256 or reply_text or evidence_ids
+                or not re.fullmatch(r"[0-9a-f]{64}", str(record_key or ""))):
+            raise ValueError("删除留存记录只接受有效 record_key")
+        call = _call("convert.py", _aiw_args(work_dir, "compile-fix", "delete",
+                                              "--record-key", record_key, "--json"),
+                     "删除编译修复本机留存记录")
+        call.explicit_api_only = True
+        return call
+    if record_key:
+        raise ValueError("本轮编译修复操作不接受留存 record_key")
+    if not work_dir or not preview_id:
+        raise ValueError("缺少当前任务工作区或活动预览")
+    enabled = settings.get("ai_enabled") is True and settings.get("compile_fix_enabled") is True
+    if action in {"prepare", "send"} and not enabled:
+        raise ValueError("AI 总开关或 AI 辅助编译修复未开启")
+    key = str(settings.get("key") or "").strip()
+    if action in {"prepare", "send"} and not (key and evidence_id and evidence_ids):
+        raise ValueError("缺少本机显式 API Key 或本轮诊断范围，未发送")
+    if action == "send" and not (key and terms_ack is True and evidence_id and request_id and
+                                 re.fullmatch(r"[0-9a-f]{64}", request_sha256) and authorization_id):
+        raise ValueError("缺少本机显式 API Key 或当前轮次的完整授权，未发送")
+    if action not in {"prepare", "send", "status"} and not evidence_id:
+        raise ValueError("缺少本轮诊断证据")
+    if action in {"import", "review", "apply"} and not request_id:
+        raise ValueError("缺少本轮请求编号")
+    if action == "apply" and not re.fullmatch(r"[0-9a-f]{64}", review_sha256):
+        raise ValueError("缺少本轮已审阅差异的指纹")
+    if action == "send":
+        timeout = COMPILE_FIX_TIMEOUT_SECONDS if timeout is None else timeout
+        response_limit = COMPILE_FIX_RESPONSE_LIMIT if response_limit is None else response_limit
+        if timeout != COMPILE_FIX_TIMEOUT_SECONDS or response_limit != COMPILE_FIX_RESPONSE_LIMIT:
+            raise ValueError("编译修复传输限制必须使用本轮已批准值")
+    args = _aiw_args(work_dir, "compile-fix", action, "--json")
+    if action in {"prepare", "send"}:
+        args.extend(("--ai-enabled", "--compile-fix-enabled"))
+    for flag, value in (("--preview-id", preview_id), ("--evidence-id", evidence_id),
+                        ("--request-id", request_id),
+                        ("--request-sha256", request_sha256), ("--authorization-id", authorization_id),
+                        ("--review-sha256", review_sha256), ("--timeout", timeout),
+                        ("--response-limit", response_limit)):
+        _append_opt(args, flag, value)
+    _append_flag(args, "--compile-fix-terms-ack", action == "send" and terms_ack is True)
+    call = _call("convert.py", args, "本稿编译修复")
+    call.explicit_api_only = True
+    if action in {"prepare", "send"}:
+        public = ("base", "model", "protocol", "ai_enabled", "compile_fix_enabled",
+                  "article_budget_tokens", "batch_budget_tokens", "web_search", "search_tool",
+                  "responses_path", "max_tokens", "thinking")
+        data = {"settings": {k: settings[k] for k in public if k in settings},
+                "scope": {"evidence_ids": list(evidence_ids)}}
+        call.stdin_text = json.dumps(data, ensure_ascii=False)
+        call.explicit_ai_key = key
+    elif action == "import":
+        call.stdin_text = json.dumps({"evidence_id": evidence_id, "request_id": request_id,
+                                     "reply_text": reply_text}, ensure_ascii=False)
+    return call
+
+
+def compile_fix_result(code: int | None, payload, *, op: str, task_id: str, preview_id: str):
+    if not task_id or not preview_id or not isinstance(payload, dict) or payload.get("op") != op:
+        return None
+    result = payload.get("compile_fix")
+    if not isinstance(result, dict) or result.get("task_id") != task_id or result.get("preview_id") != preview_id:
+        return None
+    if not _compile_fix_field(result, "evidence_id") or not _compile_fix_sha(result, "candidate_sha256"):
+        return None
+    if op == "deliver":
+        if (code != 2 or payload.get("ok") is not False or payload.get("delivered") is not False
+                or result.get("eligible") is not True or not isinstance(result.get("diagnostics"), list)
+                or not result["diagnostics"]):
+            return None
+    elif not ((code == 0 and payload.get("ok") is True)
+              or (code == 2 and payload.get("ok") is False)):
+        return None
+    return result
+
+
+def _compile_fix_field(result, key):
+    value = result.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _compile_fix_sha(result, key):
+    return _compile_fix_field(result, key) and bool(re.fullmatch(r"[0-9a-f]{64}", result[key]))
+
+
+def compile_fix_retained_result(code, payload, *, task_id, record=None):
+    if (code != 0 or not isinstance(payload, dict) or payload.get("op") != "compile-fix"
+            or payload.get("ok") is not True or not task_id):
+        return None
+    fields = ("record_key", "task_id", "preview_id", "status", "expires_at", "has_reply")
+    if record is not None:
+        result = payload.get("compile_fix")
+        if (_valid_compile_fix_retained_row(result, task_id, fields)
+                and result["record_key"] == record.get("record_key")
+                and result["preview_id"] == record.get("preview_id")
+                and result.get("status") in {"deleted", "expired"}):
+            return result["status"]
+        return None
+    rows = payload.get("retained")
+    if not isinstance(rows, list):
+        return None
+    seen = set()
+    for row in rows:
+        if not _valid_compile_fix_retained_row(row, task_id, fields):
+            return None
+        if row["record_key"] in seen:
+            return None
+        seen.add(row["record_key"])
+    return [{key: row[key] for key in fields} for row in rows]
+
+
+def _valid_compile_fix_retained_row(row, task_id, fields):
+    return (isinstance(row, dict) and set(row) == set(fields)
+            and row.get("task_id") == task_id
+            and isinstance(row.get("record_key"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", row["record_key"]))
+            and _compile_fix_field(row, "preview_id") and _compile_fix_field(row, "status")
+            and type(row.get("has_reply")) is bool
+            and "expires_at" in row
+            and (row["expires_at"] is None or isinstance(row["expires_at"], (str, int, float))))
+
+
+def compile_fix_action_result(code, payload, *, action, task_id, preview_id, previous, arguments):
+    result = compile_fix_result(code, payload, op="compile-fix", task_id=task_id, preview_id=preview_id)
+    if result is None:
+        return None
+    status = result.get("status")
+    success = {
+        "prepare": ("prepared",), "send": ("imported",), "import": ("imported",),
+        "review": ("reviewed",), "apply": ("compiled",), "cancel": ("cancelled",), "delete": ("deleted",),
+        "status": ("eligible", "prepared", "imported", "reviewed", "compiled", "unknown",
+                   "compile_failed", "cancelled", "deleted", "expired", "delivered"),
+    }
+    failed = {"send": ("unknown",), "apply": ("reviewed", "compile_failed")}
+    if status not in (success if code == 0 else failed).get(action, ()):
+        return None
+    if action != "status":
+        if any(result.get(key) != previous.get(key) for key in ("evidence_id", "candidate_sha256")):
+            return None
+        if action not in {"prepare", "cancel", "delete"} and result.get("request_id") != arguments.get("request_id"):
+            return None
+        if action in {"import", "review", "apply"} and any(
+                previous.get(key) and result.get(key) != previous[key]
+                for key in ("request_sha256", "authorization_id")):
+            return None
+        if action == "prepare" and result.get("request_id") == previous.get("request_id"):
+            return None
+        if action == "send" and any(result.get(key) != arguments.get(key)
+                                    for key in ("request_sha256", "authorization_id")):
+            return None
+        if action == "apply" and result.get("review_sha256") != arguments.get("review_sha256"):
+            return None
+    if status in {"prepared", "imported", "reviewed", "compiled", "unknown", "compile_failed"}:
+        if (not _compile_fix_field(result, "request_id") or not _compile_fix_sha(result, "request_sha256")
+                or not _compile_fix_field(result, "authorization_id")):
+            return None
+    if status in {"reviewed", "compiled", "compile_failed"}:
+        if (not _compile_fix_sha(result, "review_sha256") or not isinstance(result.get("diff"), str)
+                or not isinstance(result.get("actions"), list) or type(result.get("can_adopt")) is not bool):
+            return None
+    if status == "compiled" and not all(_compile_fix_field(result, key) for key in ("pdf_path", "compile_run_id")):
+        return None
+    if status == "unknown" and (not _compile_fix_field(result, "log_path")
+                                or result.get("actions") != ["view_log", "retry", "cancel"]):
+        return None
+    return result
+
+
+def compile_fix_delivery_matches(code, payload, *, task_id, preview_id, compiled):
+    if (code != 0 or not isinstance(payload, dict) or payload.get("op") != "deliver"
+            or payload.get("ok") is not True or payload.get("delivered") is not True
+            or payload.get("task_id") != task_id or payload.get("preview_id") != preview_id):
+        return False
+    event = payload.get("compile_fix")
+    return (isinstance(event, dict) and event.get("status") == "delivered"
+            and event.get("task_id") == task_id and event.get("preview_id") == preview_id
+            and all(_compile_fix_field(compiled, key) and event.get(output) == compiled[key]
+                    for key, output in (("evidence_id", "evidence_id"), ("request_id", "request_id"),
+                                        ("compile_run_id", "run_id"))))
+
+
+def compile_fix_disclosure_valid(result, evidence_ids):
+    if not isinstance(result, dict):
+        return False
+    summary, scope, body = result.get("summary"), result.get("scope"), result.get("body")
+    evidence = result.get("evidence")
+    signed = [item["evidence_id"] for item in evidence
+              if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+              and item["evidence_id"]] if isinstance(evidence, list) else []
+    if (not isinstance(summary, dict) or not isinstance(scope, dict) or not isinstance(evidence_ids, list)
+            or not evidence_ids
+            or any(not isinstance(key, str) or key not in signed for key in evidence_ids)
+            or len(set(evidence_ids)) != len(evidence_ids)
+            or scope.get("evidence_ids") != evidence_ids or not isinstance(body, str) or not body
+            or summary.get("key_configured") is not True
+            or not all(_compile_fix_field(result, key) for key in ("evidence_id", "request_id", "authorization_id"))
+            or not {"base", "target", "model", "protocol", "tools", "max_tokens", "thinking",
+                    "article_budget_tokens", "batch_budget_tokens"} <= summary.keys()):
+        return False
+    try:
+        raw = body.encode("utf-8")
+    except UnicodeError:
+        return False
+    digest = hashlib.sha256(raw).hexdigest()
+    return len(raw) == summary.get("body_bytes") and digest == result.get("request_sha256") == summary.get("body_sha256")
+
+
+def compile_fix_authorization_matches(*, prepared, current, expected_context, current_context,
+                                     expected_settings, current_settings, expected_scope, current_scope):
+    return (prepared is current and expected_context == current_context
+            and expected_settings == current_settings and expected_scope == current_scope)
 
 
 def initial_ai_inputs() -> dict:
@@ -1931,7 +2188,14 @@ async def run_call(
     """
     if stdin_text is None:
         stdin_text = call.stdin_text
-    env = env_for_run(api, notes)
+    explicit_api_only = getattr(call, "explicit_api_only", False)
+    env = env_for_run(None if explicit_api_only else api, notes)
+    if explicit_api_only:
+        for name in tuple(env):
+            if name.startswith("SLCN_LLM_") or name in {"SLCN_SEARCH_REFS", "SLCN_COMPILE_FIX_API_KEY"}:
+                env.pop(name)
+        if call.explicit_ai_key:
+            env["SLCN_COMPILE_FIX_API_KEY"] = call.explicit_ai_key
     kwargs = {}
     if os.name == "nt":
         kwargs["creationflags"] = CREATE_NO_WINDOW

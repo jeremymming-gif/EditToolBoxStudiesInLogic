@@ -715,6 +715,11 @@ class BibAiAssistView:
         self._disclosure_open: dict[str, bool] = {}
         self.delivery_compile = ""
         self.delivery_error = ""
+        self.compile_fix_eligible: dict = {}
+        self.compile_fix_notice = ""
+        self._compile_fix_row = None
+        self._compile_fix_prepared = None
+        self._compile_fix_pdf_opened = None
         #: 本次交付写进底部运行日志的那几行（与页面 LogConsole 同一份文本）。
         #: 保留一份是为了让测试与「日志 == 状态」的核对有可断言的对象。
         self.delivery_log: list[str] = []
@@ -1186,6 +1191,10 @@ class BibAiAssistView:
         self.preview_id = ""
         self.candidate_bib = ""
         self._candidate_bib_sha = ""
+        self.compile_fix_eligible = {}
+        self.compile_fix_notice = ""
+        self._compile_fix_prepared = None
+        self._compile_fix_pdf_opened = None
         self.blocked = []
         self._review_notes = []
         self._clear_comparison()
@@ -1231,6 +1240,8 @@ class BibAiAssistView:
         self.delivery_error = ""
         self.delivery_log.clear()
         self._operation_receipt.clear()
+        self.compile_fix_eligible = {}
+        self.compile_fix_notice = ""
         self._disclosure_open.clear()
         self._clear_preview()
         self._preview_dirty = False
@@ -1607,7 +1618,8 @@ class BibAiAssistView:
                 self._set_path(field, after)
                 self.error = ""
                 self._mark("bib_ai_browse", field=field, picked=True)
-                self._refresh()
+                if field != "result_path":
+                    self._refresh()
 
             try:
                 browse(ref, title, kind, f"bib_ai_{field}", on_result=_picked, result_guard=guard)
@@ -2389,21 +2401,22 @@ class BibAiAssistView:
                       ])
 
     # ── 引擎调用 ───────────────────────────────────────────────────────
-    async def _run(self, call) -> int | None:
+    async def _run(self, call, *, private_lines=None) -> int | None:
         """跑一次引擎调用；返回退出码，出错返回 None（错误已写入 self.error）。"""
         runner = self._fn("run_call")
         if not callable(runner):
             self._bridge_fail(["run_call"])
             return None
-        lines: list[str] = []
-        self.log = lines
+        lines = [] if private_lines is None else private_lines
+        if private_lines is None:
+            self.log = lines
         identity = self._initial_identity() if callable(self._initial_call) else None
 
         def on_line(line) -> None:
             lines.append(str(line))
 
         def on_proc(proc) -> None:
-            if self.log is lines:
+            if self.log is lines or (private_lines is not None and identity == self._initial_identity()):
                 self._proc = proc
 
         # 正文粘贴（不是路径）：`ai_import_call` 把正文挂在 call 上，这里原样喂进去。
@@ -2416,21 +2429,22 @@ class BibAiAssistView:
         run_kwargs: dict = dict(on_line=on_line, on_proc=on_proc,
                                 cwd=None if self._r3 else self.work_dir or None,
                                 stdin_text=stdin_text)
+        explicit_api_only = getattr(call, "explicit_api_only", False)
         try:
             params = inspect.signature(runner).parameters
             variadic = any(p.kind == inspect.Parameter.VAR_KEYWORD
                            for p in params.values())
             if variadic or "api" in params:
-                run_kwargs["api"] = self._api_env()
+                run_kwargs["api"] = None if explicit_api_only else self._api_env()
             if variadic or "notes" in params:
                 run_kwargs["notes"] = self._notes()
         except (TypeError, ValueError):  # noqa: BLE001 - 取不到签名就按真桥全传
-            run_kwargs["api"] = self._api_env()
+            run_kwargs["api"] = None if explicit_api_only else self._api_env()
             run_kwargs["notes"] = self._notes()
         try:
             code = await _await_if_needed(runner(call, **run_kwargs))
         except Exception as exc:  # noqa: BLE001 - 引擎异常也要有失败文案
-            if identity is None or identity == self._initial_identity():
+            if private_lines is None and (identity is None or identity == self._initial_identity()):
                 self._fail("引擎调用", f"{type(exc).__name__}: {exc}")
             return None
         if identity is not None and identity != self._initial_identity():
@@ -2438,7 +2452,8 @@ class BibAiAssistView:
         try:
             return int(code)
         except (TypeError, ValueError):
-            self._fail("引擎调用", f"返回值不是退出码：{code!r}")
+            if private_lines is None:
+                self._fail("引擎调用", f"返回值不是退出码：{code!r}")
             return None
 
     def _build_call(self, name: str, kwargs: dict):
@@ -2550,13 +2565,16 @@ class BibAiAssistView:
             "task_id": self.task_id,
         })
 
-    async def _run_r3(self, op: str, call, label: str, *, blocked_ok: bool = False) -> dict | None:
+    async def _run_r3(self, op: str, call, label: str, *, blocked_ok: bool = False,
+                      on_result=None) -> dict | None:
         from services import engine_bridge as EB
 
         code = await self._run(call)
         if code is None:
             return None
         payload = EB.parse_json_document("\n".join(self.log))
+        if on_result is not None:
+            on_result(code, payload)
         if isinstance(payload, dict) and payload.get("op") == op:
             if code == 0 and payload.get("ok") is True:
                 return payload
@@ -2587,6 +2605,11 @@ class BibAiAssistView:
         candidate_sha = str(status.get("candidate_bib_sha256") or "")
         if (self.preview_id, self.candidate_bib, self._candidate_bib_sha) != (
                 status.get("preview_id") or "", status.get("candidate_bib") or "", candidate_sha):
+            if self.preview_id != (status.get("preview_id") or ""):
+                self.compile_fix_eligible = {}
+                self.compile_fix_notice = ""
+                self._compile_fix_prepared = None
+                self._compile_fix_pdf_opened = None
             self._clear_comparison()
         self.phase = phase_from_engine(status["phase"])
         self.scope_frozen = True
@@ -3615,7 +3638,8 @@ class BibAiAssistView:
             self._fail("打开交付目录", f"{type(exc).__name__}: {exc}")
         self._refresh()
 
-    async def _deliver(self, *, use_original: bool = False, confirmed_work_dir: str = "") -> None:
+    async def _deliver(self, *, use_original: bool = False, confirmed_work_dir: str = "",
+                       compile_fix=None) -> None:
         if self.running:
             return
         self._check_parent_task()
@@ -3624,34 +3648,436 @@ class BibAiAssistView:
             self._fail("完成初排转换", "请先生成任务书与可交付的拟应用结果")
             self._refresh()
             return
-        call = self._build_call("deliver_call", {
+        settings = self._compile_fix_settings()
+        enabled = settings.get("ai_enabled") is True and settings.get("compile_fix_enabled") is True
+        if compile_fix and not enabled:
+            self._set_compile_fix(None, "设置已改变，未交付本次修复。")
+            return
+        params = {
             "work_dir": confirmed_work_dir or self.work_dir,
             "preview_id": "" if use_original else self.preview_id,
             "use_original": use_original,
-        })
+        }
+        if enabled and not use_original:
+            params.update(compile_fix_enabled=True, ai_enabled=True)
+        if compile_fix:
+            params.update({key: compile_fix[key] for key in ("evidence_id", "request_id", "review_sha256")})
+        call = self._build_call("deliver_call", params)
         if not call:
-            self._refresh()
+            if compile_fix:
+                self._set_compile_fix(None, self.error or "无法启动本轮编译修复交付。")
+            else:
+                self._refresh()
             return
         identity = self._initial_identity()
+        preview_id = self.preview_id
+        from services import engine_bridge as EB
+        eligible = None
+        verified = False
+        compiled = self.compile_fix_eligible
+        context = self._initial_action_context()
+
+        def capture(code, receipt):
+            nonlocal eligible, verified
+            if enabled and not use_original and not compile_fix:
+                eligible = EB.compile_fix_result(code, receipt, op="deliver", task_id=identity[1],
+                                                 preview_id=preview_id)
+            if compile_fix:
+                verified = EB.compile_fix_delivery_matches(code, receipt, task_id=identity[1],
+                                                           preview_id=preview_id, compiled=compiled)
+
         self.running = True
         self._initial_operation = "正在交付初排…"
         self.error = ""
         self.delivery_ok = False
         self.delivery_compile = ""
         self.delivery_error = ""
-        self._refresh()
-        payload = await self._run_r3("deliver", call, "完成初排转换")
+        if compile_fix:
+            self._set_compile_fix(None, "正在交付本轮编译修复…")
+        else:
+            _refresh_workspace(self)
+        payload = await self._run_r3("deliver", call, "完成初排转换", on_result=capture)
         if not self._same_initial_task(identity):
             return
+        self.running = False
         if payload:
+            if compile_fix and (not verified or not self._delivered_output(payload)):
+                self._fail("核实编译修复交付", "交付回执与本次请求或复编运行不匹配，请刷新任务状态核对")
+                self._set_compile_fix({**compiled, "status": "check_status"}, self.error)
+                self._record_delivery_failure(self.error, compile_text="交付回执不匹配", use_original=False)
+                return
             await self._finish_delivery(payload, use_original=use_original, identity=identity)
+            if self.delivery_ok:
+                self._set_compile_fix({})
         else:
-            from services import engine_bridge as EB
-
             receipt = EB.parse_json_document("\n".join(self.log)) or {}
+            current = self._compile_fix_settings()
+            if compile_fix:
+                self._set_compile_fix({**compiled, "status": "check_status"}, "请先恢复本地状态核对本次交付。")
+            if (eligible and context == self._initial_action_context() and current.get("ai_enabled") is True
+                    and current.get("compile_fix_enabled") is True):
+                self.compile_fix_eligible = eligible
+                self._compile_fix_prepared = None
+                self._compile_fix_pdf_opened = None
             compile_text = compile_status_text(receipt) if receipt.get("op") == "deliver" else "引擎未报告"
             self._record_delivery_failure(self.error, compile_text=compile_text, use_original=use_original)
-        self._refresh()
+        if not compile_fix or self.delivery_ok:
+            _refresh_workspace(self)
+
+    def _compile_fix_settings(self) -> dict:
+        try:
+            from services import ai_prefs as AI
+            from services import engine_bridge as EB
+            return EB.compile_fix_settings(AI.raw_from_store(self._app().store))
+        except (AttributeError, TypeError, ValueError):
+            return {"ai_enabled": False, "compile_fix_enabled": False, "key": ""}
+
+    def _set_compile_fix(self, result, notice="", *, prepared=None) -> None:
+        if result is not None:
+            self.compile_fix_eligible = result
+            self._compile_fix_prepared = prepared
+            if self._compile_fix_pdf_opened != self._compile_fix_pdf_identity(result):
+                self._compile_fix_pdf_opened = None
+        self.compile_fix_notice = notice
+        if self._compile_fix_row is not None:
+            self._compile_fix_row.controls = self._compile_fix_controls()
+            try:
+                self._compile_fix_row.update()
+            except (AssertionError, RuntimeError):  # Not mounted yet.
+                pass
+
+    def _compile_fix_controls(self) -> list[ft.Control]:
+        t = self.t
+        settings = self._compile_fix_settings()
+        result = self.compile_fix_eligible
+        if (not callable(self._initial_call) or not self.preview_id or self.phase != "preview"
+                or (result and (result.get("task_id") != self.task_id
+                                or result.get("preview_id") != self.preview_id))):
+            return []
+        enabled = settings.get("ai_enabled") is True and settings.get("compile_fix_enabled") is True
+        status = result.get("status") or ("eligible" if result.get("eligible") else "")
+        if not enabled and not status:
+            return []
+        controls = []
+        if self.compile_fix_notice:
+            controls.append(C.inline_note(self.compile_fix_notice, t, "info"))
+        buttons = []
+        identity = self._initial_action_context()
+        ids = {key: result.get(key, "") for key in ("evidence_id", "request_id", "review_sha256")}
+
+        def button(label, callback):
+            control = C.secondary_button(label, callback, t)
+            control.disabled = self.running
+            buttons.append(control)
+
+        def operation(action, **extra):
+            self._task(lambda: self._compile_fix_action(action, expected=identity, **extra))
+
+        def local_path(key, label, *, pdf=False):
+            path = result.get(key)
+            if pdf:
+                from services import engine_bridge as EB
+                opener = EB.open_path
+            else:
+                opener = getattr(self._app(), "open_path", None)
+
+            def open_local(_):
+                if self.running or identity != self._initial_action_context() or result is not self.compile_fix_eligible:
+                    return
+                try:
+                    if not isinstance(path, str) or not path or not os.path.isfile(path):
+                        raise OSError
+                    outcome = opener(path)
+                    if (outcome[0] is not True if pdf else outcome is False):
+                        raise OSError
+                except OSError:
+                    self._set_compile_fix(None, "无法打开本轮本地产物。")
+                    return
+                if pdf:
+                    self._compile_fix_pdf_opened = self._compile_fix_pdf_identity(result)
+                    self._set_compile_fix(None, "")
+
+            button(label, open_local)
+            if not isinstance(path, str) or not path or not callable(opener):
+                buttons[-1].disabled = True
+
+        def choose_scope(_):
+            if (identity != self._initial_action_context() or self.running
+                    or result is not self.compile_fix_eligible or not self.can_apply()):
+                return
+            from ui import compile_fix_dialog as CFD
+            CFD.show_scope_dialog(self._flet(), t, self._compile_fix_evidence(result),
+                                  result.get("diagnostics") or [],
+                                  lambda selected: self._begin_compile_fix(selected, expected=identity, prior=result),
+                                  selected=(result.get("scope") or {}).get("evidence_ids"))
+
+        if status == "unknown":
+            controls.append(C.inline_note("请求已发出但未收到可用回件", t, "warn"))
+            local_path("log_path", "查看本地日志")
+            button("新轮重试…", choose_scope)
+            buttons[-1].disabled = self.running or not enabled or not self.can_apply()
+            button("放弃并保留原产物", lambda e: operation("cancel", **ids))
+            return [*controls, ft.Row(wrap=True, spacing=t.sp("1"), controls=buttons)]
+
+        if status in {"eligible", "prepared", "compile_failed", "cancelled"} and enabled:
+            labels = {"eligible": "选择范围并准备请求…", "prepared": "更改范围并重新授权…"}
+            button(labels.get(status, "新轮重试…"), choose_scope)
+        if status == "prepared":
+            from ui import compile_fix_dialog as CFD
+            if enabled:
+                button("审阅待发送请求…", lambda e: self._task(lambda: self._resume_compile_fix(identity, result)))
+                buttons[-1].disabled = self.running or self._compile_fix_prepared is None
+            button("导入本地回件…", lambda e: CFD.show_reply_dialog(
+                self._flet(), t, lambda text: operation("import", reply_text=text, **ids)))
+        if status in {"imported", "reviewed"}:
+            button("审阅回件差异…", lambda e: self._task(lambda: self._review_compile_fix(identity, ids)))
+        if status == "compiled":
+            controls.append(C.inline_note("隔离复编已通过；请先打开 PDF 验版，再确认交付。", t, "info"))
+            local_path("pdf_path", "打开复编 PDF", pdf=True)
+            if enabled and all(ids.values()):
+                button("确认验版并交付…", lambda e: self._confirm_compile_fix_delivery(identity, ids, result))
+                buttons[-1].disabled = self.running or self._compile_fix_pdf_opened != self._compile_fix_pdf_identity(result)
+        if not status or status == "check_status":
+            button("恢复本稿编译修复状态", lambda e: self._task(
+                lambda: self._restore_compile_fix_status(identity)))
+        if buttons:
+            controls.append(ft.Row(wrap=True, spacing=t.sp("1"), controls=buttons))
+        return controls
+
+    async def _review_compile_fix(self, identity, ids) -> None:
+        result = await self._compile_fix_action("review", expected=identity,
+                                               evidence_id=ids["evidence_id"], request_id=ids["request_id"])
+        if not result or result.get("status") != "reviewed":
+            return
+        from ui import compile_fix_dialog as CFD
+        apply_ids = {key: result.get(key) for key in ("evidence_id", "request_id", "review_sha256")}
+
+        async def apply():
+            if all(apply_ids.values()) and result.get("can_adopt") is True:
+                if (identity != self._initial_action_context() or not self.can_apply()
+                        or self.compile_fix_eligible.get("status") != "reviewed"
+                        or any(self.compile_fix_eligible.get(key) != val for key, val in apply_ids.items())):
+                    return
+                await self._compile_fix_action("apply", expected=identity, **apply_ids)
+
+        CFD.show_review_dialog(self._flet(), self.t, result, apply if all(apply_ids.values())
+                               and result.get("can_adopt") is True else None)
+
+    def _compile_fix_pdf_identity(self, result):
+        if result.get("status") == "compiled":
+            return (self._initial_action_context(), *(result.get(key) for key in
+                    ("evidence_id", "request_id", "review_sha256", "compile_run_id", "pdf_path")))
+        return None
+
+    async def _publish_compile_fix(self, identity, ids, pdf_identity) -> None:
+        if (not self.running and identity == self._initial_action_context()
+                and self.compile_fix_eligible.get("status") == "compiled"
+                and pdf_identity == self._compile_fix_pdf_opened == self._compile_fix_pdf_identity(self.compile_fix_eligible)
+                and all(self.compile_fix_eligible.get(key) == value for key, value in ids.items())):
+            await self._deliver(compile_fix=ids)
+
+    def _confirm_compile_fix_delivery(self, identity, ids, result) -> None:
+        pdf_identity = self._compile_fix_pdf_identity(result)
+        if (self.running or identity != self._initial_action_context() or result is not self.compile_fix_eligible
+                or not pdf_identity or pdf_identity != self._compile_fix_pdf_opened):
+            return
+        from ui import compile_fix_dialog as CFD
+        CFD.show_delivery_dialog(self._flet(), self.t, lambda: self._task(
+            lambda: self._publish_compile_fix(identity, ids, pdf_identity)))
+
+    async def _compile_fix_action(self, action, *, expected=None, settings=None, quiet_missing=False, **extra):
+        context = self._initial_action_context()
+        if (self.running or (expected is not None and context != expected)
+                or self.phase != "preview" or not self.preview_id or not self.task_id):
+            return
+        from services import engine_bridge as EB
+        previous = self.compile_fix_eligible
+        settings = self._compile_fix_settings() if settings is None else settings
+        if action != "status" and any(extra[key] != previous.get(key, "") for key in
+                                      ("evidence_id", "request_id", "review_sha256") if key in extra):
+            return
+        if action in {"prepare", "send", "apply"} and not self.can_apply():
+            return
+        if action == "apply" and not (settings.get("ai_enabled") is True and settings.get("compile_fix_enabled") is True):
+            self._set_compile_fix(None, "AI 总开关或 AI 辅助编译修复未开启；未采纳。")
+            return
+        try:
+            call = EB.ai_compile_fix_call(action=action, work_dir=self.work_dir, preview_id=self.preview_id,
+                                          settings=settings, **extra)
+        except (RuntimeError, ValueError) as exc:
+            self._set_compile_fix(None, str(exc))
+            return
+        self.running = True
+        if action in {"prepare", "send"}:
+            self._compile_fix_prepared = None
+        self._set_compile_fix(None, "正在处理编译修复…")
+        private_lines = []
+        try:
+            code = await self._run(call, private_lines=private_lines)
+        finally:
+            self.running = False
+        if context != self._initial_action_context():
+            return
+        payload = EB.parse_json_document("\n".join(private_lines)) or {}
+        result = EB.compile_fix_action_result(code, payload, action=action, task_id=self.task_id,
+                                              preview_id=self.preview_id, previous=previous, arguments=extra)
+        if result is None:
+            if action == "send":
+                self._set_compile_fix({**previous, "status": "check_status"},
+                                      "未能确认请求结果；请先查看本地状态，不会自动重发。")
+            elif action == "status" and quiet_missing and not previous:
+                self._set_compile_fix(None, "")
+            else:
+                notice = str(payload.get("error") or "引擎未返回与本轮匹配的编译修复回执。")
+                stale = {**previous, "status": "check_status"} if previous else {}
+                self._set_compile_fix(stale, notice)
+            return
+        visible = {k: v for k, v in result.items() if k not in {"body", "summary", "authorization"}}
+        prepared = None
+        if result["status"] == "prepared":
+            scope = self._compile_fix_scope(result)
+            if (not self._valid_compile_fix_disclosure(result, scope)
+                    or (action == "prepare" and scope != extra["evidence_ids"])):
+                self._set_compile_fix({**previous, "status": "check_status"} if previous else {},
+                                      "引擎未返回完整且匹配的授权对象；未发送。")
+                return
+            # Recovered receipts have no trusted local settings/key snapshot. Re-prepare before consenting.
+            prepared = (result, context, settings if action == "prepare" else None, scope)
+        self._set_compile_fix(visible, str(payload.get("error") or "") if result["status"] != "unknown" else "",
+                              prepared=prepared)
+        return result if code == 0 else None
+
+    @staticmethod
+    def _compile_fix_evidence(result):
+        items = result.get("evidence")
+        return [item for item in items if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+                and item["evidence_id"]] if isinstance(items, list) else []
+
+    @staticmethod
+    def _compile_fix_scope(result):
+        scope = result.get("scope")
+        return scope.get("evidence_ids") if isinstance(scope, dict) else None
+
+    async def _begin_compile_fix(self, evidence_ids, *, expected, prior) -> None:
+        context = self._initial_action_context()
+        if self.running or context != expected or prior is not self.compile_fix_eligible or not self.can_apply():
+            return
+        settings = self._compile_fix_settings()
+        if not settings.get("key"):
+            self._set_compile_fix(None, "未配置本机 API Key；没有发出请求。")
+            return
+        signed = [item["evidence_id"] for item in self._compile_fix_evidence(prior)]
+        if (not evidence_ids or any(key not in signed for key in evidence_ids)
+                or len(set(evidence_ids)) != len(evidence_ids)):
+            self._set_compile_fix(None, "必须至少选择一项本轮签发的诊断证据；未准备请求。")
+            return
+        evidence_ids = [key for key in dict.fromkeys(signed) if key in evidence_ids]
+        result = await self._compile_fix_action("prepare", settings=settings, expected=context,
+                                               evidence_id=prior.get("evidence_id", ""),
+                                               evidence_ids=evidence_ids)
+        if result and self._compile_fix_prepared is not None:
+            await self._resume_compile_fix(context, self.compile_fix_eligible)
+
+    async def _resume_compile_fix(self, context, prior):
+        entry = self._compile_fix_prepared
+        if (self.running or context != self._initial_action_context() or prior is not self.compile_fix_eligible
+                or prior.get("status") != "prepared" or entry is None or entry[1] != context
+                or not self.can_apply()):
+            return
+        settings = self._compile_fix_settings()
+        if not (settings.get("key") and settings.get("ai_enabled") is True
+                and settings.get("compile_fix_enabled") is True):
+            self._set_compile_fix(None, "缺少本机 API Key 或未开启 AI 编译修复；没有发出请求。")
+            return
+        if entry[2] != settings:
+            # Re-freeze once; do not recurse if settings also change while prepare is awaiting its receipt.
+            result = await self._compile_fix_action("prepare", settings=settings, expected=context,
+                                                   evidence_id=prior["evidence_id"], evidence_ids=entry[3])
+            if not result or settings != self._compile_fix_settings():
+                return
+            entry = self._compile_fix_prepared
+        if entry is not None and entry[2] == self._compile_fix_settings():
+            self._show_prepared_compile_fix(entry)
+
+    @staticmethod
+    def _valid_compile_fix_disclosure(result, evidence_ids) -> bool:
+        from services import engine_bridge as EB
+        return EB.compile_fix_disclosure_valid(result, evidence_ids)
+
+    def _show_prepared_compile_fix(self, entry):
+        from ui import compile_fix_dialog as CFD
+        result, context, settings, evidence_ids = entry
+
+        async def send(prepared, ack):
+            from services import engine_bridge as EB
+            current_entry = self._compile_fix_prepared
+            if current_entry is not entry or context != self._initial_action_context():
+                return
+            matches = EB.compile_fix_authorization_matches(
+                prepared=entry, current=current_entry, expected_context=context,
+                current_context=self._initial_action_context(), expected_settings=settings,
+                current_settings=self._compile_fix_settings(), expected_scope=result["scope"],
+                current_scope=self.compile_fix_eligible.get("scope"))
+            if (ack is not True or not matches or not self.can_apply()
+                    or prepared != result
+                    or not self._valid_compile_fix_disclosure(prepared, evidence_ids)):
+                self._compile_fix_prepared = (result, context, None, evidence_ids)
+                self._set_compile_fix(None, "请求范围、任务或设置已变化，或确认不完整；未发送。")
+                return
+            await self._compile_fix_action("send", settings=settings, expected=context,
+                                           terms_ack=ack, evidence_ids=evidence_ids,
+                                           **{key: prepared[key] for key in ("evidence_id", "request_id",
+                                                "request_sha256", "authorization_id")})
+
+        CFD.show_authorization_dialog(self._flet(), self.t, result, send)
+
+    async def _restore_compile_fix_status(self, identity, *, quiet_missing=False):
+        if identity != self._initial_action_context() or not self.preview_id:
+            return
+        await self._compile_fix_action("status", expected=identity, quiet_missing=quiet_missing)
+
+    def _compile_fix_retention_button(self):
+        identity = self._initial_identity()
+        return C.secondary_button("管理编译修复本机留存…", lambda e: self._task(
+            lambda: self._compile_fix_retention(identity)), self.t, disabled=self.running)
+
+    async def _compile_fix_retention(self, identity, record=None) -> None:
+        if (self.running or identity != self._initial_identity() or not self.task_id or not self.work_dir
+                or (record is not None and record["task_id"] != self.task_id)):
+            return
+        from services import engine_bridge as EB
+        from ui import compile_fix_dialog as CFD
+
+        try:
+            call = EB.ai_compile_fix_call(action="delete" if record else "retained",
+                                          work_dir=self.work_dir, settings={},
+                                          record_key=record["record_key"] if record else "")
+        except (RuntimeError, ValueError):
+            CFD.show_retained_dialog(self._flet(), self.t, message="无法启动本机留存操作。")
+            return
+        self.running = True
+        lines = []
+        try:
+            code = await self._run(call, private_lines=lines)
+        finally:
+            self.running = False
+        if identity != self._initial_identity():
+            return
+        result = EB.compile_fix_retained_result(code, EB.parse_json_document("\n".join(lines)),
+                                                task_id=self.task_id, record=record)
+        if record is not None:
+            message = {"deleted": "已删除这条本机留存记录。", "expired": "这条本机留存记录已过期清除。"}.get(
+                result, "未能核实删除结果；请重新查看本机留存。")
+            CFD.show_retained_dialog(self._flet(), self.t, message=message)
+        elif result:
+            CFD.show_retained_dialog(
+                self._flet(), self.t, records=result,
+                message="可逐条删除本机请求、回件及修复记录；不会撤销已交付产物。",
+                on_delete=lambda entry: self._task(
+                    lambda: self._compile_fix_retention(identity, entry)))
+        else:
+            message = "本任务没有可删除的修复记录。" if result == [] else "无法核实本任务的修复留存记录。"
+            CFD.show_retained_dialog(self._flet(), self.t, message=message)
 
     def _record_delivery_failure(self, error: str, *, compile_text: str, use_original: bool) -> None:
         self.delivery_ok = False
@@ -3866,6 +4292,7 @@ class BibAiAssistView:
             status = await self._read_status(work)
             if initial and not self._same_initial_task(identity):
                 return
+            repair_context = None
             if status and status.get("phase") and status.get("task_id"):
                 expected = str(status["task_id"])
                 if self.task_id and self.task_id != expected:
@@ -3877,10 +4304,14 @@ class BibAiAssistView:
                     if self._receive_status(status):
                         self._ok()
                         self._task(self._prefetch_taskbook)
+                        if initial and self.phase == "preview" and self.preview_id:
+                            repair_context = self._initial_action_context()
             elif status:
                 self._fail("刷新状态", "引擎未返回任务身份与阶段")
             self.running = False
             _refresh_workspace(self)
+            if repair_context is not None:
+                self._task(lambda: self._restore_compile_fix_status(repair_context, quiet_missing=True))
             return
         if not self._require("status_call", "run_call"):
             self._refresh()
@@ -4242,6 +4673,11 @@ class BibAiAssistView:
             body.append(C.inline_note(bridge_error_text(self._bridge_missing), t, "error"))
         if self.error or self.delivery_error:
             body.append(C.inline_note(self.error or self.delivery_error, t, "error"))
+        if initial and stage == "review":
+            self._compile_fix_row = ft.Column(controls=self._compile_fix_controls(), spacing=t.sp("half"))
+            body.append(self._compile_fix_row)
+        else:
+            self._compile_fix_row = None
         if self.running:
             body.append(C.inline_note(self._initial_operation or "正在处理任务…", t, "info"))
         elif self.blocked and not done:
@@ -4344,6 +4780,8 @@ class BibAiAssistView:
         other = []
         if self.work_dir:
             other.extend([self._button("refresh"), self._button("restart")])
+            if initial and self.task_id:
+                other.append(self._compile_fix_retention_button())
             if not done:
                 if self._has_active_reply and stage != "waiting":
                     other.insert(0, self._button("replace_reply", label="替换 AI 结果…"))
