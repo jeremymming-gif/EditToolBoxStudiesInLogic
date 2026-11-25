@@ -48,7 +48,12 @@ def compile_with_capture(compile_pdf, out_dir, stem, *, source):
                 pass  # A failed preview capture must leave the original compiler result intact.
             return result
 
-    return (*compile_pdf(out_dir, stem, run_xelatex=run_xelatex), capture)
+    from .l1_detailed import collecting_results
+    with collecting_results() as results:
+        outcome = compile_pdf(out_dir, stem, run_xelatex=run_xelatex)
+    if results:
+        capture["detailed"] = results[-1]
+    return (*outcome, capture)
 
 
 def export_failure(out_dir, stem, message, *, source, capture):
@@ -69,3 +74,6 @@ def export_failure(out_dir, stem, message, *, source, capture):
             store.record_preview(task_id)
     except Exception:
         print("   编译修复任务书未导出：来源、状态或本地预览校验失败，请人工排查。", file=sys.stderr)
+
+
+from .l1 import compile_with_l1  # noqa: E402 -- initialized Stage A capture is reused

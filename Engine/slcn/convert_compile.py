@@ -57,53 +57,53 @@ def _tail_log_lines(path: str, *, prefix: str = "!", contains: str = "") -> list
     return errors[:3]
 
 
-def compile_pdf(out_dir: str, stem: str, *, run_xelatex=None) -> tuple[bool, str]:
-    """xelatex → biber -l=zh_pinyin → xelatex ×2。
+def compile_pdf_detailed(out_dir: str, stem: str, *, run_xelatex=None):
+    """编译详细结果；与旧 tuple 入口共用唯一执行器。
 
-    B-290 F5：biber 的退出码**不再无条件容忍**。无参考文献的稿子（没有 `.bcf`）biber
-    本来就可能非零，仍照旧放行；一旦有 `.bcf`，biber 非零就是真错——读 `.blg` 的
-    `ERROR` 行，且**只有 `.bbl` 非空**才判成功，否则 `convert --compile` 会拿一个
-    空 `.bbl` 出「编译成功」的假 PDF（实测：坏 bib 时 PDF 4388B、正文 Citations 全空）。
+    阶段与返回码直接来自命令执行，不解析人话错误摘要。
+    `run_id` 标识本次调用，候选 hash 在清理和编译之前取得。
+    `cleaned` 记录既有清理实际删除的文件；`cleanup_remaining`
+    记录删除后仍存在的固定后缀，供 L1 报告而非再次删除。
+
+    兼容边界：
+    - xelatex → biber -l=zh_pinyin → xelatex ×2 的顺序不变。
+    - `run_xelatex` 仍只截获 XeLaTeX；Stage A 负责首编捕获。
+    - Biber 无 .bcf 时允许非零，沿用无参考文献的历史语义。
+    - 有 .bcf 时需非空 .bbl；有 ERROR 行仍判失败。
+    - sortlocale 的既有守卫保持相同调用时机及错误文案。
+    - 缺命令、工具失败、缺 PDF 的旧摘要逐字节保留。
+    - 此 API 本身不尝试 L1，不改变内部暂存编译行为。
+    - 旧成功条件仍是 PDF 存在；L1 另做隔离与 reader 门。
+
+    B-290 F5：不能无条件容忍 Biber 非零。否则坏 Bib 会
+    产生正文引用为空的 PDF，却被旧调用方误记为编译成功。
+    非零且 .bbl 完好、没有 ERROR 的偶发告警仍照旧放行。
+
+    本模块只保留兼容门面与原清理/摘要函数。详细执行、
+    六类诊断、白名单与候选事务均在 compilefix 包中。
+    初编详细字段仅供本地结构化适配，不含新网络入口。
+    供后续任务书复用的字段由 L1 的最小化接口单独导出。
+    详细结果中的本地 info 路径不能直接当作可外发字段。
+
+    成功并不证明 PDF 页数、版面或编辑意义正确。
+    原编译调用与 L1 修复候选的验证是两个独立事实。
     """
-    # 先清上一轮中间产物：否则第一次 xelatex 会读到旧 .bbl/.aux（见上面注释）
-    clean_stale_compile_artifacts(out_dir, stem)
-    steps = [
-        ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
-        ["biber", "-l=zh_pinyin", stem],
-        ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
-        ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
-    ]
-    for i, cmd in enumerate(steps, 1):
-        if shutil.which(cmd[0]) is None:
-            return False, f"找不到命令 {cmd[0]}，请确认已安装 TeX Live"
-        from . import platform as _plat, sortlocale as _sort  # noqa: PLC0415  控制台窗口（B300-03）
-        r = (run_xelatex(_plat.run_no_window, cmd, out_dir, i)
-             if i != 2 and run_xelatex is not None
-             else _plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False))
-        if i == 2 and (err := _sort.guard_after_biber(out_dir, stem)): return False, err
-        if r.returncode == 0:
-            continue
-        if i == 2:  # biber：有 .bcf 才严格判定
-            bcf = os.path.join(out_dir, f"{stem}.bcf")
-            if not os.path.exists(bcf):
-                continue  # 无参考文献：biber 退出码无意义，照旧放行
-            bbl = os.path.join(out_dir, f"{stem}.bbl")
-            bbl_ok = os.path.exists(bbl) and os.path.getsize(bbl) > 0
-            blg_errors = _tail_log_lines(
-                os.path.join(out_dir, f"{stem}.blg"), prefix="", contains="ERROR")
-            if bbl_ok and not blg_errors:
-                continue  # 非零但产物完好（biber 偶发告警）→ 放行
-            detail = "；".join(blg_errors)
-            if not detail:
-                detail = "未生成 .bbl（参考文献为空）"
-            return False, (f"biber 第 {i} 步失败（退出码 {r.returncode}）：{detail}"
-                           f"（请检查 .bib 是否有语法错误，见 {stem}.blg）")
-        log = os.path.join(out_dir, f"{stem}.log")
-        detail = "；".join(_tail_log_lines(log))
-        return False, f"{cmd[0]} 第 {i} 步失败（退出码 {r.returncode}）{('：' + detail) if detail else ''}"
-    pdf = os.path.join(out_dir, f"{stem}.pdf")
-    if not os.path.exists(pdf):
-        return False, "编译结束但未生成 PDF"
-    return True, pdf
+    import sys
+    from .compilefix.l1_detailed import execute
+    return execute(sys.modules[__name__], out_dir, stem, run_xelatex=run_xelatex)
+
+
+def compile_pdf(out_dir: str, stem: str, *, run_xelatex=None) -> tuple[bool, str]:
+    """保留旧签名、清理策略、消息及二元组返回值。
+
+    普通 CLI 与 R3 的 L1 接线在各自的失败适配层。
+    convert_stage 仍只调用这个兼容入口，不接 L1。
+    """
+    return compile_pdf_detailed(out_dir, stem, run_xelatex=run_xelatex).legacy()
+
+
+
+
+
 # 兼容垫片：`pdf_page_count()` 以 `__file__` 定位 Engine/vendor（原文件在 Engine/ 下）。
 globals()["__file__"] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "convert.py")

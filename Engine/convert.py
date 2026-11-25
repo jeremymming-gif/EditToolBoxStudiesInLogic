@@ -669,9 +669,9 @@ def main() -> int:
     # ⑨ 编译（**放在 ⑪ 之后**：并进 reference.bib 的 AI 结果要体现在 PDF 里）
     compile_failed = ""
     if args.compile:
-        from slcn.compilefix import compile_with_capture, export_failure
+        from slcn.compilefix import compile_with_l1, export_failure
         print("\n⑨ 编译")
-        ok, info, repair_capture = compile_with_capture(compile_pdf, out_dir, stem, source=source)
+        ok, info, repair_capture = compile_with_l1(compile_pdf, out_dir, stem, source=source, enabled=not args.coop_taskbook_only)
         if ok:
             size = os.path.getsize(info) // 1024
             print(f"   ✅ {os.path.basename(info)}（{size} KB）")

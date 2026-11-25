@@ -1156,7 +1156,18 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
     work = str(Path(work_dir).resolve())
     path = _journal_path(work)
     transaction = {}
+    l1_sync = None
     try:
+        from slcn.compilefix.l1_r3 import PreviewSync, recover_preview
+        from slcn.compilefix.files import RepairError
+        recover_preview(work, load_state=lambda: ai_workflow.load_state(work) or {},
+                        save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
+                        is_delivered=lambda value, sha: (
+                            value.get("preview", {}).get("text_new_sha256") == sha
+                            and bool((receipt := _read_journal(path)).get("delivered"))
+                            and not receipt.get("undone") and receipt.get("task_id") == value.get("task_id")
+                            and (value.get("phase") != "delivered" or receipt == value.get("delivery"))
+                            and _tree_shas(receipt["final"]) == receipt["shas"]))
         state = ai_workflow.load_state(work) or {}
         conversion = state.get("conversion") or {}
         if state.get("entry") != "convert" or not conversion:
@@ -1241,7 +1252,9 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
 
         compile_status = "未要求编译"
         if opts["compile"]:
-            ok, msg = convert_compile.compile_pdf(candidate, stem)
+            from slcn.compilefix import compile_with_l1
+            ok, msg, l1_capture = compile_with_l1(convert_compile.compile_pdf, candidate, stem,
+                                                source=inputs["source"])
             if not ok:
                 details = []
                 for label, filename in (("候选 .tex", tex_path),
@@ -1250,6 +1263,15 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                         details.append(f"{label}：{os.path.abspath(filename)}")
                 suffix = ("；" + "；".join(details)) if details else ""
                 raise ValueError(f"编译失败：{msg}{suffix}")
+            if l1_capture and l1_capture.get("l1_repaired"):
+                if not use_original:
+                    l1_sync = PreviewSync(work, state, preview, Path(tex_path).read_bytes(),
+                                          load_state=lambda: ai_workflow.load_state(work) or {},
+                                          save_state=lambda value: coop.atomic_write_json(ai_workflow.state_path(work), value),
+                                          read_candidate=lambda: _read_candidate(work, state, preview, kind="tex"))
+                validated_tex = coop.sha256_file(tex_path)
+                if l1_sync and validated_tex != preview["text_new_sha256"]:
+                    raise ValueError("L1 候选与预览哈希未同步")
             compile_status = "编译成功"
         source_pdf_status = _source_pdf(candidate, conversion) if opts["source_pdf"] else "未要求导出原稿 PDF"
         if opts["clean"]:
@@ -1293,9 +1315,16 @@ def _deliver(*, work_dir: str, preview_id: str, use_original: bool) -> dict:
                      "compile_status": compile_status, "source_pdf_status": source_pdf_status}
         coop.atomic_write_json(path, completed)
         _record_delivery_state(work, state, completed)
+        if l1_sync:
+            l1_sync.commit()
         return completed
-    except (OSError, ValueError, KeyError, ai_workflow.WorkflowError) as exc:
+    except (OSError, ValueError, KeyError, ai_workflow.WorkflowError, RepairError) as exc:
         error = str(exc)
+        if l1_sync:
+            try:
+                l1_sync.rollback(expected_state=state)
+            except (OSError, ValueError, RepairError) as recovery:
+                error += f"；L1 预览恢复中断：{recovery}"
         if transaction:
             try:
                 if transaction.get("promoting"):
