@@ -814,6 +814,8 @@ class BibAiAssistView:
         self._conflict_groups: dict[str, ft.Control] = {}
         self._paste_field: ft.TextField | None = None
         self._paste_button: ft.Control | None = None
+        #: 回读确认用的 Flet 客户端 Clipboard 服务（只创建一次，见 `_acopy`）。
+        self._clipboard_service = None
         self._action_buttons: dict[str, ft.Control] = {}
         self._picking = False
         self._proc = None
@@ -939,6 +941,49 @@ class BibAiAssistView:
             except Exception:  # noqa: BLE001
                 pass
         return False
+
+    async def _acopy(self, text: str, *, exact: bool = False) -> bool:
+        """写剪贴板并**回读确认**，返回真实成败（批 20261126 剪贴板诚实化）。
+
+        为什么需要 async 版本：`_copy` 只能拿到宿主 `copy_text` 的布尔值，而打包
+        macOS app 从 Finder 双击启动（quarantine → AppTranslocation）时 `pbcopy`
+        退出 0 却不写系统 pasteboard——宿主的 True 是假成功（真机复现：toast
+        「已复制任务书全文」、`pbpaste` 0 字节）。flet 1.0.5 的客户端 `Clipboard`
+        服务在**同一条 GUI 会话**里写读 pasteboard，`set` 之后 `get` 回读比对才能
+        证明剪贴板真的变了（对照 `ui/bib_advanced.py:612-637` 的既有稳健实现）。
+
+        顺序：先 Flet 客户端服务（set + get 回读，`str` 完全相等才算 True）；任何
+        异常/不可用（老测试桩没有 `page.services`、平台不支持）再回落同步 `_copy`。
+        回落返回 True 但客户端回读得到的仍是**别的值** → 说明刚才那次写没有落地，
+        仍按失败返回。失败分支不发成功 toast——文案由调用方决定。
+        """
+        payload = str(text)
+        page = self._flet()
+        services = getattr(page, "services", None) if page is not None else None
+        clipboard = None
+        if services is not None:
+            try:
+                clipboard = getattr(self, "_clipboard_service", None)
+                if clipboard is None or all(clipboard is not item for item in services):
+                    clipboard = ft.Clipboard()
+                    services.append(clipboard)
+                    self._clipboard_service = clipboard
+                await clipboard.set(payload)
+                echo = await clipboard.get()
+                if isinstance(echo, str) and echo == payload:
+                    return True
+            except Exception:  # noqa: BLE001 - 客户端剪贴板不可用就回落平台命令
+                pass
+        if not self._copy(text, exact=exact):
+            return False
+        # 宿主说 True：有客户端服务时再回读一次，别把「刚失败、没写进去」当成功。
+        if clipboard is None:
+            return True
+        try:
+            echo = await clipboard.get()
+        except Exception:  # noqa: BLE001 - 回读不了就不推翻宿主的结果
+            return True
+        return isinstance(echo, str) and echo == payload
 
     def _task(self, fn) -> None:
         """把协程函数交给宿主调度（三级降级，与 bib_import 同款）。"""
@@ -4561,7 +4606,13 @@ class BibAiAssistView:
                 _refresh_workspace(self)
                 return False
 
-        if not self._copy(text, exact=True):
+        # 优先走带客户端回读的 `_acopy`（真机假成功的修复）；只实现既有 `_copy`
+        # 契约的轻量宿主替身（测试桩/适配器）没有 `_acopy`，退回同步路径，
+        # 不因为多了一个可选能力就把它们当剪贴板不可用。
+        acopy = getattr(self, "_acopy", None)
+        copied = (await acopy(text, exact=True) if callable(acopy)
+                  else self._copy(text, exact=True))
+        if not copied:
             self.error = "复制任务书全文失败：剪贴板不可用"
             self._mark("bib_ai_copy_task_failed", op="copy_task", error=self.error)
             _refresh_workspace(self)

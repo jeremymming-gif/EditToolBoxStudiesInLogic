@@ -2622,6 +2622,38 @@ class App:
         if getattr(done, "returncode", None) != 0:
             self.toast("复制失败")
             return False
+        # 批 20261126（真机复现）：rc==0 **不等于**剪贴板真的变了。打包版 macOS app
+        # 从 Finder 双击启动（com.apple.quarantine → AppTranslocation 随机只读挂载）
+        # 时 `pbcopy` 子进程退出 0，却根本没写系统 pasteboard——界面报「已复制」，用户
+        # 粘贴出来是空的（`pbpaste` 0 字节）。所以 rc 之后必须**回读比对**：
+        #   1) `pbpaste` 自身 rc 必须为 0（起不来/超时都算拿不到证据）；
+        #   2) 回读到的字节必须与**实际提交**的字节完全相等——不 strip、不容忍多/少
+        #      一个换行：preserve_whitespace 语义要求逐字节一致，回读同样逐字节。
+        # Windows 的 `clip` 没有对应的无损回读通道（Get-Clipboard 会补 CRLF、截断），
+        # 保留 rc 判据；macOS 才是已复现的假成功路径。
+        payload = text.encode("utf-8")
+        # 只在「写命令真的捕获了输出」时回读：生产路径 `capture_output=True` 的
+        # `subprocess.CompletedProcess` 一定带 bytes `stdout`（哪怕为空）。既不是
+        # CompletedProcess、也没有 bytes stdout 的完成对象只可能来自旧测试替身/
+        # 受限运行时（根本没捕获子进程输出），此时无从比对，保留既有 rc 判据，
+        # 不去伪造一份「回读通过」的证据。
+        captured = (isinstance(done, subprocess.CompletedProcess)
+                    or isinstance(getattr(done, "stdout", None), (bytes, bytearray)))
+        if os.name != "nt" and captured:
+            try:
+                echo = subprocess.run(["pbpaste"], capture_output=True,
+                                      timeout=5, check=False)
+            except (OSError, subprocess.SubprocessError):
+                self.toast("复制失败")
+                return False
+            if getattr(echo, "returncode", None) != 0:
+                self.toast("复制失败")
+                return False
+            echo_bytes = getattr(echo, "stdout", None)
+            if not isinstance(echo_bytes, (bytes, bytearray)) or bytes(echo_bytes) != payload:
+                # 拿不到回读字节，或回读到的与提交的不是同一份 → 没有证据，不许报成功。
+                self.toast("复制失败")
+                return False
         # 批 246：同一入口也复制错误摘要 / 诊断文本 / 制表符信息行，
         # 一律说「已复制路径」会让人以为剪贴板里是路径。
         self.toast("已复制路径" if _looks_like_path(text) else "已复制")

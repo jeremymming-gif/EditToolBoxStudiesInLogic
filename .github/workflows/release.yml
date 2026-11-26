@@ -11,7 +11,7 @@
 #   · 引擎 sidecar：macOS 在本 workflow 里直接打；Windows 用
 #     `sources-flet/packaging/build_win_sidecar_onedir.ps1`
 #     （入口表 / 模板数据 / 版本资源与 `Engine/tools/build_win_sidecar.ps1` 一致）
-#   · 应用：`flet pack`（onefile；macOS 出 .app）
+#   · 应用：`flet pack`（onedir；macOS 出 .app）
 #   · sidecar 落点：macOS = `.app/Contents/Resources/SLCNEngine/`
 #     （`.app/Contents/MacOS/SLCNEngine` 留同名 launcher，旧路径/文档命令照旧可用）；
 #     Windows = exe 同目录的 `SLCNEngine\SLCNEngine.exe`
@@ -117,14 +117,23 @@ jobs:
           ls -la build-flet/SLCNEngine
           ./build-flet/SLCNEngine/SLCNEngine --version
 
-      - name: flet pack（onefile .app，未签名）
+      - name: flet pack（onedir .app，未签名）
         run: |
           set -euo pipefail
           # 引用库 10 个视图由 ui/bib_host.py 的 VIEW_SPECS 懒加载（importlib），PyInstaller 静态分析收集不到，必须显式 --hidden-import（与 VIEW_SPECS 同步）
+          # B-389：主程序用 PyInstaller 目录形态（onedir）。单文件形态每次启动都把 C 扩展解压到随机的
+          # _MEI* 目录，而 macOS 对 ad-hoc 签名的校验缓存按路径/inode 命中 —— 随机路径永远冷，
+          # 36 个扩展逐个付 0.5–2.5s，child_start→launch_begin 实测 ~30s；onedir 让 .so 固定落在
+          # .app/Contents/Frameworks/，缓存跨启动命中。
+          # Flet 1.0.5 的 flet pack 在 macOS 上直接拒绝 -D/--onedir（flet_cli/commands/pack.py），
+          # 只能用 --pyinstaller-build-args 透传：它排在 flet 自己追加的单文件开关之后，
+          # PyInstaller 6.x 两个开关写同一个 dest、后者生效（实测实参末尾多出 --onedir，产物为
+          # 目录形态；形态由下一步「macOS 检查 dist 与 sidecar」断言兜底）。
           ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 \
               --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes \
               --hidden-import ui.bib_overview ui.bib_query ui.bib_normalize ui.bib_import ui.bib_review \
-              --hidden-import ui.bib_edit ui.bib_dupes ui.bib_fieldfix ui.bib_health ui.bib_prefs )
+              --hidden-import ui.bib_edit ui.bib_dupes ui.bib_fieldfix ui.bib_health ui.bib_prefs \
+              --pyinstaller-build-args=--onedir )
           ls -la build-flet/dist
 
       - name: sidecar 定位自检（engine_bridge，不经 GUI；传目录形态，验证 --onedir 解析）
@@ -142,6 +151,15 @@ jobs:
           test -d build-flet/dist
           test -x build-flet/SLCNEngine/SLCNEngine
           test -d build-flet/SLCNEngine/_internal
+          # B-389：主程序必须是目录形态 .app —— C 扩展/动态库落在 .app 内的稳定路径
+          # （Contents/Frameworks/）；单文件形态的 .app 里一个 .so 都没有。
+          APPDIR=$(ls -d build-flet/dist/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR" || { echo "flet pack 没有产出 .app"; exit 1; }
+          test -x "$APPDIR/Contents/MacOS/编辑部工具箱" || { echo "缺主程序启动器"; exit 1; }
+          test -d "$APPDIR/Contents/Frameworks" || { echo "缺 $APPDIR/Contents/Frameworks：不是目录形态"; exit 1; }
+          SO_COUNT=$(find "$APPDIR" -type f \( -name '*.so' -o -name '*.dylib' \) | wc -l | tr -d ' ')
+          echo "主程序 .app 内 C 扩展/动态库：$SO_COUNT 个（目录形态应 >= 30）"
+          test "$SO_COUNT" -ge 30 || { echo ".app 内只有 $SO_COUNT 个 C 扩展/动态库，不是目录形态"; exit 1; }
 
       - name: 组装发布包（.app + Contents/Resources/SLCNEngine/ + FIRST-OPEN）
         run: |
@@ -428,7 +446,7 @@ jobs:
           - **引用库体验**：长列表滚动归属与窄窗「看全值」修复、1000 宽目录长路径全文提示、清理预览与撤销反馈改进。
           - **新增分组式设置中心**（九个详情路由）；命令面板支持平台搜索快捷键。
           - **案例法状态透明化**与只读查询入口；明确双作者引用配对不再误判首作者。
-          - **打包与 CI**：macOS 改 onedir 消除约 29–30s 冷启动签名校验；CI 增加平台守卫与 macOS runner，双平台覆盖更完整。
+          - **打包与 CI**：macOS 的应用壳与引擎 sidecar 均改 onedir，消除约 29–30s 冷启动签名校验；CI 增加平台守卫与 macOS runner，双平台覆盖更完整。
 
           **下载哪个**
 
@@ -456,7 +474,7 @@ jobs:
           - **系统拖放不可用**：Flet/Flutter 桌面窗口不接收资源管理器拖放（已实测），统一走
             「浏览…」打开的 Windows 原生对话框。
           - **IME 候选窗**：中文输入本身可用（已实测），但候选窗位置/跟随未做自动化验证，需人工确认。
-          - **启动与体积**：引擎 sidecar 已用 onedir（macOS 消除约 29–30s 冷启动签名校验）；应用壳为 `flet pack` onefile，首次启动仍需数秒，包体以附件实际大小为准。
+          - **启动与体积**：应用壳与引擎 sidecar 均为 onedir，避免每次启动重新解压与签名校验；包体以附件实际大小为准。
           - **未签名 / 未公证**：见上表；macOS 首次打开必须右键→打开或 `xattr` 去隔离。
           - **平台验证范围**：双平台构建与测试由 CI（macos-15 / windows-latest）完成；
             macOS 侧关键交互已在本机真机点测，Windows 以 CI 测试覆盖为主，完整人工走查仍建议按需进行。
