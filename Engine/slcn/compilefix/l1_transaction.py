@@ -76,23 +76,65 @@ def _finish_pending(store, task_id, out_dir, state):
     put_json(path, journal)
 
 
-def recover(out_dir, stem, *, source):
-    """Before another compiler pass, refuse or restore an interrupted L1 publication."""
-    out_dir = directory(out_dir)
-    marker = read_json(_guard_path(out_dir, stem_name(stem)), optional=True)
+def recover(out_dir, stem, *, source, stage_log=None):
+    """Before another compiler pass, refuse or restore an interrupted L1 publication.
+
+    ``stage_log`` is an optional local display record. Only *entered* operations
+    whose failure is attributable (OSError / RepairError) are logged; an arbitrary
+    runtime error fabricates no stage. A context-manager exit failure is reported
+    as the exit operation, never as the last successful step.
+    """
+    def stage(label):
+        if stage_log is not None:
+            stage_log.append(label)
+
+    def call(label, fn, *args, **kwargs):
+        stage(label)  # record on entry: only operations actually entered are reported
+        return fn(*args, **kwargs)
+
+    out_dir = call("产物目录", directory, out_dir)
+    marker = call("事务标记", read_json, _guard_path(out_dir, stem_name(stem)), optional=True)
     if marker is None:
         return
-    store = _store(out_dir, stem, source)
+    store = call("恢复区", _store, out_dir, stem, source)
     task_id = marker.get("task_id", "")
-    if marker != _guard(store, task_id):
+    guard = call("标记归属", _guard, store, task_id)
+    if marker != guard:
+        stage("标记归属")
         raise RecoveryRequired("产物有其他未完成修复事务；请先人工恢复")
-    state = read_json(store.task_dir(task_id) / "state.json")
-    with _output_lock(out_dir, stem):
-        _check_directory(out_dir, state)
-        _finish_pending(store, task_id, out_dir, state)
-        _rollback(store, task_id, state, out_dir, stem)
-        state.update(state="rolled_back", rollback="recovered")
-        store.save(task_id, state)
+    state = call("任务状态读取", read_json, store.task_dir(task_id) / "state.json")
+    try:
+        manager = call("取得锁", _output_lock, out_dir, stem)
+    except BaseException:
+        raise  # call() already attributed an OSError/RepairError; others stay unattributed.
+    entered = False
+    saved = False
+    try:
+        with manager:
+            entered = True
+            call("产物目录身份", _check_directory, out_dir, state)
+            call("协调中断", _finish_pending, store, task_id, out_dir, state)
+            call("回滚", _rollback, store, task_id, state, out_dir, stem)
+            state.update(state="rolled_back", rollback="recovered")
+            call("保存恢复状态", store.save, task_id, state)
+            saved = True
+    except BaseException as exc:
+        if stage_log is not None:
+            if isinstance(exc, (OSError, RepairError)):
+                if not entered:
+                    # __enter__ failure (e.g. RepairError from files.lock).
+                    stage("取得锁")
+                elif saved and stage_log and stage_log[-1] == "保存恢复状态":
+                    # save() returned, so this is a failure while *leaving* the
+                    # recovery operation (__exit__). Never misreport the last
+                    # successful step as the failure point. A save() failure
+                    # itself keeps "保存恢复状态" as the last recorded stage.
+                    stage("退出恢复操作")
+            else:
+                # No reliable attribution: keep the display completely silent
+                # rather than fabricate a stage from an arbitrary exception.
+                del stage_log[:]
+        raise
 
 
 def _pdf_readable(data):

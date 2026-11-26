@@ -142,3 +142,87 @@ def diagnose(candidate, capture, *, template_results=(), available_paths=None):
                      error_lines=(tuple(e[2] for e in errors[:1] if e[2] is not None)
                                   if any(d.category == "catcode" and d.confidence == "exact" for d in items)
                                   else tuple(e[2] for e in errors if e[2] is not None)))
+
+
+# Private display-only event for bound XeLaTeX undefined-environment failures.
+# This never enters Diagnosis.items/shareable()/error_lines/identity, never
+# echoes raw log text, path, arbitrary exception, or suspected credential.
+_ENV_NAME = re.compile(r"Environment ([A-Za-z0-9_*@:-]+) undefined\.")
+_BEGIN_LINE = re.compile(r"l\.(\d{1,7})\s+(.*)")
+_SENSITIVE = ("/Users", "sk-", "api_key", "SECRET_MANUSCRIPT")
+_ENV_ACTIONS = {"imported", "admitted", "report_only", "ignored", "included"}
+
+
+def _clean_hints(hints):
+    cleaned = []
+    for hint in hints:
+        if not isinstance(hint, str) or any(mark in hint for mark in _SENSITIVE):
+            continue
+        cleaned.append(hint[:200])
+        if len(cleaned) >= 4:
+            break
+    return tuple(cleaned)
+
+
+def environment_hint(candidate, capture, *, planning_evidence=None):
+    """Local-only, bounded hints for bound XeLaTeX failures. Never mutates shared state."""
+    capture = capture or {}
+    fingerprint = digest(candidate)
+    failure = capture.get("failure")
+    bound = (capture.get("candidate_sha256") == fingerprint and isinstance(failure, tuple)
+             and len(failure) == 4 and isinstance(failure[3], bytes) and len(failure[3]) <= 2 * 1024 * 1024)
+    if not bound:
+        return ()
+    _, step, code, raw = failure
+    if step not in (1, 3, 4):
+        return ()
+    log = raw.decode("utf-8", errors="replace")
+    lines = candidate.decode("utf-8", errors="replace").splitlines()
+    hints = []
+    # Environment names come from a fixed vocabulary pattern, never raw log text.
+    names = []
+    for row in log.splitlines():
+        if not row.startswith("! "):
+            continue
+        for match in _ENV_NAME.finditer(row):
+            if match.group(1) not in names:
+                names.append(match.group(1))
+    anchors = []
+    for row in log.splitlines():
+        if match := _BEGIN_LINE.fullmatch(row):
+            anchors.append((int(match.group(1)), match.group(2).strip()))
+    for name in names[:3]:
+        anchor = next(((n, txt) for n, txt in anchors
+                       if 1 <= n <= len(lines) and txt.startswith("\\begin{")), None)
+        if anchor is None:
+            hints.append(f"环境 {name} 未定义，行号未核实")
+            continue
+        n, txt = anchor
+        inline = re.fullmatch(r"\\begin\{([^{}]+)\}(.*)", txt)
+        begins = [i + 1 for i, line in enumerate(lines)
+                  if re.search(r"\\begin\{" + re.escape(name) + r"\}", line)]
+        ends = [i + 1 for i, line in enumerate(lines)
+                if re.search(r"\\end\{" + re.escape(name) + r"\}", line)]
+        if (inline is None or inline.group(1) != name or len(begins) != 1
+                or len(ends) != 1 or begins[0] != n):
+            hints.append(f"环境 {name} 未定义，行号未核实")
+            continue
+        hints.append(f"环境 {name} 未定义：已核实候选第 {n} 行")
+    hints.append(f"XeLaTeX 第 {step} 步失败（退出码 {code}），候选哈希与本轮一致")
+    if planning_evidence is None:
+        hints.append("无本轮规划记录")
+    elif (isinstance(planning_evidence, dict)
+          and planning_evidence.get("candidate_sha256") == fingerprint):
+        decisions = planning_evidence.get("decisions")
+        summary = []
+        for name in names[:3]:
+            if isinstance(decisions, dict) and name in decisions:
+                item = decisions[name]
+                action = item.get("action") if isinstance(item, dict) else None
+                summary.append(f"{name}({action})" if action in _ENV_ACTIONS else name)
+            else:
+                summary.append(name)
+        hints.append("本轮规划匹配：" + (", ".join(summary) if summary else "本轮候选绑定一致"))
+    else:
+        hints.append("本轮规划未知或已过期")
+    return _clean_hints(hints)

@@ -5,7 +5,7 @@ import re
 import sys
 
 from .files import RepairError, digest, directory, read, regular
-from .l1_diagnostics import diagnose, mask_comments
+from .l1_diagnostics import diagnose, environment_hint, mask_comments
 from .l1_rules import select_plan
 from .l1_transaction import RecoveryRequired, apply_plan, recover
 
@@ -66,13 +66,26 @@ def template_results(candidate, out_dir, stem):
     return tuple(results)
 
 
-def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True):
-    """Separate opt-out for internal staging; ordinary CLI/R3 attempt the whitelist."""
+def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True, planning_evidence=None):
+    """Separate opt-out for internal staging; ordinary CLI/R3 attempt the whitelist.
+
+    ``planning_evidence`` is an optional, display-only local record. It never
+    enters capture/identity/taskbook and never aborts recovery, compilation,
+    admission or export. Batch 2A callers pass nothing (``None``).
+    """
     from . import compile_with_capture
     if enabled:
+        # A2A-1/A2A-2: recovery keeps its own independent stage record; a
+        # display failure must only drop the hint, never abort the real flow.
+        recovery_log = []
         try:
-            recover(out_dir, stem, source=source)
+            recover(out_dir, stem, source=source, stage_log=recovery_log)
         except (OSError, RepairError):
+            try:
+                if recovery_log:
+                    print("   L1 恢复未完成，失败阶段：" + recovery_log[-1], file=sys.stderr)
+            except Exception:
+                pass
             return False, "L1 恢复未完成；请人工检查受限事务材料", None
     ok, info, capture = compile_with_capture(compile_pdf, out_dir, stem, source=source)
     if ok or not enabled:
@@ -99,6 +112,12 @@ def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True):
             except RecoveryRequired:
                 report.attempts.append({"rule": plan.rule_id, "result": "recovery-required"})
                 info = "L1 回滚未完成，禁止交付；请人工检查受限事务材料"
+                # A2A-2: this post-publish rollback refusal has independent
+                # semantics; keep its own visible notice (never "编译尚未启动").
+                try:
+                    print("   L1 回滚未完成，禁止交付；请人工检查受限事务材料", file=sys.stderr)
+                except Exception:
+                    pass
             except (Exception, KeyboardInterrupt):
                 report.attempts.append({"rule": plan.rule_id, "result": "failed-rolled-back"})
                 from .state import capture_compile
@@ -115,6 +134,13 @@ def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True):
         if capture is not None:
             capture["l1"] = report.shareable()
         print("   L1 未修复：" + json.dumps(report.shareable(), ensure_ascii=False, sort_keys=True), file=sys.stderr)
+        # A2A-1/A2A-3: local display only. A failure here may only drop the
+        # extra hint; it must never abort the existing failure contract.
+        try:
+            for hint in environment_hint(candidate, capture, planning_evidence=planning_evidence):
+                print("   " + hint, file=sys.stderr)
+        except Exception:
+            pass
     except Exception:
         print("   L1 未修复：诊断条件不足，请人工检查本地日志。", file=sys.stderr)
     return False, info, capture
