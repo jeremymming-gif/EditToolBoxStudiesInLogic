@@ -196,6 +196,7 @@ class CompileFixRecompileTests(CompileFixFixture):
         self.assertFalse((self.task_dir(task_id) / "rollback").exists())
         self.assertFalse(self.trace.exists())
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_existing_target_replacement_never_exposes_missing_name(self):
         import importlib.util
         from contextlib import ExitStack
@@ -400,6 +401,7 @@ class CompileFixRecompileTests(CompileFixFixture):
         self.assertTrue(journal.is_file())
         self.assertEqual(self.attempts(), attempts)
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_rollback_preserves_writers_between_owned_hash_and_replacement(self):
         owned_pdf = b"%PDF-1.4\nSynthetic transaction-owned PDF.\n"
         late_pdf = b"%PDF-1.4\nFirst synthetic external PDF.\n"
@@ -470,6 +472,7 @@ class CompileFixRecompileTests(CompileFixFixture):
                 status = self.status(task_id)
                 self.assertEqual((status["state"], status["failure_phase"]), ("unknown", "rollback"))
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_rollback_keeps_displaced_inode_written_via_open_descriptor(self):
         if os.name != "posix":
             self.skipTest("This fixture exercises POSIX rename of an open file descriptor")
@@ -548,6 +551,7 @@ class CompileFixRecompileTests(CompileFixFixture):
         self.assertEqual(retained.read_bytes(), external_pdf)
         self.assertEqual(self.pdf.read_bytes(), original_pdf)
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_compiler_exit_failure_and_missing_fresh_artifacts_are_distinct(self):
         for mode, state in (("fail", "compile_failed"), ("no-artifacts", "unknown")):
             with self.subTest(mode=mode):
@@ -599,6 +603,7 @@ class CompileFixRecompileTests(CompileFixFixture):
         if self.trace.exists():
             self.assertNotIn(str(self.out), [entry["cwd"] for entry in self.attempts()])
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_tool_timeout_is_unknown_and_cannot_deliver_or_retry(self):
         self.instrument_tool("hold")
         original = self.tex.read_bytes()
@@ -699,6 +704,7 @@ class CompileFixRecompileTests(CompileFixFixture):
                         time.sleep(0.02)
         self.assertEqual(self.status(task_id)["state"], "unknown")
 
+    @unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
     def test_apply_lock_excludes_other_process_and_interruption_recovers_unknown(self):
         self.instrument_tool("hold")
         task_id, diff = self.prepare_edit()

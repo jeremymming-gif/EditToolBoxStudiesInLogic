@@ -553,6 +553,7 @@ raise SystemExit(cli.main(["--work-dir", work, "deliver", "--json", "--preview-i
         self.assertEqual(list(path.parent.glob("response-*")), [])
         self.assertTrue(self.operate("delete", record_key=self.retained_key())["ok"])
 
+    @unittest.skipIf(os.name == "nt", "原始回件私有 ACL 校验仅非 Windows 可用；Windows 的 fail-closed 由 test_windows_raw_body_retention_fails_closed_without_acl_verification 单独覆盖")
     def test_http_raw_bytes_are_private_and_cleared_by_lifecycle(self):
         for action in ("delete", "expire"):
             with self.subTest(action=action):
@@ -590,6 +591,7 @@ raise SystemExit(cli.main(["--work-dir", work, "deliver", "--json", "--preview-i
                 self.assertFalse((path.parent / "reply.json").exists())
                 self.assertNotIn("response_sha256", l2_r3._load(path))
 
+    @unittest.skipIf(os.name == "nt", "原始回件私有 ACL 校验仅非 Windows 可用；Windows 的 fail-closed 由 test_windows_raw_body_retention_fails_closed_without_acl_verification 单独覆盖")
     def test_delivered_raw_response_can_be_deleted_without_touching_delivery(self):
         marker = "synthetic provider only proof"
         args = self.apply(provider_metadata=marker)
@@ -677,6 +679,7 @@ raise SystemExit(cli.main(["--work-dir", work, "deliver", "--json", "--preview-i
         self.assertEqual(conv._tree_shas(str(self.final)), before_final)
         self.assertEqual(self.candidate.read_bytes(), before_preview)
 
+    @unittest.skipIf(os.name == "nt", "原始回件私有 ACL 校验仅非 Windows 可用；Windows 的 fail-closed 由 test_windows_raw_body_retention_fails_closed_without_acl_verification 单独覆盖")
     def test_invalid_or_uncommitted_http_response_is_unavailable_for_review(self):
         for failure in ("schema", "credential", "over_limit", "commit_crash"):
             with self.subTest(failure=failure):
@@ -714,6 +717,7 @@ raise SystemExit(cli.main(["--work-dir", work, "deliver", "--json", "--preview-i
                 self.assertFalse((path.parent / "reply.json").exists())
                 self.assertNotIn("response_sha256", l2_r3._load(path))
 
+    @unittest.skipIf(os.name == "nt", "原始回件私有 ACL 校验仅非 Windows 可用；Windows 的 fail-closed 由 test_windows_raw_body_retention_fails_closed_without_acl_verification 单独覆盖")
     def test_two_processes_consume_same_authorization_at_most_once(self):
         prepared = self.prepare()
         reply = self.report_reply(prepared).decode()
@@ -770,6 +774,7 @@ print(json.dumps(result))
                     "此处只记录本模块的真实写入与调用结果。\n")
         self.assertEqual((self.final / conv.CHECK_NOTE_FILENAME).read_bytes(), expected.encode("utf-8"))
 
+    @unittest.skipIf(os.name == "nt", "原始回件私有 ACL 校验仅非 Windows 可用；Windows 的 fail-closed 由 test_windows_raw_body_retention_fails_closed_without_acl_verification 单独覆盖")
     def test_cli_send_binds_credential_and_uses_default_opener_path(self):
         prepared = self.prepare()
         ids = {key: prepared[key] for key in ("evidence_id", "request_id", "request_sha256", "authorization_id")}

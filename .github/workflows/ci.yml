@@ -94,3 +94,27 @@ jobs:
           done
           echo "subset failures: $fails"
           test "$fails" -eq 0
+
+  # Plan C：平台安全设计（产物原子交换仅 macOS；Windows 原始回件私有 ACL fail-closed）
+  # 使这些 compilefix 能力在 Linux/Windows 上正确跳过；本 job 在真实 macOS 上提供覆盖。
+  # 不设 continue-on-error：macOS 上真失败必须红。修改 job 只追加，不动 engine/windows 两步。
+  macos:
+    name: macOS：compilefix 平台守卫能力的真实覆盖
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: 装依赖
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin flet pystray Pillow pytest
+      - name: Engine compilefix 事务/重编译套件
+        # 用 setup-python 的解释器显式指定 SLCN_TEST_PYTHON；PYTHONPATH 含 vendor 以沿用仓库约定。
+        # 这里只用 unittest 跑三套目标套件（runner 仅支持 quick/full，无法只跑这三套）；
+        # 缺 XeLaTeX 时真编译用例自然 SKIP，不算失败。
+        run: |
+          cd Engine
+          export PYTHONPATH=".:vendor"
+          python -m unittest tests.test_compilefix_convert tests.test_compilefix_l1_transaction tests.test_compilefix_recompile -v
+      - name: Flet compilefix R3 契约测试
+        run: python -m pytest sources-flet/tests/test_compilefix_l2_engine_r3.py -q

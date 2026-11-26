@@ -31,6 +31,7 @@ def pdf_bytes():
     return stream.getvalue()
 
 
+@unittest.skipUnless(sys.platform == "darwin", "产物原子交换事务仅 macOS 可用；Linux 下原子交换按设计 fail-closed")
 class TransactionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -164,6 +164,8 @@ class CompileFixFixture(unittest.TestCase):
 
     def seed_interrupted_closeout(self, out, task_id, *, owned_pdf=None):
         """Stop a synthetic closeout after the requested publication step."""
+        if sys.platform != "darwin":
+            raise unittest.SkipTest("产物原子交换事务仅 macOS（Darwin renameatx_np）可用；Linux 平台安全 fail-closed 由平台守卫跳过")
         sys.path.insert(0, str(ENGINE))
         try:
             from slcn.compilefix import transaction
