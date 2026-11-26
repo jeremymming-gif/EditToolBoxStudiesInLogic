@@ -14,8 +14,8 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 - **初排转换**：`.docx` / `.tex` 来稿 → 本刊模板排版稿（`.tex` + PDF + `reference.bib`），自动展开多文件、迁移前言依赖、复制图片，并默认套用无歧义的标点与脚注位置修正。
 - **文献核实**：把来稿引用与 `reference.bib` 对照。可选直连大模型（需自备 API），也可走「两段式」外部对话流程（不产生 API 费用）。
 - **一校核查**：按排版手册与校对经验逐条核查初排稿；初排已默认改好无歧义项，报告只列需要人工判断的命中，可一键补写修正（另存新文件）。
-- **整期装配**：检查 tex 信息 → 生成中英目录（可编辑栏目表）→ 编译全部 → 合并成刊 → 三档清理（移入回收站、可撤销）→ 生成目录摘要推送文案。
-- **设置与日志**：环境检查、AI/代理测试、全局日志（4000 行上限）、诊断包（脱敏）、快捷键。
+- **整期装配**：一个整期工作台，四个独立功能——生成目录、编译并合并、清理临时文件、生成推送文案；各自单独运行，不要求是流水线。
+- **设置与日志**：环境检查、AI/代理测试、全局日志（4000 行上限）、复制或导出诊断信息（文本）、快捷键。
 - **编辑部引用库**：查库、入藏、待处理（字段冲突、重复、健康检查）；写库有 dry-run 与备份，提交由人工完成。
 - **命令行**：引擎每个入口都能单独调用，便于脚本化与批量处理。
 
@@ -23,7 +23,7 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 
 | 平台 | 安装方式 | 需要 Python 吗 |
 |---|---|---|
-| Windows 10/11（x64） | 解压即用：`编辑部工具箱.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
+| Windows 10/11（x64） | 解压即用：主程序 `编辑部工具箱.exe` 与引擎文件夹 `SLCNEngine`（引擎入口 `SLCNEngine/SLCNEngine.exe`）放在同一文件夹，**解压后请保留原目录结构**，双击主程序 | 不需要 |
 | macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
 
 > 安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
@@ -33,7 +33,7 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 ### 直接使用（编辑部）
 
 1. 从 [Releases](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 下载对应平台的 zip。
-2. Windows：解压到任意目录，`编辑部工具箱.exe` 与 `SLCNEngine.exe` 保持同目录，双击 `编辑部工具箱.exe`。
+2. Windows：解压到任意目录并**保留原目录结构**——主程序 `编辑部工具箱.exe` 旁边是 `SLCNEngine` 文件夹（引擎入口 `SLCNEngine/SLCNEngine.exe`），两者保持同一父目录，双击 `编辑部工具箱.exe`。
 3. macOS：解压后把 `编辑部工具箱.app` 拖入「应用程序」，首次右键「打开」。
 
 界面按「工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于」组织；单篇与整期都是一页流式操作，日志与产物同屏可见。
@@ -99,7 +99,7 @@ python3.14 convert.py --source <来稿> --out <期目录> --compile
 |---|---|---|
 | [`使用说明.md`](使用说明.md) | 编辑部同事 | 面向使用者的操作手册（可直接转发） |
 | [官网文档](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) | 所有人 | 快速上手、安装、模板下载、常见问题、已知限制 |
-| [`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) | 维护者 | 本机接入、自检命令、文档站维护与故障速查 |
+| `docs-internal/maintain/quickstart.md`（治理仓 EditToolBox-notes） | 维护者 | 本机接入、自检命令、文档站维护与故障速查；属内部说明，不随公开站发布 |
 | [`Engine/docs/GUIDE.md`](Engine/docs/GUIDE.md) | 引擎使用者 | 引擎用法、参数与行为细节 |
 | [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md) | 集成 / 脚本 | 各 CLI 参数、退出码与输出契约 |
 | [`Engine/docs/PROOF_RULES.md`](Engine/docs/PROOF_RULES.md) | 一校核查 | 核查规则表与未实现项 |

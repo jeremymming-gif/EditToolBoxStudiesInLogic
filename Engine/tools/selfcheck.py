@@ -28,7 +28,8 @@ full 档（`selfcheck.py --full` 用 `--strict-tests`）与独立的 `gen_docs.p
   1. 环境（Python 版本、vendor、目录结构）；
   2. 全部引擎模块 import 冒烟（`slcn/*.py`）；
   3. 引擎套件 quick/full（`tools/run_engine_tests.sh`）；
-  4. 文档看门狗（AUTO 块 / 路径 / 编号，`tests/test_docs_consistency.py`）；
+  4. 文档看门狗（AUTO 块 / 路径 / 编号，`tests/test_docs_consistency.py`）+ 文档新鲜度门禁
+     （版本文案 / 三载体 / 旧名 / 规则数，仓根 `tools/docs_freshness_gate.py`）；
   5. 代码健康（超长函数 >150 行、全仓只出现 1 次的函数=死代码候选、TODO/FIXME）——**只警告**；
   6. 案例引用（公开仓代码/文档里的 `第 N 条` 是否都能在笔记仓案例里找到）+ 案例库体检
      （`tools/case_audit.py --check`）；没有笔记仓时 SKIP（公开仓/CI 正常）；
@@ -192,6 +193,46 @@ def check_docs(strict_tests: bool = False,
     FAILS.append("文档看门狗红")
     print("FAIL  文档看门狗")
     for ln in out.splitlines()[-8:]:
+        print("   ", ln)
+
+
+def check_docs_freshness_gate(env_extra: dict[str, str] | None = None) -> None:
+    """文档新鲜度门禁（公开仓根 `tools/docs_freshness_gate.py`）。
+
+    与文档看门狗互补：看门狗管 AUTO/路径/编号，本门禁管「版本号 ↔ 三处用户载体
+    （changelog / 使用说明.md / 官网用户页 + 软件内帮助）↔ 禁用旧名 ↔ 规则数」的联动。
+    quick/full 都跑（`--full` 自然继承）；只读、不写仓文件；`--skip-docs` 可跳过。
+
+    单独起子进程（不复用 `run()`）：该门禁是仓根 `tools/` 下的独立脚本，
+    `run()` 的 vendor/PYTHONPATH 注入与本项无关；单独起也便于套件打桩时不误伤本项。
+    """
+    gate = os.path.join(REPO, "tools", "docs_freshness_gate.py")
+    if not os.path.isfile(gate):
+        SKIPS.append("文档新鲜度门禁（本仓没有 tools/docs_freshness_gate.py）")
+        print("SKIP  文档新鲜度门禁（脚本缺失）")
+        return
+    from slcn import platform as _slcn_plat  # noqa: PLC0415  控制台窗口（B300-03）
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    if env_extra:
+        env.update(env_extra)
+    try:
+        r = subprocess.run([sys.executable, gate], cwd=REPO, env=env,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=300,
+                           **_slcn_plat.no_window_kwargs())
+    except Exception as e:  # noqa: BLE001
+        FAILS.append(f"文档新鲜度门禁无法运行：{type(e).__name__}: {e}")
+        print("FAIL  文档新鲜度门禁（无法运行）")
+        return
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode == 0 and "EXIT=0" in out:
+        print("PASS  文档新鲜度门禁（版本/三载体/旧名/规则数；EXIT=0）")
+        return
+    FAILS.append("文档新鲜度门禁红")
+    print("FAIL  文档新鲜度门禁")
+    for ln in out.splitlines()[-10:]:
         print("   ", ln)
 
 
@@ -489,6 +530,14 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if evidence_dir is not None:
                 evidence_dir.cleanup()
+    if args.skip_docs:
+        SKIPS.append("文档新鲜度门禁（--skip-docs）")
+        print("SKIP  文档新鲜度门禁（--skip-docs）")
+    elif nested:
+        SKIPS.append("文档新鲜度门禁（嵌套调用时跳过）")
+        print("SKIP  文档新鲜度门禁（嵌套调用，防递归）")
+    else:
+        check_docs_freshness_gate(env_extra=evidence_env)
     scan_code_health()
     if not args.no_cases:
         check_cases()

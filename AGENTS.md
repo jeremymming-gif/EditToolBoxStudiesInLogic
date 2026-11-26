@@ -139,11 +139,11 @@ CI 上就是这样，所以 CI 不该因为它们红。
 
 公开仓只放**可复制的命令与指针**；案例、成本、人员与内部流程留在**笔记仓**。新维护者从零接入按下列顺序：
 
-1. **本机接入**（Windows / macOS 双平台单命令源）：[`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) §1；
+1. **本机接入**（Windows / macOS 双平台单命令源）：`docs-internal/maintain/quickstart.md`（私有治理仓）§1；
 2. **自检与门禁**：同页 §2 —— `Engine/tools/selfcheck.py`（quick；发版前 `--full`，其中文档新鲜度检查与严格测试计数校验的区别见本清单第 6 条）；
 3. **构建/发版**：`RELEASING.md`；Windows 用 `Engine/tools/build_win_sidecar.ps1` + `flet pack`，macOS 由 CI 打包；
 4. **文档站维护**：同页 §4 —— Node ≥ 18；改/加页面必须同步 `docs/.vitepress/config.mts` 的 nav/sidebar；
    下载资产放 `docs/public/templates/`；
-5. **故障速查**：[`docs/maintain/troubleshooting.md`](docs/maintain/troubleshooting.md)。
+5. **故障速查**：`docs-internal/maintain/troubleshooting.md`（私有治理仓）。
 
 第一次接入只读 1→2→5 即可；涉及改代码/发版时再走 3→4，并遵守本清单与「红线」。

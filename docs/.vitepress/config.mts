@@ -32,7 +32,7 @@ export default defineConfig({
       { text: '入门', link: '/guide/quickstart', activeMatch: '/guide/' },
       { text: '功能', link: '/features/single', activeMatch: '/features/' },
       { text: '模板', link: '/templates/', activeMatch: '/templates/' },
-      { text: '参考', link: '/reference/faq', activeMatch: '/(reference|maintain)/' },
+      { text: '参考', link: '/reference/changelog', activeMatch: '/reference/' },
       { text: '下载', link: 'https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest' }
     ],
     sidebar: [
@@ -40,7 +40,10 @@ export default defineConfig({
         text: '入门',
         items: [
           { text: '快速上手', link: '/guide/quickstart' },
-          { text: '安装说明', link: '/guide/install' }
+          { text: '安装与首次打开', link: '/guide/install' },
+          { text: '系统要求', link: '/guide/system-requirements' },
+          { text: '常见问题', link: '/reference/faq' },
+          { text: '版本记录', link: '/guide/version-history' }
         ]
       },
       {
@@ -48,7 +51,9 @@ export default defineConfig({
         items: [
           { text: '单篇稿件', link: '/features/single' },
           { text: '整期装配', link: '/features/assembly' },
-          { text: '编辑部引用库', link: '/features/bibdb' }
+          { text: '引用库', link: '/features/bibdb' },
+          { text: '设置中心', link: '/features/settings' },
+          { text: '命令面板与搜索', link: '/features/search' }
         ]
       },
       {
@@ -64,12 +69,10 @@ export default defineConfig({
       {
         text: '参考',
         items: [
-          { text: '常见问题', link: '/reference/faq' },
-          { text: '已知限制与绕行', link: '/reference/known-limitations' },
+          { text: '版本记录', link: '/reference/changelog' },
+          { text: '已知限制与边界', link: '/reference/known-limitations' },
           { text: '环境检查与诊断', link: '/reference/environment-check' },
-          { text: '维护者接入', link: '/maintain/quickstart' },
-          { text: '故障速查（维护者）', link: '/maintain/troubleshooting' },
-          { text: '版本记录', link: '/reference/changelog' }
+          { text: '投稿模板入口', link: '/reference/submission-template' }
         ]
       }
     ],

@@ -1,6 +1,6 @@
 # 工具清单（Tools Inventory；owner 制 + 生命周期；新增工具必须登记）
 
-> 建立于批65（2026-10-20，治理小批 T4）；**批103（公开仓恢复批）同步；批104（B-157）登记 `inventory_check.py` 并实测校正计数；批105（B-146 波2-1）登记 `rule_dryrun.py`；批106（B-146 波2-2）登记 `docx_fixture_gen.py`；维护模式（B-144）登记 `rename_plan.py`；B-191（T1）登记 `gui_walkthrough/`**。批108（2026-11-01）删除旧 Tk/SwiftUI 双壳及其 12 个工具项（历史），引擎 sidecar 打包与源码树快照迁入 `Engine/tools/`。范围：本仓 `tools/`（**22 项 = 20 个工具项 + 2 个本地生成物**；批78 新增 `batch_accept.py`/`ci_summary.py`/`regression_diff.py`/`tool_fixtures.py` 4 项；**维护模式（B-144）实测 `git ls-files tools` 当时 = 41 个 tracked 路径**（含 Swift 测试台/夹具等嵌套文件；`rename_plan.py` commit 后 = 42），其中 4 件一次性辅助已归档 `archive/`〔B-164；路径相对 `tools/`〕）+ `Engine/tools/`（6 项）。
+> 建立于批65（2026-10-20，治理小批 T4）；**批103（公开仓恢复批）同步；批104（B-157）登记 `inventory_check.py` 并实测校正计数；批105（B-146 波2-1）登记 `rule_dryrun.py`；批106（B-146 波2-2）登记 `docx_fixture_gen.py`；维护模式（B-144）登记 `rename_plan.py`；B-191（T1）登记 `gui_walkthrough/`**。批108（2026-11-01）删除旧 Tk/SwiftUI 双壳及其 12 个工具项（历史），引擎 sidecar 打包与源码树快照迁入 `Engine/tools/`。范围：本仓 `tools/`（**23 项 = 21 个工具项 + 2 个本地生成物**；批78 新增 `batch_accept.py`/`ci_summary.py`/`regression_diff.py`/`tool_fixtures.py` 4 项；**维护模式（B-144）实测 `git ls-files tools` 当时 = 41 个 tracked 路径**（含 Swift 测试台/夹具等嵌套文件；`rename_plan.py` commit 后 = 42），其中 4 件一次性辅助已归档 `archive/`〔B-164；路径相对 `tools/`〕）+ `Engine/tools/`（6 项）。
 > **数字口径（批104 起由 `tools/inventory_check.py --check` 机器校验，不再手抄）**：第 1 节 **34 行 = 32 个工具项（含 `archive/` 4 件）+ 2 个本地生成物**；「工具项 + 本清单」= **21 个 tracked 条目**（批105 口径为 28；批106 +1、维护模式 B-144 +1、B-191 +1、B-225 +2〔`case_compare.py`/`dirpush_test/`〕）。`git ls-files` 原样计数含嵌套文件，只作实测输出、不作硬判据。
 > **规则**：①每个工具必须有 owner、用途、最后提交、测试/验证方式；②状态 = **active**（在用）/ **dormant**（疑似休眠，5+ 批未用）/ **legacy**（废弃，移 `tools/legacy/`（需要时新建），**需 Lead 批准、可恢复、不物理删除**）/ **archived**（已移 `tools/archive/`，**可 `git mv` 恢复、不物理删除、不占 active 名额**）；③**新增工具不登记不得合入**（owner+测试必须写）；④每 5 批 prune 一次，批末监理抽检；⑤"最后提交"= `git log -1 --format=%cs -- <path>`（截至 2026-10-22，批104 复核）。
 > owner 域：engine-core（引擎工具/`Engine/tools`）、qa-release（验收/CI 工具）、rules-docs（模板/文档生成）、case-lab（案例工具）；`mac-shell` 随旧壳删除（历史）。批65 初版盘点由 Lead 代写，后续按域 owner 维护。
@@ -29,10 +29,11 @@
 | `archive/probe_rel/main.swift` | `#filePath`/CWD 诊断探针（一次性排障） | mac-shell | 2026-10-16 | 无自动测试 | **archived**（批103 B-164） | 自建成后无真实调用 → `git mv` 归档；恢复：`git mv tools/archive/probe_rel tools/`；排障时参考 |
 | `fixtures/` | 测试夹具（`merge_replies.json` 等；见 `fixtures/README.md`） | engine-core/qa-release | 2026-10-16 | Engine tests 引用（test_aibib/test_batch63*/test_infocheck_toc） | active | 只留「测试真的会读」的夹具，历史夹具已删 |
 | `log_cases.json` | 日志用例（GUIDE 日志章节引用；旧壳桥测试已删） | rules-docs | 2026-10-17 | `Engine/docs/GUIDE.md` 引用 | active | 改日志文案时同步 |
+| `docs_freshness_gate.py` | 文档新鲜度门禁（版本号↔changelog↔三载体↔旧名↔规则数联动；跨产物，补 `test_docs_consistency.py`/`gen_docs.py` 不查的联动层） | qa-release | 2026-11-26（本批新增，待提交） | `python3 tools/docs_freshness_gate.py`（EXIT=0 全 ✓）；`python3 -m pytest tests/test_docs_freshness_gate.py`（7 passed） | active | 接入 `.github/workflows/docs.yml`（build 前）与 `Engine/tools/selfcheck.py`（quick 档）；只读、纯 stdlib、可指向任意仓根（测试夹具） |
 | `dump_outline`（本地二进制） | `archive/dump_outline.swift` 编译产物（Mach-O arm64） | mac-shell | 未跟踪（`.gitignore`） | 无 | legacy（本地） | **不入仓**；可删除后重编；不是源码 |
 | `__pycache__/`（本地） | Python 字节码缓存 | — | 未跟踪（`.gitignore`） | 无 | 非工具 | 忽略，不计入清单 |
 
-## 2. `Engine/tools/`（8 项）
+## 2. `Engine/tools/`（9 项）
 
 | 项 | 用途 | owner | 最后提交 | 测试/验证 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
@@ -44,6 +45,7 @@
 | `gen_content_templates.py` | 内容模板生成（toctemplate/content_templates） | rules-docs | 2026-10-16 | 生成物在 `Engine/slcn/`（`content_templates.py`/`toctemplate.py`）；由 `Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻调用（防 JSON 夹具↔py 漂移） | active | 模板升级批使用；每轮由 `(n1)(n2)` 调用守护 |
 | `build_win_sidecar.ps1` | Windows 引擎 sidecar 打包（PyInstaller onefile）+ 逐入口 --help/convert 自检 | qa-release | 批108 | `test_platform.py` (g) 解析 `$Entries` 与 `engine_main.ENTRIES` 同序；批108 本机实跑产物 `--version` rc0 | active | 旧 `sources-win/build-win.ps1` 的引擎段迁出（旧壳已删）；产物默认 `dist/win-sidecar/dist/SLCNEngine.exe`（gitignore） |
 | `source_tree_sha.py` | 源码树静默快照（确定性 sha / `--check-against` 构建期改动检测） | qa-release | 批108 | `test_run_record.py` ⑧（确定性 / 产物排除 / 源码改动 changed=1+警告） | active | 旧 `build.sh` 的 SOURCE-TREE-SNAPSHOT 逻辑迁出（旧脚本已删）；CI/本地构建收尾用 |
+| `migrate_sortname_identity.py` | `sortname` 身份一次性迁移（B-377：把 `sortname` 从内容身份挪出后重算 `content_sha256`；真实库 0 条显式 sortname，changed 预期 0） | engine-core | 2026-11-08（`5488aa3`） | 人工 `--dry-run` 预演看 CSV/summary + 写回前逐字节自检；当前真实库 0 条、changed 预期 0 | dormant | 一次性迁移脚本，默认零变化；不改规则、只做存量对齐；真实库关闭 App 后按需 `--apply` |
 
 ## 3. 休眠候选汇总（**保留不删除**；批65 已标 dormant，待 Lead/用户确认后维持或转 legacy）
 

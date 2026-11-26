@@ -124,18 +124,6 @@
   line-height: 1.6;
 }
 
-/* 截图占位：等界面稳定后再替换成真实截图（任务约定：软件优化完成后再补） */
-.shot-placeholder {
-  margin: 20px 0;
-  border: 1px dashed var(--vp-c-divider);
-  border-radius: 12px;
-  padding: 40px 24px;
-  text-align: center;
-  color: var(--vp-c-text-3);
-  background: var(--vp-c-bg-soft);
-  font-size: 14px;
-}
-
 /* 文档内：下载按钮并排 */
 .download-row {
   display: flex;
