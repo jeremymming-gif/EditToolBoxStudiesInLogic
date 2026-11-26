@@ -579,9 +579,30 @@ _ZH11_PAREN_CLOSE = ")）"
 
 
 # ── ZH-14（B-278）：集合里只改**单个**竖线；`\|` 与成对 `|…|`（绝对值）不动 ──
+#: 竖线左侧若紧邻这些命令，裸 `|` 是命令的 **delimiter 参数**（如 `\bigm|`），
+#: 不是集合分隔符；改成 `\bigm\mid ` 会让 XeLaTeX 报 `Missing delimiter (. inserted).`。
+#: 期 91 Xiaozhou_Che 真稿 `\bigl\{\phi(v(x))\bigm|\phi(y)\in q\bigr\}` 即此例。
+_ZH14_DELIM_CMDS: tuple[str, ...] = (
+    "biggm", "biggl", "biggr", "Biggm", "Biggl", "Biggr",
+    "bigm", "bigl", "bigr", "Bigm", "Bigl", "Bigr",
+    "bigg", "Bigg", "big", "Big", "left", "right", "middle",
+)
+_ZH14_DELIM_RE = re.compile(r"\\(?:" + "|".join(_ZH14_DELIM_CMDS) + r")[ \t]*$")
+
+
 def _zh14_accept(m: re.Match, tex: str) -> bool:
-    r"""只有**恰好一个**未转义竖线时才可自动改；成对竖线/`\|` 一律跳过（宁可不改）。"""
-    return len(re.findall(r"(?<!\\)\|", m.group(0))) == 1
+    r"""只有**恰好一个**未转义竖线时才可自动改；成对竖线/`\|` 一律跳过（宁可不改）。
+
+    期 91 Xiaozhou_Che 真稿里 `\bigm|` 的裸 `|` 是 delimiter，合法且不可改：
+    竖线左侧（允许夹空白）紧邻需要 delimiter 的命令时整条跳过。
+    """
+    bars = [mm.start() for mm in re.finditer(r"(?<!\\)\|", m.group(0))]
+    if len(bars) != 1:
+        return False
+    left = m.group(0)[:bars[0]]
+    # 命令名边界：必须从反斜杠起完整匹配命令名，之后只许空白到竖线。
+    # `\foobigm|` 里 `bigm` 前面不是反斜杠 → 匹配不到，不算 delimiter。
+    return not _ZH14_DELIM_RE.search(left)
 
 
 def _zh14_replace(m: re.Match) -> str:

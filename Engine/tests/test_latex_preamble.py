@@ -51,6 +51,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 
 from slcn import build  # noqa: E402
 from slcn import preamble as PRE  # noqa: E402
+from slcn import sources as SRC  # noqa: E402
 from slcn.latex import expand_inputs  # noqa: E402
 
 FAILS = []
@@ -1428,6 +1429,100 @@ check("B-392 CLI --no-original 下源目录同样未被改动",
 for _o in (_b392_o1, _b392_o1b, _b392_o2, _b392_o3, _b392_o4,
            _b392_cli_out_default, _b392_cli_out_skip):
     shutil.rmtree(_o, ignore_errors=True)
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑩ 带连字符的字面环境名（theorem-a/b/c，期 91 01 Xiaozhou_Che 实测）
+# --------------------------------------------------------------------------
+# 真稿导言区 `\newtheorem*{theorem-a}{Theorem A}`（连字符在 TeX csname 里合法），
+# 正文 `\begin{theorem-a}[=~Theorem~\ref{...}]`。旧的名字文法 [A-Za-z@][A-Za-z@0-9]*
+# 在「声明收集」「已有名判重」「正文使用」「共享计数器子名」四处都把连字符截断，
+# 导致定义不迁移 + 预检无告警（双重盲区）。本段钉住六处一致支持 `-` 后的行为。
+# 只放开**环境/定理名字面规格**；宏名（\foo-bar 仍认 \foo）、颜色、列类型、
+# label/ref 键各用各自规则，字面 `*` 不在此批。
+# ══════════════════════════════════════════════════════════════════════════
+_HYPHEN_PRE = r"""\documentclass{article}
+\usepackage{amsmath}
+% \newtheorem*{dead-a}{注释掉}
+\newtheorem*{theorem-a}{Theorem A}
+\newtheorem*{theorem-b}{Theorem B}
+\newenvironment*{env-c}[1]{#1}{}
+\begin{document}
+\begin{theorem-a}[=~Theorem~\ref{thm:x}]正文\end{theorem-a}
+\begin{theorem-b}正文\end{theorem-b}
+\begin{env-c}{K}正文\end{env-c}
+\end{document}
+"""
+_HYPHEN_SCAN = PRE.scan_preamble(PRE.source_preamble(_HYPHEN_PRE))
+_HYPHEN_KINDS = {(d.kind, d.name) for d in _HYPHEN_SCAN}
+check("⑩ scan_preamble 收连字符定理名 theorem-a/b",
+      ("newtheorem", "theorem-a") in _HYPHEN_KINDS
+      and ("newtheorem", "theorem-b") in _HYPHEN_KINDS,
+      str(sorted(_HYPHEN_KINDS)))
+check("⑩ scan_preamble 收连字符 newenvironment 名 env-c",
+      ("newenvironment", "env-c") in _HYPHEN_KINDS)
+check("⑩ 注释掉的 dead-a 不收",
+      not any(n == "dead-a" for _k, n in _HYPHEN_KINDS))
+
+_HYPHEN_DEFINED = PRE.defined_names(PRE.source_preamble(_HYPHEN_PRE))
+check("⑩ defined_names 认 theorem-a/b/env-c、不含注释 dead-a",
+      {"theorem-a", "theorem-b", "env-c"} <= _HYPHEN_DEFINED
+      and "dead-a" not in _HYPHEN_DEFINED,
+      str(sorted(_HYPHEN_DEFINED)))
+
+check("⑩ used_environments 认 \\begin{theorem-a}（连字符）",
+      {"theorem-a", "theorem-b", "env-c"} <=
+      PRE.used_environments(SRC.extract_body_text(_HYPHEN_PRE)))
+
+check("⑩ missing_environments 精确定位连字符缺失名",
+      PRE.missing_environments(r"\begin{missing-a}", provided_text="") == ["missing-a"],
+      str(PRE.missing_environments(r"\begin{missing-a}", provided_text="")))
+
+check("⑩ _shared_theorem_counter认连字符子名的父名",
+      PRE._shared_theorem_counter(r"\newtheorem{child-a}[parent-a]{Child}") == "parent-a",
+      repr(PRE._shared_theorem_counter(r"\newtheorem{child-a}[parent-a]{Child}")))
+
+# 反例（回归护栏）：环境名放宽不得波及控制词宏名/颜色/列类型。
+check("⑩ 宏名边界不变：\\foo-bar 仍按宏 foo 识别",
+      PRE.macro_uses(r"\foo-bar") == {"foo"}
+      and PRE.apply_renames(r"\foo-bar", {"foo": "baz"}) == r"\baz-bar")
+
+# 端到端：真稿形态的连字符定理声明须从作者稿迁进产物导言区（各一次），
+# 正文使用与 [=~Theorem~\ref{}] 可选参数逐字保留。
+write("hyph/main.tex", r"""\documentclass{article}
+\usepackage{amsmath}
+\newtheorem*{theorem-a}{Theorem A}
+\newtheorem*{theorem-b}{Theorem B}
+\newtheorem*{theorem-c}{Theorem C}
+\begin{document}
+\begin{theorem-a}[=~Theorem~\ref{thm-weakly-generic-Gmn}]A\end{theorem-a}
+\begin{theorem-b}[=~Theorem~\ref{thm:additive_f_generic}]B\end{theorem-b}
+\begin{theorem-c}[=~Theorem~\ref{thm:additive_f_generic=notdefinable}]C\end{theorem-c}
+\end{document}
+""")
+_res10, _tex10 = build_one("hyph/main.tex", "hyph")
+_pre10, _mark10, _tail10 = _tex10.partition("\\begin{document}")
+_body10 = _tail10.partition("\\end{document}")[0]
+for _letter, _key in zip("abc", (
+        "thm-weakly-generic-Gmn", "thm:additive_f_generic",
+        "thm:additive_f_generic=notdefinable")):
+    _name10 = "theorem-" + _letter
+    _decl10 = "\\newtheorem*{" + _name10 + "}{Theorem " + _letter.upper() + "}"
+    check("⑩ 产物导言区迁入 " + _name10 + " 原声明一次",
+          _pre10.count(_decl10) == 1,
+          str(_pre10.count(_decl10)))
+    check("⑩ 产物正文 " + _name10 + " 起止与可选参数原样",
+          _body10.count("\\begin{" + _name10 + "}") == 1
+          and _body10.count("\\end{" + _name10 + "}") == 1
+          and ("[=~Theorem~\\ref{" + _key + "}]") in _body10)
+# 宿主模板 SLEN.sty 已有 corollary* 等星号环境：放宽后不得新增星号缺失告警。
+check("⑩ 星号环境不新增缺失告警（corollary*/align*）",
+      PRE.missing_environments(
+          r"\begin{align*}x\end{align*}\begin{corollary*}y\end{corollary*}",
+          provided_text=r"\newtheorem*{corollary}{C}",
+      ) == [],
+      str(PRE.missing_environments(
+          r"\begin{align*}x\end{align*}\begin{corollary*}y\end{corollary*}",
+          provided_text=r"\newtheorem*{corollary}{C}")))
 
 shutil.rmtree(TMP, ignore_errors=True)
 

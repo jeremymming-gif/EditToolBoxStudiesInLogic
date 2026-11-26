@@ -146,6 +146,14 @@ _MACRO_KINDS = frozenset({
 })
 _ENV_KINDS = frozenset({"newtheorem", "newenvironment"})
 
+# 本引擎接受的**字面环境/定理名**规格：字母或 @ 开头，后续可含字母、@、数字、连字符。
+# 期 91 01 Xiaozhou_Che 实测：`\newtheorem*{theorem-a}{Theorem A}` 里连字符在 TeX 的
+# csname 里合法，旧规格 [A-Za-z@][A-Za-z@0-9]* 在声明收集/已有名判重/正文使用/共享
+# 计数器子名四处把连字符截断，导致定义不迁 + 预检无告警。六处统一使用本片段，
+# 只放开连字符；宏名（\foo-bar 仍认 \foo）、颜色、列类型、label/ref 键各用各的规则，
+# 字面 `*` 也不在此列（星号环境由命令侧 `\*?` 负责）。
+_ENV_NAME_FRAG = r"[A-Za-z@][A-Za-z@0-9-]*"
+
 # 编译期才知道的环境（LaTeX 内核 / 模板类 / 常用宏包自带）：文本扫描看不到它们，
 # 定义缺失预检里必须免报，否则每篇都会报 itemize/center/equation 无法解析。
 # ⚠️ 只收「一定不是作者自定义定理环境」的：字体大小环境、版式环境、常见宏包环境。
@@ -396,7 +404,7 @@ def scan_preamble(pre: str) -> list[DefItem]:
         except ValueError:
             continue
         name = name.strip()
-        if re.fullmatch(r"[A-Za-z@][A-Za-z@0-9]*", name):
+        if re.fullmatch(_ENV_NAME_FRAG, name):
             found.append((m.start(), DefItem("newtheorem", name, pre[m.start() : i], pos=m.start())))
 
     for m in re.finditer(r"\\newenvironment\*?", pre):
@@ -411,7 +419,7 @@ def scan_preamble(pre: str) -> list[DefItem]:
         except ValueError:
             continue
         name = name.strip()
-        if re.fullmatch(r"[A-Za-z@][A-Za-z@0-9]*", name):
+        if re.fullmatch(_ENV_NAME_FRAG, name):
             found.append((m.start(), DefItem("newenvironment", name, pre[m.start() : i], pos=m.start())))
 
     for m in re.finditer(r"\\DeclareMathOperator\*?\s*", pre):
@@ -496,8 +504,8 @@ def scan_preamble(pre: str) -> list[DefItem]:
 
 
 _NAME_PATTERNS = (
-    r"\\newtheorem\*?\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}",
-    r"\\newenvironment\*?\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}",
+    r"\\newtheorem\*?\s*\{\s*(" + _ENV_NAME_FRAG + r")\s*\}",
+    r"\\newenvironment\*?\s*\{\s*(" + _ENV_NAME_FRAG + r")\s*\}",
     r"\\DeclareMathOperator\*?\s*\{\s*\\([A-Za-z@]+)\s*\}",
     r"\\newcolumntype\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}",
     r"\\definecolor\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}",
@@ -855,7 +863,7 @@ _COLSPEC_ENV_RE = re.compile(
     r"(?:\[[^\]]*\])?\s*\{([^{}]*)\}(?:\s*\{([^{}]*)\})?"
 )
 _MULTICOLUMN_RE = re.compile(r"\\multicolumn\s*\{\s*\d+\s*\}\s*\{([^{}]*)\}")
-_BEGIN_ENV_RE = re.compile(r"\\begin\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}")
+_BEGIN_ENV_RE = re.compile(r"\\begin\s*\{\s*(" + _ENV_NAME_FRAG + r")\s*\}")
 
 
 def used_environments(text: str) -> set[str]:
@@ -968,7 +976,7 @@ def _def_key(item: DefItem) -> tuple[str, str]:
 def _shared_theorem_counter(source: str) -> str:
     """`\\newtheorem{X}[Y]{标题}` 里共享计数器环境名 Y（没有则空串）。"""
     m = re.match(
-        r"^\s*\\newtheorem\*?\s*\{\s*[A-Za-z@][A-Za-z@0-9]*\s*\}\s*\[([^\]]*)\]",
+        r"^\s*\\newtheorem\*?\s*\{\s*" + _ENV_NAME_FRAG + r"\s*\}\s*\[([^\]]*)\]",
         source,
     )
     return m.group(1).strip() if m else ""

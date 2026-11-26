@@ -284,6 +284,26 @@ check("(a) ZH-14 反例：成对竖线（绝对值/条件）→ 不报（B-278 �
       not hits_of("$\\{x: |x|>5\\}$\n", "ZH-14"))
 check("(a) ZH-14 反例：转义竖线 `\\|` 不算集合竖线",
       not hits_of("$\\{x\\|x>5\\}$\n", "ZH-14"))
+# 期 91 Xiaozhou_Che 真稿案例：`\bigm|` 里裸 `|` 是 \bigm 的 delimiter 参数，
+# 不是集合分隔符；改成 `\bigm\mid ` 会让 XeLaTeX 报 `Missing delimiter (. inserted).`。
+# 这类竖线一律不报不改（命令名要按边界判断：`\foobigm|` 不算 `\bigm|`）。
+for _tex, _why in (
+        (r"$\bigl\{\phi(v(x))\bigm|\phi(y)\in q\bigr\}$", r"\bigm| 真稿原行"),
+        (r"$\{x\bigm|y\}$", r"\bigm|"),
+        (r"$\{x\bigm | y\}$", r"\bigm |（命令与竖线间有空格）"),
+        (r"$\{x\bigl|y\bigr\}$", r"\bigl| / \bigr|"),
+        (r"$\{x\left|y\right.\}$", r"\left|（配 \right.）"),
+        (r"$\{x\left.y\right|\}$", r"\right|（配 \left.）"),
+        (r"$\{x\left(y\middle|z\right)\}$", r"\middle|"),
+        (r"$\{x\Bigm|y\}$", r"\Bigm|"),
+        (r"$\{x\biggm|y\}$", r"\biggm|"),
+        (r"$\{x\Biggm|y\}$", r"\Biggm|"),
+):
+    check(f"(a) ZH-14 反例不报：{_why}", not hits_of(_tex, "ZH-14"), _tex)
+check("(a) ZH-14 命令边界：`\\foobigm|` 不是 \\bigm|（集合竖线照报）",
+      len(hits_of(r"$\{x\foobigm|y\}$", "ZH-14")) == 1)
+check("(a) ZH-14 正对照：集合里已有 `\\mid` 不新增命中",
+      not hits_of(r"$\{x\mid x>5\}$", "ZH-14"))
 check("(a) ZH-15 \\mathbf → 报", len(hits_of("$\\mathbf{a+b}=c$\n", "ZH-15")) == 1)
 # S4（B-273）ZH-22「表格/浮动体内 \\footnote 会被吞」：手册 285–294（改用 \\footnotemark+\\footnotetext）。
 for _env, _why in (("table", "table 环境"), ("tabular", "tabular 环境"),
@@ -403,6 +423,21 @@ check("(c) 页码改成 `第8\\cndash 12页`", "第8\\cndash 12页" in out)
 check("(c) 顿号被删（`“甲”、‘乙’` → `“甲”‘乙’`）",
       "顿号：“甲”‘乙’" in out, out.splitlines()[1])
 check("(c) 集合竖线改成 `\\mid`", "\\{x\\mid x>5\\}" in out)
+# 消融：定界符形态逐字节不变；正例仍被改。
+_delim_tex = "$\\bigl\\{\\phi(v(x))\\bigm|\\phi(y)\\in q\\bigr\\}$\n"
+_delim_out, _delim_applied = P.apply_fixes(_delim_tex, P.check(_delim_tex, lang="zh"))
+check("(c) 消融：ZH-14 定界符反例经 apply_fixes 逐字节不变",
+      _delim_out == _delim_tex and "ZH-14" not in [h.rule_id for h in _delim_applied],
+      f"out={_delim_out.strip()} applied={[h.rule_id for h in _delim_applied]}")
+_pos_tex = "$\\{x|x>5\\}$\n"
+_pos_out, _pos_applied = P.apply_fixes(_pos_tex, P.check(_pos_tex, lang="zh"))
+check("(c) 消融：ZH-14 正例经 apply_fixes 仍改成 \\mid",
+      _pos_out == "$\\{x\\mid x>5\\}$\n"
+      and "ZH-14" in [h.rule_id for h in _pos_applied], _pos_out.strip())
+_mid_tex = "$\\{x\\mid x>5\\}$\n"
+_mid_out, _mid_applied = P.apply_fixes(_mid_tex, P.check(_mid_tex, lang="zh"))
+check("(c) 消融：集合内已有 \\mid 的文本不变、不新增命中",
+      _mid_out == _mid_tex and "ZH-14" not in [h.rule_id for h in _mid_applied])
 foot_hits = [h for h in rep.hits if h.rule_id == "ZH-02"]
 check("(c) 脚注里的中文文献条目（`鞠实儿. 论逻辑…`）**只报不改**",
       foot_hits and all(not h.fixable for h in foot_hits), f"{[(h.text, h.fixable) for h in foot_hits]}")
