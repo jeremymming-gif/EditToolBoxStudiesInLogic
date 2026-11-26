@@ -225,12 +225,18 @@ jobs:
           # 重复双击不要开出第二个实例
           $PB -c "Add :LSMultipleInstancesProhibited bool true" "$PLIST" 2>/dev/null \
             || $PB -c "Set :LSMultipleInstancesProhibited true" "$PLIST"
+          # 方案 A：无头 Python 主进程（仅链接 CoreFoundation，无 NSApplication）不需要
+          # Dock tile；LSUIElement 消除灰色 ℵ 图标 + 持续跳动。彩色 Flet 客户端图标
+          # 不受影响（它有自己的 Info.plist）。主 app 从 Dock/⌘Tab 消失是预期效果。
+          # 注意：open 子进程的 ASN 影响需真机 A/B 验证；这里只管注入 + 保留签名链路。
+          $PB -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
+            || $PB -c "Set :LSUIElement true" "$PLIST"
           # 版本号与引擎同一出处（Engine/slcn/__init__.py）；键缺失时 Add
           for key in CFBundleVersion CFBundleShortVersionString; do
             $PB -c "Set :$key $V" "$PLIST" 2>/dev/null \
               || $PB -c "Add :$key string $V" "$PLIST"
           done
-          plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
+          plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|LSMultipleInstancesProhibited|LSUIElement|CFBundleVersion|CFBundleShortVersionString'
 
       - name: macOS 重签封条（launcher + 外层 ad-hoc，不 --deep）
         run: |
