@@ -22,7 +22,7 @@ from slcn.compilefix.l1_rules import select_plan
 from slcn.compilefix.model import diagnostics, taskbook
 from slcn.compilefix.state import Store, capture_compile, target_key
 
-BASELINE_PATH = Path("/tmp/b2a_baseline.json")
+BASELINE_PATH = Path(__file__).resolve().parent / "fixtures" / "compilefix" / "b2a_baseline.json"
 with BASELINE_PATH.open("r", encoding="utf-8") as stream:
     BASELINE = json.load(stream)
 
