@@ -16,6 +16,7 @@ from pathlib import Path
 
 import flet as ft
 
+from services import ai_prefs as AI
 from services import engine_bridge as EB
 from services import settings_store as SS
 from services import startup_log as SLOG
@@ -666,6 +667,12 @@ class SinglePage(BasePage):
         self._norm_hinted = False
         self._meta_panel = None
         self._meta_temp = ""
+        # task-3：普通转换编译失败后的「AI 辅助编译修复」引导行。
+        # 普通初排转换不产出 AI 工作流那套签名证据，这里只做只读分流：
+        # 开关未开/无本机 Key → 去设置；齐全 → 引导到唯一能产出真证据的
+        # AI 辅助初排预览流程。绝不伪造 ID、绝不自行 prepare/send。
+        self._plain_compile_failed = False
+        self._plain_fix_row = None
 
     # ── 构建 ───────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -703,8 +710,12 @@ class SinglePage(BasePage):
                           controls=[self._norm_jump_btn])
         self._norm_row = norm_row
         # 普通转换的结果与 AI 工作区各有自己的结果呈现，切换时保留其内部状态。
+        # task-3：结果区末尾挂一条默认隐藏的编译修复引导行，只在普通转换
+        # 退出码 2 时才显示（见 _sync_plain_compile_fix）。
+        self._plain_fix_row = ft.Column(spacing=t.sp("1"), visible=False, controls=[])
         self._ordinary_results = ft.Column(spacing=t.sp("2"), controls=[
             self._result.root, self._artifact_row, self._proof.root,
+            self._plain_fix_row,
         ])
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
@@ -1075,6 +1086,48 @@ class SinglePage(BasePage):
             return False
         self.app.toast("初排任务仍在运行。请等待本次操作完成后再关闭窗口。")
         return True
+
+    def _sync_plain_compile_fix(self) -> None:
+        """普通转换编译失败后的引导行——只用既有单一闸门分流，绝不联网。
+
+        普通初排转换编译失败时引擎只回退出码 2（Engine/convert.py 741-746），
+        不产出 AI 工作流那套签名证据（preview_id / evidence_id /
+        authorization_id）。因此这里不做 prepare/send，也不伪造任何 ID：
+          * 开关未开 / 无本机 Key → 明确告知，给「去设置」入口；
+          * 开关齐全但无签名证据 → 引导到唯一能产出真证据的「AI 辅助初排」。
+        闸门直接复用 EB.compile_fix_settings（与 AI 工作流同一处，不另立
+        第二套护栏）；本方法从不调用 ai_compile_fix_call。
+        """
+        row = getattr(self, "_plain_fix_row", None)
+        if row is None:
+            return
+        row.controls.clear()
+        if not self._plain_compile_failed or self.flow_key != "convert":
+            row.visible = False
+            return
+
+        t = self.t
+        try:
+            settings = EB.compile_fix_settings(AI.raw_from_store(self.app.store))
+        except Exception:  # noqa: BLE001 - 设置读取坏了保守按未开启处理（fail-closed）
+            settings = {}
+        switches_on = (settings.get("ai_enabled") is True
+                       and settings.get("compile_fix_enabled") is True)
+        has_key = bool(settings.get("key"))
+        row.visible = True
+        if not switches_on or not has_key:
+            row.controls.append(C.inline_note(
+                "本机 AI 辅助编译修复未开启或无 API Key（需同时打开两个开关并填本机密钥）。",
+                t, tone="warn",
+                action=C.text_button("去设置", lambda e: self.app.goto("settings"), t)))
+            return
+
+        # 开关齐全：普通转换仍不产出可发送的签名证据，不能自行进入
+        # prepare/send；唯一合规路径是让用户在「AI 辅助初排」里真实预览。
+        row.controls.append(C.inline_note(
+            "普通初排转换不生成可发送的 AI 编译修复证据；请打开 AI 辅助初排，"
+            "由其产出只读披露后逐篇确认。", t, tone="info",
+            action=C.text_button("打开 AI 辅助初排", self._toggle_ai_workflow, t)))
 
     def _toggle_ai_workflow(self, e=None) -> None:
         """展开/收起初排页的 AI 区；首次展开才导入并实例化视图（失败如实报错）。"""
@@ -1638,6 +1691,9 @@ class SinglePage(BasePage):
         # 批 116 SINGLE-FN：预演标记取自已拼好的 argv（tile → _build_call → --dry-run）。
         dry_run = self.flow_key == "convert" and "--dry-run" in call.argv
         self._sync_artifact_actions("")
+        # task-3：普通转换编译失败引导行每次运行先复位，末尾按退出码决定是否显示。
+        self._plain_compile_failed = False
+        self._sync_plain_compile_fix()
         if self.app.begin_run(call) is False:
             self.mark("run_rejected", entry="single_run", reason="running")
             return
@@ -1682,6 +1738,12 @@ class SinglePage(BasePage):
             artifact = ""
         self._result.show(text, level=level, artifact=artifact)
         self._sync_artifact_actions(artifact)
+        # task-3：只有普通转换、真实跑（非预演/非元数据预览）、退出码 2、
+        # 且非用户取消时才认作编译失败并露出引导行；其余一律保持隐藏。
+        self._plain_compile_failed = (
+            self.flow_key == "convert" and not dry_run and not preview_path
+            and code == 2 and not self.app.cancel_requested)
+        self._sync_plain_compile_fix()
         if artifact:
             self.app.store.set_recent(self._artifact_recent_key(), artifact)
         self._cleanup_meta_temp()
