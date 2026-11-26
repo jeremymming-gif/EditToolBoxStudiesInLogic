@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from .naming import normalize_english_author
+import hashlib
+import inspect
+import io
 import os
 import re
 import shutil
@@ -907,6 +910,9 @@ class BuildResult:
     # **纯附加、默认空**：只给初排交接单②引用，不参与渲染、不改 .tex/.bib 一个字节。
     meta_sources: list[str] = field(default_factory=list)
     meta_conflicts: list[str] = field(default_factory=list)
+    # A2B（第二批）：本轮规划证据（仅展示/冷诊断，不参与渲染、不改产物字节）。
+    # **纯附加、默认 None**：Word/docx 通道与旧调用方天然没有本轮规划记录。
+    planning_evidence: dict | None = None
 
 
 def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, int, str]]:
@@ -1091,6 +1097,50 @@ def build_latex(
     log: list[str] = []
     warnings: list[str] = []
 
+    # ── A2B：本轮规划证据（只做展示/冷诊断，绝不进产物与旧日志）──────────────
+    # 观察对象在**所有读取/展开之前**创建，读取顺序交给下面的 `_add_input` 按
+    # `len(observation.inputs)+1` 统一分配；parser 侧只追加 support 角色。
+    _obs = PRE.PlanningObservation()
+
+    def _sha256(value: str | bytes) -> str:
+        if isinstance(value, str):
+            value = value.encode("utf-8")
+        return hashlib.sha256(value).hexdigest()
+
+    def _add_input(role: str, relative_id: str, byte_sha: str | None,
+                   text_sha: str, *, outcome: str = "read") -> None:
+        """登记一条受限相对标识的输入证据，读取顺序按登记先后连续编号。"""
+        if os.path.isabs(relative_id):
+            relative_id = os.path.basename(relative_id) or "."
+        rid = relative_id.replace(os.sep, "/")
+        if any(e.role == role and e.relative_id.replace(os.sep, "/") == rid
+               for e in _obs.inputs):
+            return
+        _obs.inputs.append(PRE.InputEvidence(
+            role=role,
+            relative_id=rid,
+            byte_sha256=byte_sha,
+            text_sha256=text_sha,
+            read_order=len(_obs.inputs) + 1,
+            outcome=outcome,
+        ))
+
+    def _text_of(path: str) -> tuple[bytes | None, str]:
+        """取文本消费值及其原始字节摘要（读失败按空文本 + 无 byte 摘要）。
+
+        用 TextIOWrapper 解码，保证 universal newline 与原来的
+        ``open(path, encoding="utf-8", errors="replace").read()`` 一致，
+        喂给规划器的文本不因 CRLF 改变 → 产物字节不变。
+        """
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None, ""
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8",
+                              errors="replace") as wrapper:
+            return raw, wrapper.read()
+
     def say(s: str) -> None:
         log.append(s)
         if verbose:
@@ -1121,32 +1171,78 @@ def build_latex(
     # 作者常交「完整模板稿」：正文依赖前言里的宏包 / tikz 库 / 定义。换成新版模板
     # 骨架后这些不跟着走就编译失败，而且报错离真正原因很远（\llbracket undefined、
     # Unknown arrow tip kind 'Stealth'…）。只搬模板没有的，且一律不碰模板管理项。
-    try:
-        sty_text = open(tpl_sel.sty, encoding="utf-8", errors="replace").read()
-    except OSError:
-        sty_text = ""
-    meta_text = (
-        open(meta_src, encoding="utf-8", errors="replace").read()
-        if os.path.exists(meta_src) else ""
-    )
+    # 原始字节摘要必须从同一次原始读取来；这里先取字节再解码成**规划器实际消费的文本**
+    # （与 open(..., encoding="utf-8", errors="replace").read() 的 universal newline 一致）。
+    _style_raw, sty_text = _text_of(tpl_sel.sty)
+    _meta_raw, meta_text = _text_of(meta_src)
+    if _meta_raw is None:
+        meta_text = ""
+    _skeleton_raw, _skeleton_text = _text_of(tpl_sel.skeleton)
+    # 读顺序与权威卡顿一致：骨架（raw → synced）→ 版面样式 → 元数据 → 正文 → 展开输入 → 选项。
+    _add_input("skeleton_raw", os.path.basename(tpl_sel.skeleton),
+               _sha256(_skeleton_raw) if _skeleton_raw is not None else None,
+               _sha256(_skeleton_text))
+    # skeleton_synced = sync_package_line 之后的 tpl（规划器拿到的骨架文本）
+    _add_input("skeleton_synced", os.path.basename(tpl_sel.skeleton),
+               _sha256(_skeleton_raw) if _skeleton_raw is not None else None,
+               _sha256(tpl))
+    _add_input("style", os.path.basename(tpl_sel.sty),
+               _sha256(_style_raw) if _style_raw is not None else None,
+               _sha256(sty_text))
+    _add_input("metadata", os.path.basename(meta_src),
+               _sha256(_meta_raw) if _meta_raw is not None else None,
+               _sha256(meta_text))
+
     # 前言本身也可能用 \input 拆文件（多文件稿常把宏包/命令放 preamble.tex）；
     # 展开后再做依赖/宏/元数据判据（注释掉的不展开，见 latex.expand_inputs）。
+    # observer 回调登记真实读取的被展开文件；byte/text 摘要由 latex 侧同一次读取给出。
+    def _input_observer(rid: str, byte_sha: str | None, text_sha: str) -> None:
+        _add_input("expanded_input", rid, byte_sha, text_sha)
+
+    def _expand(path: str, text: str, stats: dict | None = None) -> str:
+        kwargs = {}
+        params = inspect.signature(expand_inputs).parameters
+        if "observer" in params and "root" in params:
+            kwargs.update(observer=_input_observer,
+                          root=os.path.dirname(os.path.abspath(path)))
+        if stats is not None:
+            kwargs["_stats"] = stats
+        return expand_inputs(path, text, **kwargs)
+
     if meta_src.lower().endswith(".tex") and count_active_inputs(meta_text):
-        meta_text = expand_inputs(meta_src, meta_text)
+        meta_text = _expand(meta_src, meta_text)
     # 正文在这里先取一次（第 120 条）：多文件 `.tex` 稿先展开 \input/\include；
     # 后面前言依赖判据、④ 的宏筛选、⑤ 的正文迁移都复用这一份，避免重复读文件。
-    raw_body = open(body_path, encoding="utf-8", errors="replace").read()
+    _body_raw, raw_body = _text_of(body_path)
+    _add_input("body", os.path.basename(body_path),
+               _sha256(_body_raw) if _body_raw is not None else None,
+               _sha256(raw_body))
     expanded_inputs = 0
     if body_path.lower().endswith(".tex") and count_active_inputs(raw_body):
         stats: dict = {}
-        raw_body = expand_inputs(body_path, raw_body, _stats=stats)
+        raw_body = _expand(body_path, raw_body, stats)
         expanded_inputs = stats.get("expanded", 0)  # 只算真正展开成功的（注释/缺失不算）
+    # 构建选项与规范化参数：只记摘要（有限字段/值），绝不记原文。
+    _add_input("build_option", "build_options", None,
+               _sha256(repr({"lang": lang, "sty": sty,
+                             "sty_name": tpl_sel.sty_name, "skeleton": skeleton,
+                             "meta_src": os.path.basename(meta_src),
+                             "meta": sorted((meta or {}).keys()),
+                             "dash_hints": dash_hints,
+                             "bib_zero_cites_hints": bib_zero_cites_hints,
+                             "breakable_algorithm": breakable_algorithm,
+                             "proof_autofix": proof_autofix,
+                             "compile_requested": compile_requested})))
+    _add_input("normalization_param", "normalization_params", None,
+               _sha256(repr({"overrides": sorted(overrides or {}),
+                             "structured": sorted(structured or {})})))
     body = extract_body_text(raw_body)
     # 第四十六批②：参考文献**之后**的附录内容（extract_body_text 会截掉，86-05 实测）
     _post_bib_tail = _latex_post_bibliography_tail(raw_body)
     pre_plan = PRE.plan_migration(
         meta_text, tpl, sty_text, tpl_sel.sty_name, body,
         source_dir=os.path.dirname(os.path.abspath(body_path)),
+        observation=_obs,
     )
     if pre_plan.lines:
         tpl = PRE.insert_lines(tpl, pre_plan.lines, HYPERREF_ANCHOR)
@@ -1605,6 +1701,22 @@ def build_latex(
     from .fsutil import atomic_write as _atomic_write
     _atomic_write(tex_path, tpl, newline="\n", log=say)
     say(f"   {P.rel(tex_path)}")
+    # A2B-6：写出后以 `tpl.encode("utf-8")`（newline="\n" 无平台替换）为预期字节，
+    # 读取磁盘字节逐字节比对；一致才认领本轮候选并标记绑定，不一致留空且标证据不完整。
+    # 只读磁盘、不写任何额外文件；外部篡改绝不认领。
+    _expected_bytes = tpl.encode("utf-8")
+    try:
+        with open(tex_path, "rb") as _fh:
+            _disk_bytes = _fh.read()
+    except OSError:
+        _disk_bytes = None
+    if _disk_bytes == _expected_bytes:
+        _obs.candidate_sha256 = _sha256(_expected_bytes)
+        _obs.binding_verified = True
+    else:
+        _obs.candidate_sha256 = None
+        _obs.binding_verified = False
+        _obs.incomplete = True
 
     used_keys = extract_bibkeys_from_body(body)
     bib_out = None
@@ -1667,6 +1779,7 @@ def build_latex(
         bib_keys_used=extract_bibkeys_from_body(body),
         expanded_inputs=expanded_inputs,
         body_text=str(body or ""),
+        planning_evidence=_obs.to_display(),
     )
 
 

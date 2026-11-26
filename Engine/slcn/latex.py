@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import re
 import shutil
@@ -497,7 +499,8 @@ def count_active_inputs(text: str) -> int:
 
 
 def expand_inputs(
-    path: str, text: str | None = None, _depth: int = 0, _stats: dict | None = None
+    path: str, text: str | None = None, _depth: int = 0, _stats: dict | None = None,
+    *, observer=None, root: str | None = None,
 ) -> str:
     """递归展开 \\input{...} / \\include{...}，把正文真正读进来。
 
@@ -507,13 +510,37 @@ def expand_inputs(
 
     **被 `%` 注释掉的不展开**（第 120 条）：作者把旧附录注释掉是常态，展开它等于
     把本应排除的内容带进正文（合成稿实测会泄漏）。
+
+    `observer`（若有）在**每次实际读文件**时回调一次：`observer(relative_id,
+    byte_sha256, text_sha256)`。`relative_id` 相对 `root`（缺省 = 初次调用文件所在
+    目录），保留子目录、绝不含绝对路径；字节摘要与文本摘要来自同一次原始读取，
+    解码语义与 `open(path, encoding="utf-8", errors="replace").read()` 完全一致
+    （含 universal newline）。未传 observer 时行为逐字节不变。
     """
     if _stats is not None and _depth == 0:
         _stats.setdefault("expanded", 0)
     if _depth > 6:
         return text or ""
+    # root 缺省 = 初次调用文件所在目录；一次算出后随递归传递，保证子文件的
+    # relative_id 都相对同一个根（保留子目录，不含绝对路径）。
+    if observer is not None and root is None and _depth == 0:
+        root = os.path.dirname(os.path.abspath(path))
     if text is None:
-        text = open(path, encoding="utf-8", errors="replace").read()
+        if observer is None:
+            # 默认路径：保持与历史实现逐字节一致（包括换行语义），零开销。
+            text = open(path, encoding="utf-8", errors="replace").read()
+        else:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            # 用 TextIOWrapper 复刻 text-mode 的 utf-8/replace + universal newline。
+            text = io.TextIOWrapper(
+                io.BytesIO(raw), encoding="utf-8", errors="replace"
+            ).read()
+            root_abs = os.path.abspath(root) if root else os.path.dirname(os.path.abspath(path))
+            rel = os.path.relpath(os.path.abspath(path), root_abs)
+            byte_sha = hashlib.sha256(raw).hexdigest()
+            text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            observer(rel, byte_sha, text_sha)
     base = os.path.dirname(os.path.abspath(path))
     matches = _active_input_matches(text)
     if not matches:
@@ -527,7 +554,10 @@ def expand_inputs(
         cand = rel if os.path.splitext(rel)[1] else rel + ".tex"
         target = os.path.join(base, cand)
         if os.path.exists(target):
-            parts.append(expand_inputs(target, _depth=_depth + 1, _stats=_stats))
+            parts.append(expand_inputs(
+                target, _depth=_depth + 1, _stats=_stats,
+                observer=observer, root=root,
+            ))
             if _stats is not None:
                 _stats["expanded"] = _stats.get("expanded", 0) + 1
         else:

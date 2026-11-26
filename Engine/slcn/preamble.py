@@ -40,6 +40,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import re
 from dataclasses import dataclass, field
@@ -221,6 +223,186 @@ class DefItem:
     origin: str = ""  # 来源文件名（本地支撑文件）；作者前言 / 正文区为空
 
 
+# ── 第 A2B 条：规划观察（独立展示层的证据；绝不进产物树/任务书）─────────────
+# 这些结构只记录**受限相对标识 + 摘要 + 安全原因码**，绝不保存绝对路径、原文片段或
+# 任意自由文本；展示层（l1_diagnostics）按 REASON_LABELS 把 reason 映射成中文标签。
+
+# fold_counts 的固定键（缺项按 0 计），由 `_empty_fold_counts()` 一次性铺齐。
+FOLD_COUNT_KEYS = (
+    "author_declarations_raw",
+    "author_declarations_survivors",
+    "support_declarations_raw",
+    "support_macros_before",
+    "support_macros_after",
+    "local_items_before_merge",
+    "local_items_after_merge",
+    "support_files_read",
+    "support_files_missed",
+)
+
+# SAFE 原因码（展示层 REASON_LABELS 的键；未列出的 reason 一律显示「原因未归类」）。
+REASON_CODES = frozenset({
+    "imported", "template_exists", "body_unused", "kernel_exists", "overridden",
+    "converted_renew", "closure_added", "seed_missed", "name_conflict",
+    "source_unclear",
+})
+
+
+def _empty_fold_counts() -> dict[str, int]:
+    """九个固定键全为 0 的折叠计数（plan_migration 拿到 observation 时铺齐）。"""
+    return {key: 0 for key in FOLD_COUNT_KEYS}
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_bytes(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _relative_id(path: str, source_dir: str) -> str:
+    """受限相对标识：相对 source_dir，保留子目录，绝不含绝对路径。"""
+    base = os.path.abspath(source_dir) if source_dir else os.getcwd()
+    rel = os.path.relpath(os.path.abspath(path), base)
+    return rel.replace(os.sep, "/")
+
+
+def _register_input(
+    observation: PlanningObservation | None,
+    role: str,
+    relative_id: str,
+    *,
+    byte_sha256: str | None = None,
+    text: str | None = None,
+    outcome: str = "read",
+) -> None:
+    """按 (role, relative_id) 去重登记一条 InputEvidence（read_order 严格递增）。"""
+    if observation is None:
+        return
+    for entry in observation.inputs:
+        if entry.role == role and entry.relative_id == relative_id:
+            return
+    observation.inputs.append(
+        InputEvidence(
+            role=role,
+            relative_id=relative_id,
+            byte_sha256=byte_sha256,
+            text_sha256=_sha256_text(text or ""),
+            read_order=len(observation.inputs) + 1,
+            outcome=outcome,
+        )
+    )
+    if role == "support" and outcome == "miss":
+        observation.fold_counts["support_files_missed"] = (
+            observation.fold_counts.get("support_files_missed", 0) + 1
+        )
+
+
+def _note_source_digest(
+    observation: PlanningObservation | None, key: str, text: str
+) -> None:
+    """同 key 重复读取但内容变了 → incomplete（同一 observation 的第二轮证据不可信）。"""
+    if observation is None:
+        return
+    digests = getattr(observation, "_source_digests", None)
+    if digests is None:
+        digests = {}
+        setattr(observation, "_source_digests", digests)
+    digest = _sha256_text(text)
+    if key in digests and digests[key] != digest:
+        observation.incomplete = True
+    digests[key] = digest
+
+
+def _add_decision(
+    observation: PlanningObservation | None, decision: DeclarationDecision
+) -> None:
+    """按 (name, namespace, source_id) 去重登记决策（同轮/跨轮不重复计）。"""
+    if observation is None:
+        return
+    key = (decision.name, decision.namespace, decision.source_id)
+    for existing in observation.decisions:
+        if (existing.name, existing.namespace, existing.source_id) == key:
+            return
+    observation.decisions.append(decision)
+
+
+@dataclass
+class DeclarationDecision:
+    """一次「声明级」迁移决策（名字 + 摘要 + 安全原因码，无原文片段）。"""
+
+    name: str
+    kind: str
+    namespace: str            # env | macro | counter | columntype | color
+    source_role: str          # author_preamble | local_support | expanded_input | unknown
+    source_id: str            # 相对 source_dir 的受限标识；无绝对路径、无原文
+    position: int
+    coordinate: str           # author_preamble | expanded_text | local_support:<rel> | unknown
+    content_sha256: str
+    pre_dedup_count: int
+    scope_confidence: str     # high | medium | unknown
+    action: str               # imported | skipped | overridden | converted_renew
+                              # | closure_added | seed_missed
+    reason: str               # REASON_CODES 里的 SAFE 码
+
+
+@dataclass
+class InputEvidence:
+    """规划时实际读取过的一份输入（字节/文本摘要分离，read_order 严格递增）。"""
+
+    role: str
+    relative_id: str          # 相对标识，保留子目录
+    byte_sha256: str | None   # 读取时的文件字节摘要；无文件源则 None
+    text_sha256: str          # 规划器实际消费的文本摘要
+    read_order: int
+    outcome: str = "read"     # read | miss
+
+
+@dataclass
+class PlanningObservation:
+    """本轮规划的观察账：声明决策 + 输入清单 + 折叠计数 + 完整性标记。
+
+    `candidate_sha256` / `binding_verified` 由 build.py 在产物字节落盘并核对一致后填写；
+    解析侧只写 decisions / inputs / fold_counts / incomplete / notes。
+    """
+
+    decisions: list[DeclarationDecision] = field(default_factory=list)
+    inputs: list[InputEvidence] = field(default_factory=list)
+    fold_counts: dict[str, int] = field(default_factory=dict)
+    incomplete: bool = False
+    notes: list[str] = field(default_factory=list)
+    candidate_sha256: str | None = None
+    binding_verified: bool = False
+
+    def to_display(self) -> dict:
+        """给 2A 独立展示层的扁平 dict：只含安全码/摘要/计数，无路径与自由文本。"""
+        display_decisions: dict[str, dict] = {}
+        for d in self.decisions:
+            display_decisions[d.name] = {
+                "action": d.action,
+                "reason": d.reason,
+                "kind": d.kind,
+                "namespace": d.namespace,
+                "source_role": d.source_role,
+                "source_id": d.source_id,
+                "position": d.position,
+                "coordinate": d.coordinate,
+                "content_sha256": d.content_sha256,
+                "pre_dedup_count": d.pre_dedup_count,
+                "scope_confidence": d.scope_confidence,
+            }
+        return {
+            "candidate_sha256": self.candidate_sha256,
+            "decisions": display_decisions,
+            "counts": {
+                "declarations_seen": len(self.decisions),
+                "fold_counts": dict(self.fold_counts),
+            },
+            "incomplete": bool(self.incomplete),
+        }
+
+
 @dataclass
 class PreamblePlan:
     """一次迁移计划：要插入的原始行 + 分类统计 + 被跳过的项（只用于日志）。"""
@@ -247,6 +429,8 @@ class PreamblePlan:
     replaced_packages: list[str] = field(default_factory=list)
     # 第 141 条：与模板已加载宏包重合同名命令、未迁移的作者宏包（人类可读说明）
     conflicts: list[str] = field(default_factory=list)
+    # 第 A2B 条：本轮规划观察（默认 None；只由 observation= 显式传入时挂上）
+    planning_observation: PlanningObservation | None = None
 
     @property
     def empty(self) -> bool:
@@ -378,8 +562,11 @@ def _read_math_decl_target(pre: str, i: int) -> tuple[str, int]:
     return m.group(1), i + m.end()
 
 
-def scan_preamble(pre: str) -> list[DefItem]:
+def scan_preamble(pre: str, *, observer=None) -> list[DefItem]:
     """扫出可安全搬运的前言定义（保持原文顺序，同名同类去重取第一条）。
+
+    `observer`（若有）在下面的 `seen` 去重**之前**收到一次按 pos 排序的**原始**
+    `found` 列表（含重复项）；未传 observer 时函数行为逐字节不变。
 
     认这八类**纯定义**：`\\newtheorem` / `\\newenvironment`（按环境名）、
     `\\DeclareMathOperator`（按宏名）、`\\newcolumntype`（按列类型）、`\\definecolor`、
@@ -492,6 +679,10 @@ def scan_preamble(pre: str) -> list[DefItem]:
                 continue
             found.append((m.start(), DefItem(kind, name, pre[m.start() : i], pos=m.start())))
 
+    # 观察点在去重之前：拿到的是与原文一致的原始 found（含同类同名重复），按 pos 排序。
+    # 只在显式传入 observer 时回调，默认路径零开销、行为不变。
+    if observer is not None:
+        observer(sorted(found, key=lambda x: x[0]))
     seen: set[tuple[str, str]] = set()
     out: list[DefItem] = []
     for _pos, item in sorted(found, key=lambda x: x[0]):
@@ -588,26 +779,53 @@ def _resolve_local_file(
 
 
 def _read_support_files(
-    paths: list[str], source_dir: str, _depth: int = 0, _seen: set[str] | None = None
+    paths: list[str], source_dir: str, _depth: int = 0, _seen: set[str] | None = None,
+    observation: PlanningObservation | None = None,
 ) -> list[tuple[str, str]]:
     """读本地支撑文件，并递归读它们 `\\input` / `\\RequirePackage` 的**同目录**文件。
 
     只读同目录，不查 TeX 发行版；读不了就跳过（不静默报错——与引擎其它
     「找不到就不搬」的判据一致，日志另由调用方汇总）。
+
+    A2B：`observation` 非空时，第一项改为**相对 source_dir 的标识**（保留子目录），
+    并按 (role="support", relative_id) 登记字节/文本摘要；同一 realpath 内容变化
+    标 incomplete。无 observation 时返回形状与旧版逐字节一致（basename, text）。
     """
     seen = _seen if _seen is not None else set()
     out: list[tuple[str, str]] = []
     for path in paths:
         real = os.path.realpath(path)
         if real in seen:
+            # 同一 realpath 再读：内容若变了，证据不完整（不产生重复 InputEvidence）。
+            if observation is not None:
+                _note_source_digest(observation, "support:" + real, _read_text_of(path))
             continue
         seen.add(real)
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            if observation is None:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            else:
+                with open(path, "rb") as f:
+                    raw = f.read()
+                text = io.TextIOWrapper(
+                    io.BytesIO(raw), encoding="utf-8", errors="replace"
+                ).read()
         except OSError:
             continue
-        out.append((os.path.basename(path), text))
+        if observation is not None:
+            rel = _relative_id(path, source_dir)
+            _register_input(
+                observation, "support", rel, byte_sha256=_sha256_bytes(raw), text=text
+            )
+            observation.fold_counts["support_files_read"] = (
+                observation.fold_counts.get("support_files_read", 0) + 1
+            )
+            _note_source_digest(observation, "support:" + real, text)
+            label = rel
+        else:
+            label = os.path.basename(path)
+        out.append((label, text))
         if _depth >= 4:
             continue
         nested: list[str] = []
@@ -629,11 +847,25 @@ def _read_support_files(
                 found = _resolve_local_file(source_dir, pkg, exts=(".sty",))
                 if found:
                     nested.append(found)
-        out.extend(_read_support_files(nested, source_dir, _depth + 1, seen))
+        out.extend(
+            _read_support_files(nested, source_dir, _depth + 1, seen, observation)
+        )
     return out
 
 
-def local_support_files(source_text: str, source_dir: str) -> list[tuple[str, str]]:
+def _read_text_of(path: str) -> str:
+    """仅用于 realpath 重复读时的一致性核对（同 open 解码口径）。"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def local_support_files(
+    source_text: str, source_dir: str,
+    observation: PlanningObservation | None = None,
+) -> list[tuple[str, str]]:
     """作者稿同目录下、由前言加载的本地支撑文件：`[(文件名, 文本), ...]`（第 130 条）。
 
     来源（保持前言里的出现顺序）：
@@ -645,6 +877,9 @@ def local_support_files(source_text: str, source_dir: str) -> list[tuple[str, st
 
     只取文本，由 `plan_migration` 按「正文真正用到 + 模板没有」筛选。旧文件往往
     同时是旧版完整模板，整份搬会破坏现行模板（第 127 条教训）。
+
+    A2B：`observation` 非空时把「前言要求但本地找不到」的支撑文件登记为 miss；
+    第一项改为相对 source_dir 的标识（保留子目录），无 observation 时形状不变。
     """
     if not source_dir or not os.path.isdir(source_dir):
         return []
@@ -654,11 +889,17 @@ def local_support_files(source_text: str, source_dir: str) -> list[tuple[str, st
         found = _resolve_local_file(source_dir, m.group(1), exts=(".cls",))
         if found:
             roots.append(found)
+        # 找不到 = 系统类（article/book/...），按旧口径忽略，不记为支撑文件 miss。
     for m in _ANY_PKG_RE.finditer(strip_comments(pre)):
         for pkg in m.group(1).split(","):
             found = _resolve_local_file(source_dir, pkg, exts=(".sty",))
             if found:
                 roots.append(found)
+            elif observation is not None:
+                _register_input(
+                    observation, "support", pkg.strip() + ".sty",
+                    outcome="miss", text="",
+                )
     for m in _INPUT_NAME_RE.finditer(strip_comments(pre)):
         name = m.group(1).strip()
         if os.path.splitext(name)[1].lower() not in (".sty", ".def", ".cfg"):
@@ -666,7 +907,10 @@ def local_support_files(source_text: str, source_dir: str) -> list[tuple[str, st
         found = _resolve_local_file(source_dir, name)
         if found:
             roots.append(found)
-    return _read_support_files(roots, source_dir)
+        elif observation is not None:
+            rel = name if os.path.splitext(name)[1] else name + ".sty"
+            _register_input(observation, "support", rel, outcome="miss", text="")
+    return _read_support_files(roots, source_dir, observation=observation)
 
 
 _PKG_LINE_SCAN_RE = re.compile(
@@ -794,7 +1038,7 @@ def defined_names_outside_containers(text: str) -> set[str]:
     return names
 
 
-def scan_support_definitions(text: str) -> list[DefItem]:
+def scan_support_definitions(text: str, *, observer=None) -> list[DefItem]:
     """本地支撑文件 / 正文区里的**全部**可搬运定义（第 130 条，保持原文顺序）。
 
     = 八类声明（`\\newtheorem` / `\\newenvironment` / `\\DeclareMathOperator` /
@@ -808,9 +1052,14 @@ def scan_support_definitions(text: str) -> list[DefItem]:
     - `\\def` / `\\let` / `\\newif` 这类底层定义**不搬**（改语义风险高，见文档边界）。
     """
     decls = scan_preamble(text)
+    # 观察点：把「折叠前」的原始八类声明列表交给调用方（含重复，按 pos）；
+    # 无 observer 时零开销。注意这里的 scan_preamble 是内部调用，**不传** observer。
+    if observer is not None:
+        observer(decls)
     containers = [(d.pos, d.pos + len(d.source)) for d in decls]
     last: dict[str, Macro] = {}
-    for m in _top_level_macros(text, containers):
+    top_macros = _top_level_macros(text, containers)
+    for m in top_macros:
         last[m.name] = m  # find_all_macros 按出现顺序返回 → 后出现的覆盖先出现的
     items: list[DefItem] = list(decls)
     for m in last.values():
@@ -1033,6 +1282,7 @@ def _plan_local_definitions(
     source_dir: str,
     body_text: str,
     skipped: list[str],
+    observation: PlanningObservation | None = None,
 ) -> None:
     r"""本地支撑文件里的定义 → 迁移计划（第 127 条环境 → 第 130 条八类声明 + 普通宏）。
 
@@ -1060,14 +1310,49 @@ def _plan_local_definitions(
     #   · 正文用到、模板已有的 \renewcommand（作者明确想覆盖模板命令）→ overrides，
     #     build 会单独打一行醒目警告（不许静默改变语义）。
     local_items: list[DefItem] = []
+    # A2B：每个来源文件的原始声明数（折叠前），用于 support_declarations_raw。
+    raw_decl_counts: dict[str, int] = {}
+    if observation is not None:
+        observation.fold_counts.setdefault("support_declarations_raw", 0)
+        observation.fold_counts.setdefault("support_macros_before", 0)
+        observation.fold_counts.setdefault("support_macros_after", 0)
+        observation.fold_counts.setdefault("local_items_before_merge", 0)
+        observation.fold_counts.setdefault("local_items_after_merge", 0)
     if source_dir:
-        support_files = local_support_files(source_text, source_dir)
+        support_files = local_support_files(source_text, source_dir, observation)
         plan.support_files = [name for name, _text in support_files]
         for fname, ftext in support_files:
-            for item in scan_support_definitions(ftext):
+
+            def _observe_decls(decls: list[DefItem], _fname: str = fname) -> None:
+                if observation is None:
+                    return
+                raw_decl_counts[_fname] = len(decls)
+                observation.fold_counts["support_declarations_raw"] += len(decls)
+
+            items = scan_support_definitions(ftext, observer=_observe_decls)
+            if observation is not None:
+                # 顶层宏折叠前 = 原始命令出现数；折叠后 = 最后保留数。
+                containers = [
+                    (it.pos, it.pos + len(it.source)) for it in
+                    scan_preamble(ftext)
+                ]
+                before = len(_top_level_macros(ftext, containers))
+                after = sum(1 for it in items if it.kind in _MACRO_KINDS)
+                observation.fold_counts["support_macros_before"] += before
+                observation.fold_counts["support_macros_after"] += after
+                # 当前文件的相对 id 即 fname（observation 模式下为相对路径）。
+                for it in items:
+                    it.origin = fname
+            for item in items:
                 item.origin = fname
                 local_items.append(item)
+        # A2B：保留合并前的全部条目用于决策观察（同名但不同相对路径不得被合并掉）。
+        raw_local_items: list[DefItem] = []
+        if observation is not None:
+            raw_local_items = list(local_items)
         # 同名只留最后一次（\newcommand 之后再来 \renewcommand 时正文用的是最后一次）
+        if observation is not None:
+            observation.fold_counts["local_items_before_merge"] = len(local_items)
         last_at: dict[tuple[str, str], int] = {}
         for idx, item in enumerate(local_items):
             last_at[_def_key(item)] = idx
@@ -1075,6 +1360,8 @@ def _plan_local_definitions(
             item for idx, item in enumerate(local_items)
             if last_at[_def_key(item)] == idx
         ]
+        if observation is not None:
+            observation.fold_counts["local_items_after_merge"] = len(local_items)
         env_by = {it.name: it for it in local_items if it.kind in _ENV_KINDS}
         macro_by = {it.name: it for it in local_items if it.kind in _MACRO_KINDS}
         counter_by = {it.name: it for it in local_items if it.kind == "counter"}
@@ -1085,6 +1372,11 @@ def _plan_local_definitions(
         colspecs = _column_specs(body_text)
         used_counters = counter_uses(body_text or "")
 
+        # A2B：每条本地定义的「暂定」决策；闭包/最终写入阶段再升级（种子未命中
+        # 不得记成最终 skipped）。默认 = 正文未用到。
+        hints: dict[tuple[str, str], tuple[str, str, DefItem]] = {
+            _def_key(it): ("skipped", "body_unused", it) for it in local_items
+        }
         # 种子 = 正文用到、模板没有的定义；正文用到但模板已有的显式记账
         seed: list[DefItem] = []
         for item in local_items:
@@ -1095,8 +1387,10 @@ def _plan_local_definitions(
             if item.name in names:
                 if item.kind == "renewcommand":
                     plan.overrides.append(item.name)
+                    hints[_def_key(item)] = ("overridden", "overridden", item)
                 else:
                     skipped.append(f"{item.name}（本地 {item.origin}，模板已有）")
+                    hints[_def_key(item)] = ("skipped", "template_exists", item)
                 continue
             if item.name in KERNEL_DEFINED_NAMES:
                 # LaTeX 内核/标准文档类已有这个名字：搬过来不是撞 already defined
@@ -1105,7 +1399,9 @@ def _plan_local_definitions(
                 skipped.append(
                     f"{item.name}（{item.origin}：LaTeX 内核/文档类已有，未搬）"
                 )
+                hints[_def_key(item)] = ("skipped", "kernel_exists", item)
                 continue
+            hints[_def_key(item)] = ("imported", "imported", item)
             seed.append(item)
 
         # 传递闭包：宏 A 的定义里用到 B、定理 [共享计数器] 指向 Y、定义体用到计数器 X
@@ -1177,14 +1473,66 @@ def _plan_local_definitions(
                     r"^(\s*)\\renewcommand", r"\1\\newcommand", item.source, count=1
                 )
                 plan.converted_renews.append(item.name)
+                if observation is not None:
+                    final = ("converted_renew", "converted_renew")
+                else:
+                    final = None
             else:
                 snippet = item.source
+                final = None
+            if observation is not None and _def_key(item) in hints:
+                if final is not None:
+                    hints[_def_key(item)] = (final[0], final[1], item)
+                else:
+                    prev_action, prev_reason, _ = hints[_def_key(item)]
+                    if prev_action == "imported":
+                        # 闭包项（正文种子未直接命中）写入时升级为 closure_added。
+                        if item not in seed:
+                            hints[_def_key(item)] = ("closure_added", "closure_added", item)
+                    elif prev_action == "skipped" and prev_reason == "body_unused":
+                        # 依赖闭包选中（种子未命中）：闭包引入，而不是最终跳过。
+                        hints[_def_key(item)] = ("closure_added", "closure_added", item)
             plan.lines.append(snippet.strip())
             plan.definitions.append(item.name)
             if item.kind == "counter":
                 plan.counter_definitions.append(item.name)
             plan.local_definitions.append((item.name, item.origin))
             names.add(item.name)
+
+        # A2B：把所有本地定义的最终决策落到 observation（含 skipped，排序日志不影响）。
+        # 决策按「合并前」的每条原始条目产出：同名但不同相对路径（a/sub.sty 与
+        # b/sub.sty 都定义 \shared）不得被合并成一条；胜出者沿用 hints 里的最终
+        # action/reason，落选者记 body_unused。_add_decision 再按
+        # (name, namespace, source_id) 去重，跨轮重读不会重复计。
+        if observation is not None:
+            winner_hints: dict[tuple[str, str, str], tuple[str, str]] = {}
+            for _action, _reason, winner in hints.values():
+                winner_hints[
+                    (winner.name, _def_key(winner)[0], winner.origin or "unknown")
+                ] = (_action, _reason)
+            for item in (raw_local_items or local_items):
+                sid = item.origin or "unknown"
+                namespace = _def_key(item)[0]
+                action, reason = winner_hints.get(
+                    (item.name, namespace, sid), ("skipped", "body_unused")
+                )
+                _add_decision(
+                    observation,
+                    DeclarationDecision(
+                        name=item.name,
+                        kind=item.kind,
+                        namespace=namespace,
+                        source_role="local_support",
+                        source_id=sid,
+                        position=item.pos,
+                        coordinate=f"local_support:{sid}",
+                        content_sha256=_sha256_text(item.source),
+                        pre_dedup_count=raw_decl_counts.get(sid, 0),
+                        scope_confidence="high",
+                        action=action,
+                        reason=reason,
+                    ),
+                )
 
 
 def plan_migration(
@@ -1194,6 +1542,8 @@ def plan_migration(
     template_sty_name: str = "",
     body_text: str = "",
     source_dir: str = "",
+    *,
+    observation: PlanningObservation | None = None,
 ) -> PreamblePlan:
     """把作者稿前言与模板做差集，返回要插入的依赖行。
 
@@ -1207,6 +1557,12 @@ def plan_migration(
       （空 = 本地支撑文件里的定义一个都不搬）。
     """
     plan = PreamblePlan()
+    plan.planning_observation = observation
+    if observation is not None:
+        for key in FOLD_COUNT_KEYS:
+            observation.fold_counts.setdefault(key, 0)
+        # 同一 observation 的第二轮：源文本变了 → 证据不完整。
+        _note_source_digest(observation, "source_text", source_text)
     pre = source_preamble(source_text)
     if not pre.strip():
         return plan
@@ -1291,7 +1647,47 @@ def plan_migration(
     # **只搬真正被用到的**——正文里直接用了（`\theX` 等），或已迁移的定义体里用了（如
     # `\newenvironment{liju}` 的 body 里 `\setcounter{userinput}`）。计数器统一排在定义块
     # 最前：`\newcounter`/`\setcounter` 在使用方之前就绪（任务书要求）。
-    pre_items = scan_preamble(pre)
+    author_raw: list[tuple[int, DefItem]] = []
+
+    def _observe_pre(found: list[tuple[int, DefItem]]) -> None:
+        nonlocal author_raw
+        author_raw = found
+
+    pre_items = scan_preamble(pre, observer=_observe_pre if observation is not None else None)
+    if observation is not None:
+        observation.fold_counts["author_declarations_raw"] = len(author_raw)
+        observation.fold_counts["author_declarations_survivors"] = len(pre_items)
+        # 折叠前的出现次数：按 (kind, name) 统计，去重后的第一项作为代表决策。
+        raw_count: dict[tuple[str, str], int] = {}
+        for _pos, it in author_raw:
+            key = (it.kind, it.name)
+            raw_count[key] = raw_count.get(key, 0) + 1
+        for it in pre_items:
+            key = (it.kind, it.name)
+            if it.name in names:
+                action, reason = "skipped", "template_exists"
+            elif it.kind != "counter":
+                action, reason = "imported", "imported"
+            else:
+                # 计数器最后按「用到」筛选，暂定为未迁（最终决策在计数器闭包后补全）。
+                action, reason = "skipped", "body_unused"
+            _add_decision(
+                observation,
+                DeclarationDecision(
+                    name=it.name,
+                    kind=it.kind,
+                    namespace=_def_key(it)[0],
+                    source_role="author_preamble",
+                    source_id="author_preamble",
+                    position=it.pos,
+                    coordinate="author_preamble",
+                    content_sha256=_sha256_text(it.source),
+                    pre_dedup_count=raw_count.get(key, 1),
+                    scope_confidence="high",
+                    action=action,
+                    reason=reason,
+                ),
+            )
     pre_defs = [it for it in pre_items if it.kind != "counter"]
     pre_counters = [it for it in pre_items if it.kind == "counter"]
     author_counter_by = {it.name: it for it in pre_counters}
@@ -1332,7 +1728,9 @@ def plan_migration(
         names.add(it.name)
 
     # 本地支撑文件（.cls/.sty/.def/.cfg）里的定义：只搬「正文用到 + 模板没有」的
-    _plan_local_definitions(plan, names, source_text, source_dir, body_text, skipped)
+    _plan_local_definitions(
+        plan, names, source_text, source_dir, body_text, skipped, observation
+    )
 
     # 第 142 条补丁（2026-11-16）：模板用 biblatex 时，正文里的 natbib 专有命令必须改写。
     # 从前这个触发条件只看「作者前言里有没有 \usepackage{natbib}」——而「完整期刊类」

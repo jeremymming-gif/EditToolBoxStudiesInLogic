@@ -150,7 +150,43 @@ def diagnose(candidate, capture, *, template_results=(), available_paths=None):
 _ENV_NAME = re.compile(r"Environment ([A-Za-z0-9_*@:-]+) undefined\.")
 _BEGIN_LINE = re.compile(r"l\.(\d{1,7})\s+(.*)")
 _SENSITIVE = ("/Users", "sk-", "api_key", "SECRET_MANUSCRIPT")
-_ENV_ACTIONS = {"imported", "admitted", "report_only", "ignored", "included"}
+
+# A2B-7: fixed, SAFE display vocabularies. A raw reason that is not in this
+# mapping is NEVER echoed -- it degrades to the literal "原因未归类".
+REASON_LABELS = {
+    "imported": "迁入",
+    "template_exists": "模板已有同名，未迁",
+    "body_unused": "正文未用到，未迁",
+    "kernel_exists": "内核已有，未迁",
+    "overridden": "重定义覆盖提示，未迁",
+    "converted_renew": "降级为 newcommand 后迁入",
+    "closure_added": "依赖闭包引入",
+    "seed_missed": "种子未命中，闭包待定",
+    "name_conflict": "同类同名按口径取先",
+    "source_unclear": "来源归属不清",
+}
+_ACTION_LABELS = {
+    "imported": "迁入",
+    "skipped": "跳过未迁",
+    "overridden": "重定义覆盖提示，未迁",
+    "converted_renew": "降级为 newcommand 后迁入",
+    "closure_added": "依赖闭包引入",
+    "seed_missed": "种子未命中，闭包待定",
+}
+_SOURCE_ROLE_LABELS = {
+    "author_preamble": "作者前言",
+    "local_support": "本地支撑文件",
+    "expanded_input": "展开输入",
+    "body": "正文",
+    "metadata": "元数据",
+    "skeleton_raw": "原始骨架",
+    "skeleton_synced": "同步骨架",
+    "style": "样式",
+    "support": "支撑文件",
+    "build_option": "构建选项",
+    "normalization_param": "规范化参数",
+}
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_*@:.-]{1,64}\Z")
 
 
 def _clean_hints(hints):
@@ -162,6 +198,52 @@ def _clean_hints(hints):
         if len(cleaned) >= 4:
             break
     return tuple(cleaned)
+
+
+def _safe_name(name):
+    """Environment/declaration name from a fixed safe vocabulary, never free text."""
+    return name if isinstance(name, str) and _SAFE_NAME.fullmatch(name) else ""
+
+
+def _num(value):
+    return value if type(value) is int and 0 <= value <= 1000000 else None
+
+
+def _planning_hints(planning_evidence, names):
+    """Render a bound, dict-shaped planning record using fixed labels only.
+
+    No raw reason string, source id, path or free text from the evidence is ever
+    echoed: every action/reason/role is mapped through a fixed SAFE vocabulary
+    and unknown values degrade to a fixed Chinese placeholder. The record was
+    captured by the planner in an earlier round -- it is presented as recorded,
+    NOT re-verified now (no claim that source files are still unchanged).
+    """
+    decisions = planning_evidence.get("decisions")
+    decisions = decisions if isinstance(decisions, dict) else {}
+    counts = planning_evidence.get("counts")
+    counts = counts if isinstance(counts, dict) else {}
+    declarations = _num(counts.get("declarations_seen"))
+    lines = []
+    if declarations is not None:
+        lines.append(f"规划时观察到声明 {declarations} 个")
+    seen = set()
+    for name in names[:3]:
+        safe = _safe_name(name)
+        if not safe or safe in seen:
+            continue
+        seen.add(safe)
+        item = decisions.get(name)
+        if not isinstance(item, dict):
+            item = {}
+        role = _SOURCE_ROLE_LABELS.get(item.get("source_role"), "来源不清")
+        action = _ACTION_LABELS.get(item.get("action"), "动作未归类")
+        reason = REASON_LABELS.get(item.get("reason"), "原因未归类")
+        lines.append(f"{safe} 来源{role}，决定{action}，理由{reason}")
+    if not lines:
+        lines.append("本轮候选绑定一致")
+    if planning_evidence.get("incomplete") is True:
+        lines.append("证据不完整")
+    return lines
 
 
 def environment_hint(candidate, capture, *, planning_evidence=None):
@@ -213,16 +295,16 @@ def environment_hint(candidate, capture, *, planning_evidence=None):
         hints.append("无本轮规划记录")
     elif (isinstance(planning_evidence, dict)
           and planning_evidence.get("candidate_sha256") == fingerprint):
-        decisions = planning_evidence.get("decisions")
-        summary = []
-        for name in names[:3]:
-            if isinstance(decisions, dict) and name in decisions:
-                item = decisions[name]
-                action = item.get("action") if isinstance(item, dict) else None
-                summary.append(f"{name}({action})" if action in _ENV_ACTIONS else name)
-            else:
-                summary.append(name)
-        hints.append("本轮规划匹配：" + (", ".join(summary) if summary else "本轮候选绑定一致"))
+        # A2B-7: bound + dict-shaped -> describe what the planner OBSERVED.
+        # Values are mapped through SAFE vocabularies only (no raw echo) and
+        # this is a recorded observation, not a re-check of source files now.
+        try:
+            details = _planning_hints(planning_evidence, names)
+        except Exception:
+            details = []
+        hints.append("本轮规划时观察到：" + ("；".join(details) if details else "本轮候选绑定一致"))
     else:
+        # Includes 2-tuples such as (None, evidence): a non-dict is treated as
+        # no/stale record, never as evidence.
         hints.append("本轮规划未知或已过期")
     return _clean_hints(hints)

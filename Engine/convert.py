@@ -671,7 +671,7 @@ def main() -> int:
     if args.compile:
         from slcn.compilefix import compile_with_l1, export_failure
         print("\n⑨ 编译")
-        ok, info, repair_capture = compile_with_l1(compile_pdf, out_dir, stem, source=source, enabled=not args.coop_taskbook_only)
+        ok, info, repair_capture = compile_with_l1(compile_pdf, out_dir, stem, source=source, enabled=not args.coop_taskbook_only, planning_evidence=getattr(res, "planning_evidence", None))
         if ok:
             size = os.path.getsize(info) // 1024
             print(f"   ✅ {os.path.basename(info)}（{size} KB）")
