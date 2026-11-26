@@ -1829,6 +1829,15 @@ class App:
             # 下面这次合并发送就是本次换肤唯一的整页 patch（F2-9：换肤 = 1 次）。
             self.mark("theme_rebuild_deferred", mode=mode)
         self._coalesced_update()
+        # 批 129：浮层对话框活在 Flet 的 page._dialogs 子树，不在 page.controls，
+        # 上面那次整页合并 patch（F2-9 的主树唯一一次）送不到它。retint 已把颜色
+        # 属性原地改写，这里必须为打开的每个对话框再发一次显式子树补丁，否则
+        # 真机上浅→深后对话框文字仍是深色、压在深底上不可读。无对话框则零补丁。
+        for dialog in list(C._open_dialogs):
+            try:
+                self.page.update(dialog)
+            except Exception as exc:  # noqa: BLE001 单个浮层失败不拖垮整次换肤
+                self.mark("dialog_update_error", error=f"{type(exc).__name__}: {exc}")
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         self.mark("theme_changed", theme=theme, mode=mode, duration_ms=elapsed_ms,
                   retinted=retinted)
@@ -1861,10 +1870,16 @@ class App:
         style_map = dict(bg_map)
         style_map.update(button_map)
         log_areas = self._retint_log_areas(self.page, old.palette.log_bg)
-        changed = self._retint(self.page, bg_map, fg_map, style_map)
+        # 批 129：挂载树、浮层对话框与离屏缓存树共用同一个 seen 集合。
+        # 对话框活在 page._dialogs 栈、不在 page.controls，必须单独覆盖；
+        # 若同一控件同时挂在两处，共用 seen 避免二次映射串色（#FFFFFF 既作
+        # bg 又作 fg，二次映射会把新 text 色染错）。
+        seen: set[int] = set()
+        changed = self._retint_node(self.page, bg_map, fg_map, seen, style_map)
+        changed += self._retint_dialogs(bg_map, fg_map, seen, style_map)
         # 批 116：自绘页缓存着 build 时的 root，BibHost 还缓存着未挂载的视图树。
         # 只染已挂载树会让它们在切换后停在旧皮肤，navigate() 一挂就是跨页混色。
-        changed += self._retint_offscreen(bg_map, fg_map, style_map)
+        changed += self._retint_offscreen(bg_map, fg_map, style_map, seen)
         # 浅色板里 #FFFFFF 一词多义：_retint 按「背景」角色统一换成 surface，
         # 侧栏与日志区在这里按语义名改回自己的目标色（仍然只改属性）。
         sidebar = getattr(self, "sidebar", None)
@@ -1917,8 +1932,22 @@ class App:
         self.theme_switch = switch
         return 1
 
+    def _retint_dialogs(self, bg_map: dict[str, str], fg_map: dict[str, str],
+                         seen: set[int], style_map: dict[str, str] | None = None) -> int:
+        """重染已打开的浮层对话框（show_dialog/confirm 登记在 C._open_dialogs）。
+
+        对话框活在 Flet 的 page._dialogs 栈，既不在 page.controls 也不在
+        self.pages[].theme_roots；其颜色在打开时按当时 Tokens 写死，换肤必须
+        原地改属性。`seen` 与挂载树/离屏树共用，保证同一控件只映射一次。
+        """
+        changed = 0
+        for dialog in list(C._open_dialogs):
+            changed += self._retint_node(dialog, bg_map, fg_map, seen, style_map)
+        return changed
+
     def _retint_offscreen(self, bg_map: dict[str, str], fg_map: dict[str, str],
-                          style_map: dict[str, str] | None = None) -> int:
+                          style_map: dict[str, str] | None = None,
+                          known: set[int] | None = None) -> int:
         """重染未挂载的缓存树：其他页面的 root 与 BibHost 未激活的视图 root。
 
         批 116 根因：`_retint_shell` 只走 `self.page`（当前挂载树）；`self.pages`
@@ -1929,7 +1958,7 @@ class App:
         已挂载树的节点 id 先收进 `seen`：明暗两板有同值色（如 `#F5F5F7` 既是
         浅色 bg 又是深色 text），已经换过的树若再映射一次会串色，必须跳过。
         """
-        mounted: set[int] = set()
+        mounted: set[int] = set() if known is None else set(known)
         self._collect_ids(self.page, mounted)
         changed = 0
         for page in self.pages.values():

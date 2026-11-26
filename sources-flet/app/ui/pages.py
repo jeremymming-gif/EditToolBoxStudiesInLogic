@@ -526,9 +526,17 @@ class _SingleAiHost:
                 + "（UI-REWORK-DESIGN §2：不得传裸 Flet Page）")
         self._single = single
         self.app = app
-        self.t = single.t
         self.store = store
         self.page = single.page
+
+    @property
+    def t(self):
+        """实时 Tokens：切主题后 single.t 换新对象，视图必须立刻看到新色板。
+
+        不能存快照——BibAiAssistView.t 从宿主读 .t，而 _SingleAiHost 不在
+        main._refresh_tokens 的 _views 列表里，快照一旦存下就永不刷新。
+        """
+        return self._single.t
 
     def mark(self, event: str, **fields) -> None:
         self._single.mark(event, **fields)

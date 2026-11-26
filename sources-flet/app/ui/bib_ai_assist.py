@@ -3837,8 +3837,9 @@ class BibAiAssistView:
         if not enabled and not status:
             return []
         controls = []
+        notice_tone = "error" if status in {"check_status", "unknown", "compile_failed", "cancelled"} else "info"
         if self.compile_fix_notice:
-            controls.append(C.inline_note(self.compile_fix_notice, t, "info"))
+            controls.append(C.inline_note(self.compile_fix_notice, t, notice_tone))
         buttons = []
         identity = self._initial_action_context()
         ids = {key: result.get(key, "") for key in ("evidence_id", "request_id", "review_sha256")}
@@ -3884,13 +3885,40 @@ class BibAiAssistView:
                     or result is not self.compile_fix_eligible or not self.can_apply()):
                 return
             from ui import compile_fix_dialog as CFD
-            CFD.show_scope_dialog(self._flet(), t, self._compile_fix_evidence(result),
+            CFD.show_scope_dialog(self._flet(), self.t, self._compile_fix_evidence(result),
                                   result.get("diagnostics") or [],
                                   lambda selected: self._begin_compile_fix(selected, expected=identity, prior=result),
                                   selected=(result.get("scope") or {}).get("evidence_ids"))
 
+        if status in {"expired", "deleted", "delivered"}:
+            endings = {
+                "expired": "本次编译修复请求已过期；不会自动重发。",
+                "deleted": "本次编译修复请求已删除；不会自动重发。",
+                "delivered": "本次编译修复请求已完成交付；不会自动重发。",
+            }
+            controls.append(C.inline_note(endings[status], t, "info"))
+
+            def refresh(_):
+                if identity == self._initial_action_context() and not self.running:
+                    self._task(lambda: self._restore_compile_fix_status(identity))
+
+            def hide(_):
+                if self._compile_fix_row is not None:
+                    self._compile_fix_row.controls = []
+                    try:
+                        self._compile_fix_row.update()
+                    except (AssertionError, RuntimeError):
+                        pass
+
+            button("刷新状态", refresh)
+            button("隐藏此行", hide)
+            return [*controls, ft.Row(wrap=True, spacing=t.sp("1"), controls=buttons)]
+
         if status == "unknown":
-            controls.append(C.inline_note("请求已发出但未收到可用回件", t, "warn"))
+            controls.append(C.inline_note("请求已发出但未收到可用回件；不会自动重发。", t, "warn"))
+            engine_message = result.get("message")
+            if isinstance(engine_message, str) and engine_message.strip():
+                controls.append(C.inline_note(engine_message, t, "warn"))
             local_path("log_path", "查看本地日志")
             button("新轮重试…", choose_scope)
             buttons[-1].disabled = self.running or not enabled or not self.can_apply()
@@ -3898,15 +3926,20 @@ class BibAiAssistView:
             return [*controls, ft.Row(wrap=True, spacing=t.sp("1"), controls=buttons)]
 
         if status in {"eligible", "prepared", "compile_failed", "cancelled"} and enabled:
-            labels = {"eligible": "选择范围并准备请求…", "prepared": "更改范围并重新授权…"}
-            button(labels.get(status, "新轮重试…"), choose_scope)
+            if status in {"eligible", "compile_failed"}:
+                controls.append(C.inline_note(
+                    "本地编译修复已失败；已生成按范围冻结的安全证据，发送须逐稿显式授权，不会自动重发。",
+                    t, "info"))
+            labels = {"eligible": "选择范围并准备请求…", "prepared": "更改范围并重新授权…",
+                      "compile_failed": "重新选择范围并授权…", "cancelled": "重新选择范围并授权…"}
+            button(labels[status], choose_scope)
         if status == "prepared":
             from ui import compile_fix_dialog as CFD
             if enabled:
                 button("审阅待发送请求…", lambda e: self._task(lambda: self._resume_compile_fix(identity, result)))
                 buttons[-1].disabled = self.running or self._compile_fix_prepared is None
             button("导入本地回件…", lambda e: CFD.show_reply_dialog(
-                self._flet(), t, lambda text: operation("import", reply_text=text, **ids)))
+                self._flet(), self.t, lambda text: operation("import", reply_text=text, **ids)))
         if status in {"imported", "reviewed", "compile_failed"}:
             button("审阅回件差异…", lambda e: self._task(lambda: self._review_compile_fix(identity, ids)))
         if status == "compiled":

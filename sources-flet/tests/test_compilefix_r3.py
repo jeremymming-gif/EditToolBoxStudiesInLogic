@@ -303,22 +303,13 @@ def _button(view, label):
 
 
 def _checks(dialog):
-    return dialog.content.content.controls[-1].controls
+    """Consent checkboxes in the authorization dialog (C-lite: none)."""
+    return [control for control in dialog.content.content.controls if isinstance(control, ft.Checkbox)]
 
 
 def _terms_fields(dialog):
+    """Manual verification fields in the authorization dialog (C-lite: none)."""
     return [control for control in dialog.content.content.controls if isinstance(control, ft.TextField)]
-
-
-def _agree(dialog, *, fill=True):
-    if fill:
-        for field, value in zip(_terms_fields(dialog), ("synthetic policy §4", "synthetic retention conditions",
-                                                        "synthetic training conditions")):
-            field.value = value
-            field.on_change(SimpleNamespace(control=field))
-    for box in _checks(dialog):
-        box.value = True
-        box.on_change(SimpleNamespace(control=box))
 
 
 def _evidence():
@@ -375,15 +366,9 @@ def test_scope_selection_terms_and_unknown_require_explicit_new_round(ui_harness
 
     dialog = page.dialogs[-1]
     assert any(getattr(control, "value", None) == prepared["body"] for control in dialog.content.content.controls)
-    assert all(box.value is False for box in _checks(dialog))
     send = dialog.actions[-1]
-    for box in _checks(dialog)[:-1]:
-        box.value = True
-        box.on_change(SimpleNamespace(control=box))
-    assert send.disabled
-    _click(send)
-    assert len(calls) == 1
-    _agree(dialog)
+    # C-lite: no consent checkboxes or manual verification fields; a valid target enables the single button.
+    assert not _checks(dialog) and not _terms_fields(dialog)
     assert not send.disabled
     _click(dialog.actions[0])
     _click(send)
@@ -392,8 +377,7 @@ def test_scope_selection_terms_and_unknown_require_explicit_new_round(ui_harness
     _click(_button(view, "审阅待发送请求…"))
     asyncio.run(tasks.pop()())
     dialog = page.dialogs[-1]
-    assert all(box.value is False for box in _checks(dialog))
-    _agree(dialog)
+    assert not _checks(dialog) and not _terms_fields(dialog)
     _click(dialog.actions[-1])
     _click(dialog.actions[-1])
     assert len(calls) == 2 and "--compile-fix-terms-ack" in calls[1].argv
@@ -407,7 +391,7 @@ def test_scope_selection_terms_and_unknown_require_explicit_new_round(ui_harness
     retry_scope.content.content.controls[1].value = False
     _click(retry_scope.actions[-1])
     assert len(calls) == 3 and not tasks
-    assert all(box.value is False for box in _checks(page.dialogs[-1]))
+    assert not _checks(page.dialogs[-1]) and not _terms_fields(page.dialogs[-1])
     assert view._initial_action_context() == context
 
 
@@ -423,14 +407,13 @@ def test_restored_prepared_round_requires_fresh_authorization_and_rejects_stale_
     asyncio.run(tasks.pop()())
     dialog = page.dialogs[-1]
     assert view.compile_fix_eligible["request_id"] == "new"
-    assert all(box.value is False for box in _checks(dialog))
+    assert not _checks(dialog) and not _terms_fields(dialog)
     if change == "scope":
         view.compile_fix_eligible["scope"] = {"evidence_ids": ["D2"]}
     elif change == "preview":
         view.preview_id = "P2"
     else:
         settings[change] = "changed"
-    _agree(dialog)
     _click(dialog.actions[-1])
     assert len(calls) == 2 and not page.dialogs
 
@@ -553,26 +536,22 @@ def test_result_path_typing_and_clear_keep_field_and_task_identity(ui_harness):
     assert view._refs["result_path"] == [field] and view._initial_action_context() == profile
 
 
-def test_terms_fields_use_readable_floating_layout(ui_harness):
-    """The three policy fields must be full-height floating fields, not squished single-line boxes."""
+def test_authorization_dialog_has_no_consent_form(ui_harness):
+    """C-lite: the 4 checkboxes and 3 manual verification fields are gone, leaving a single send action."""
     from ui import compile_fix_dialog as CFD
     from ui.tokens import Tokens
 
     _, page, _, _ = ui_harness
-    dialog = CFD.show_authorization_dialog(page, Tokens(), _prepared("R-height", ["D1"]),
+    dialog = CFD.show_authorization_dialog(page, Tokens(), _prepared("R-lite", ["D1"]),
                                            lambda *args: None)
-    fields = _terms_fields(dialog)
-    assert len(fields) == 3
-    for field in fields:
-        assert field.height == Tokens().px(48)
-        assert field.dense is False
-        assert field.label
-        assert field.hint_text
-        assert field.max_length == 240
+    assert not _checks(dialog)
+    assert not _terms_fields(dialog)
+    assert [button.content for button in dialog.actions] == ["取消", "确认并发送一次（真实付费外发）"]
 
 
 @pytest.mark.parametrize("base", ["https://api.deepseek.com/v1", "https://api.deepseek.com.proxy.invalid/v1"])
-def test_terms_disclosure_requires_target_specific_reference_and_reconfirmation(ui_harness, base):
+def test_authorization_disclosure_is_complete_and_only_one_click_sends(ui_harness, base):
+    """C-lite: full read-only disclosure stays; a valid target enables exactly one explicit send click."""
     from ui import compile_fix_dialog as CFD
     from ui.tokens import Tokens
 
@@ -584,31 +563,29 @@ def test_terms_disclosure_requires_target_specific_reference_and_reconfirmation(
     texts = [control.value for control in dialog.content.content.controls if isinstance(control, CFD.ft.Text)]
     host = "api.deepseek.com.proxy.invalid" if "proxy.invalid" in base else "api.deepseek.com"
     assert any(text.startswith("目标主机：" + host) and base + "/chat/completions" in text for text in texts)
-    assert any("需人工按下方来源核验" in text and "不验证来源真实性或条款内容" in text for text in texts)
-    assert any("不是整轮请求总时限" in text for text in texts)
+    assert any("需人工核验适用条款" in text and "不验证来源真实性或条款内容" in text for text in texts)
+    assert any("不是整轮请求总时限" in text and "65536 字节" in text for text in texts)
+    assert any("仅本机记录保留 30 天" in text and "不代表服务商留存期限" in text for text in texts)
+    # base/model/protocol/tools plus the full frozen body and its SHA-256 stay visible.
+    assert any('"base"' in text and '"model"' in text and '"protocol"' in text and '"tools"' in text
+               for text in texts)
+    assert any(prepared["body"] in text for text in texts)
+    assert any("请求 SHA-256：" + prepared["request_sha256"] in text for text in texts)
+    assert any("输入粗估约" in text and "不代表服务商计费" in text for text in texts)  # budget disclosure
     assert not any("工具已核验" in text or "服务商不会训练" in text for text in texts)
-    assert all(not box.value for box in _checks(dialog))
-    _agree(dialog, fill=False)
-    assert dialog.actions[-1].disabled
-    _click(dialog.actions[-1])
-    assert sent == []
-    _agree(dialog)
-    assert dialog.actions[-1].disabled is False
-    field = _terms_fields(dialog)[-1]
-    field.value = "revised training observation"
-    field.on_change(SimpleNamespace(control=field))
-    assert _checks(dialog)[2].value is False and dialog.actions[-1].disabled
-    _click(dialog.actions[-1])
-    assert sent == []
-    _agree(dialog, fill=False)
-    _click(dialog.actions[-1])
+    assert not _checks(dialog) and not _terms_fields(dialog)
+    send = dialog.actions[-1]
+    assert send.disabled is False
+    _click(send)
     assert sent == [(prepared, True)]
-    assert "revised training observation" not in json.dumps(sent)
+    _click(send)
+    assert sent == [(prepared, True)]  # one click = one send; dismissed dialog cannot resend
     reopened = CFD.show_authorization_dialog(page, Tokens(), prepared, lambda *_: pytest.fail("sent"))
-    assert all(not box.value for box in _checks(reopened)) and all(not field.value for field in _terms_fields(reopened))
+    assert not _checks(reopened) and not _terms_fields(reopened)
 
 
-def test_terms_confirmation_is_bound_to_frozen_target_and_configuration(ui_harness):
+def test_authorization_is_bound_to_frozen_configuration(ui_harness):
+    """C-lite: the single click is still rejected when the shown summary drifts after opening."""
     from ui import compile_fix_dialog as CFD
     from ui.tokens import Tokens
 
@@ -616,7 +593,6 @@ def test_terms_confirmation_is_bound_to_frozen_target_and_configuration(ui_harne
     prepared = _prepared("R-bind", ["D1"])
     sent = []
     dialog = CFD.show_authorization_dialog(page, Tokens(), prepared, lambda *args: sent.append(args))
-    _agree(dialog)
     assert not dialog.actions[-1].disabled
     prepared["summary"]["model"] = "changed-model"
     _click(dialog.actions[-1])
@@ -635,7 +611,6 @@ def test_wrong_or_invalid_target_fails_closed(ui_harness, target):
     prepared = _prepared("R3", ["D1"])
     prepared["summary"]["target"] = target
     dialog = CFD.show_authorization_dialog(page, Tokens(), prepared, lambda *_: pytest.fail("sent"))
-    _agree(dialog)
     assert dialog.actions[-1].disabled
     _click(dialog.actions[-1])
 
@@ -668,7 +643,6 @@ def test_retention_deletes_by_key_without_changing_workflow_or_final(ui_harness,
     view._set_compile_fix(prepared, prepared=entry)
     view._show_prepared_compile_fix(entry)
     old_dialog = page.dialogs[-1]
-    _agree(old_dialog)
     view.phase, view.preview_id = phase, preview
     view._original_final_dir = view._final_dir = "/synthetic/unchanged-final"
     view.delivery_ok = True

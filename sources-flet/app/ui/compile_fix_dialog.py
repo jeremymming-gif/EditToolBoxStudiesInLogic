@@ -9,12 +9,6 @@ import flet as ft
 
 from ui import components as C
 
-TERMS = (
-    "我已核对本次候选稿、诊断摘要及完整脱敏请求正文。",
-    "我确认本次显示的服务目标、模型、协议和工具效果。",
-    "我已根据下方来源，人工核对适用于本次实际目标及账号的数据留存与训练条款。",
-    "我同意本次发送，并知悉原始请求与回件按所示本机保留与删除规则处理。",
-)
 _SUMMARY_FIELDS = (
     "base", "target", "model", "protocol", "tools", "max_tokens", "thinking",
     "article_budget_tokens", "batch_budget_tokens", "identity_sha256", "scope_sha256",
@@ -64,7 +58,13 @@ def _budget_disclosure(summary, body: str) -> str:
 
 
 def show_authorization_dialog(page, tokens, prepared: dict, on_send) -> ft.AlertDialog:
-    """Render one prepared request; every invocation starts with all terms unchecked."""
+    """Render one prepared request for read-only review; one click is the per-request ack.
+
+    C-lite: the old 4-checkbox + 3-verification-field form is gone. A single explicit
+    click on the send button is this request's authorization (``ack=True``). Every
+    integrity gate downstream (target/settings fingerprint, one-shot consume,
+    no-retry) is untouched; this dialog only decides whether the user clicked once.
+    """
     t = tokens
     summary = prepared.get("summary") or prepared.get("authorization")
     if not isinstance(summary, dict):
@@ -76,74 +76,25 @@ def show_authorization_dialog(page, tokens, prepared: dict, on_send) -> ft.Alert
     target_matches = (origin is not None and origin == _terms_target(base)
                       and target.startswith(base.rstrip("/") + "/"))
     target_label = f"目标主机：{origin[1]}" if origin else "目标主机：无效"
-    terms_note = (f"{target_label} · 实际目标：{target}。需人工按下方来源核验适用条款；"
+    terms_note = (f"{target_label} · 实际目标：{target}。需人工核验适用条款；"
                   "工具不联网，也不验证来源真实性或条款内容。"
                   if target_matches else "实际发送目标无效或与配置地址不匹配；本次不能发送。")
-    # 三个核验输入框带浮动标签 + 提示语 + max_length 计数器；用单行 28px 的
-    # C.text_field 会被挤扁（m01324 用户实拍），改用统一的 48px 浮动标签输入框。
-    terms_fields = [C.floating_field(t, label, hint=hint, max_length=240, clearable=False)
-                    for label, hint in (
-                        ("可核对条款来源（本次目标/账号）", "填政策名称/版本及可核对 URL 或章节定位；工具不验证真实性"),
-                        ("留存条款核验记录", "按上述来源人工记录适用对象、期限/触发条件及例外"),
-                        ("训练条款核验记录", "按上述来源人工记录允许、禁止或条件及其适用范围"),
-                    )] if target_matches else []
-    checks: list[ft.Checkbox] = []
-    checks_column = ft.Column(spacing=t.sp("half"), scroll=C.scrollbar(t),
-                              height=t.px(145))
-    for clause in TERMS:
-        checkbox = ft.Checkbox(value=False, label=clause)
-        checks.append(checkbox)
-        checks_column.controls.append(checkbox)
-    send_button = C.primary_button("确认并发送一次", lambda e: None, t)
-    send_button.disabled = True
-
-    confirmed_terms = None
-
-    def terms_record():
-        return tuple((field.value or "").strip() for field in terms_fields)
 
     def summary_unchanged():
         return summary_snapshot == summary
 
-    def terms_binding():
-        return (target, base, summary_snapshot.get("model"), summary_snapshot.get("protocol"),
-                summary_snapshot.get("tools"), summary_snapshot.get("identity_sha256"),
-                summary_snapshot.get("scope_sha256"), summary_snapshot.get("body_sha256"))
-
     def can_send() -> bool:
-        record = terms_record()
-        return (target_matches and summary_unchanged() and bool(record) and all(record)
-                and confirmed_terms == (terms_binding(), record)
-                and all(box.value is True for box in checks))
-
-    def update_send(_=None) -> None:
-        send_button.disabled = not can_send()
-        try:
-            send_button.update()
-        except Exception:  # noqa: BLE001 - dialog may not be mounted yet
-            pass
+        return target_matches and summary_unchanged()
 
     def close() -> None:
         _dismiss_current(page, dialog)
 
-    def verify_terms(_=None) -> None:
-        nonlocal confirmed_terms
-        record = terms_record()
-        confirmed_terms = ((terms_binding(), record) if checks[2].value is True and record
-                           and all(record) and summary_unchanged() else None)
-        if confirmed_terms is None:
-            checks[2].value = False
-            try:
-                checks[2].update()
-            except (AssertionError, RuntimeError):
-                pass
-        update_send()
-
-    def invalidate_terms(_=None) -> None:
-        checks[2].value = False
-        verify_terms()
+    send_button = C.primary_button("确认并发送一次（真实付费外发）", lambda e: None, t)
+    send_button.disabled = not can_send()
 
     async def send(e) -> None:
+        # Re-check at click time: summary may have drifted since the dialog opened,
+        # and a dismissed dialog must never send (one click = one send, no retries).
         if not can_send() or not _dismiss_current(page, dialog):
             return
         result = on_send(dict(prepared), True)
@@ -151,11 +102,6 @@ def show_authorization_dialog(page, tokens, prepared: dict, on_send) -> ft.Alert
             await result
 
     send_button.on_click = send
-    for box in checks:
-        box.on_change = update_send
-    checks[2].on_change = verify_terms
-    for field in terms_fields:
-        field.on_change = invalidate_terms
     details = json.dumps({key: summary[key] for key in _SUMMARY_FIELDS if key in summary},
                          ensure_ascii=False, indent=2)
     dialog = ft.AlertDialog(
@@ -177,12 +123,10 @@ def show_authorization_dialog(page, tokens, prepared: dict, on_send) -> ft.Alert
                 C.text(f"本机 API Key：{'已配置' if summary.get('key_configured') is True else '未配置'}", t, "caption"),
                 C.text("套接字操作超时：60 秒（不是整轮请求总时限）；原始回件上限：65536 字节。", t, "caption"),
                 C.text("仅本机记录保留 30 天；可从编译修复状态删除，不代表服务商留存期限。", t, "caption"),
-                C.text("按来源人工核验实际目标的留存与训练条款", t, role="body-strong"),
+                C.text("数据留存与训练条款", t, role="body-strong"),
                 C.text(terms_note, t, role="caption", selectable=True),
-                *terms_fields,
-                C.text("来源与核验说明须由用户人工核对；本工具不验证其真实性，也不保存这些说明。", t, "caption"),
-                C.text("逐项确认后才会发送；关闭此窗口即取消本次授权。", t, "caption"),
-                checks_column,
+                C.text("适用条款需由用户自行核验；本工具不联网，不保存核验说明。", t, "caption"),
+                C.text("关闭此窗口即取消本次授权；点击发送即为本次逐稿授权，且只发送一次。", t, "caption"),
             ])),
         actions=[C.text_button("取消", lambda e: close(), t), send_button],
     )
