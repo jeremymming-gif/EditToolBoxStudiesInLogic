@@ -537,7 +537,7 @@ def expand_inputs(
                 io.BytesIO(raw), encoding="utf-8", errors="replace"
             ).read()
             root_abs = os.path.abspath(root) if root else os.path.dirname(os.path.abspath(path))
-            rel = os.path.relpath(os.path.abspath(path), root_abs)
+            rel = P.rel(os.path.abspath(path), root_abs)
             byte_sha = hashlib.sha256(raw).hexdigest()
             text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
             observer(rel, byte_sha, text_sha)

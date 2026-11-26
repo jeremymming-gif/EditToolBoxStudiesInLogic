@@ -46,6 +46,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from . import paths as P
 from .latex import (
     Macro,
     find_all_macros,
@@ -264,7 +265,7 @@ def _sha256_bytes(raw: bytes) -> str:
 def _relative_id(path: str, source_dir: str) -> str:
     """受限相对标识：相对 source_dir，保留子目录，绝不含绝对路径。"""
     base = os.path.abspath(source_dir) if source_dir else os.getcwd()
-    rel = os.path.relpath(os.path.abspath(path), base)
+    rel = P.rel(os.path.abspath(path), base)
     return rel.replace(os.sep, "/")
 
 
