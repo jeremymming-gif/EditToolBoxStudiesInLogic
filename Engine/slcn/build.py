@@ -1239,8 +1239,11 @@ def build_latex(
     body = extract_body_text(raw_body)
     # 第四十六批②：参考文献**之后**的附录内容（extract_body_text 会截掉，86-05 实测）
     _post_bib_tail = _latex_post_bibliography_tail(raw_body)
+    # Used-declaration analysis must include appendix content, but rendering keeps the
+    # existing separate body/tail insertion paths below to avoid duplicate insertion.
+    migration_body = body + ("\n" + _post_bib_tail if _post_bib_tail else "")
     pre_plan = PRE.plan_migration(
-        meta_text, tpl, sty_text, tpl_sel.sty_name, body,
+        meta_text, tpl, sty_text, tpl_sel.sty_name, migration_body,
         source_dir=os.path.dirname(os.path.abspath(body_path)),
         observation=_obs,
     )
