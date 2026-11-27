@@ -464,3 +464,65 @@ def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report,
     print("   L1 多轮暂存未修复：" + json.dumps(report.shareable(), ensure_ascii=False,
                                           sort_keys=True), file=sys.stderr)
     return False, info, capture
+
+
+def staged_repair_after_failure(out_dir, stem, *, source, capture,
+                                 max_rounds=3) -> tuple[bool, str, dict | None]:
+    """After a failed single-round compile, run the A+C staged repair loop.
+
+    Rebuilds the diagnosis triple with the exact compile_with_l1 recipe
+    (l1.py:101-112) so the report is bound to the CURRENT candidate bytes.
+    Opt-in/gating lives at the CLI call site; this function only refuses
+    an unbound (None) capture, per the five-gate admission rule.
+    """
+    if capture is None:
+        return False, "L1 多轮暂存未启用：本轮无绑定 capture。", None
+    path = directory(out_dir)
+    candidate = read(path / f"{stem}.tex")
+    try:
+        checks = template_results(candidate, path, stem)
+    except (OSError, RepairError, ValueError, UnicodeError):
+        checks = ()
+    try:
+        from .compiler import support_manifest
+        available = set(support_manifest(path, stem)) | {stem + ".tex"}
+    except (OSError, RepairError):
+        available = None
+    report = diagnose(candidate, capture, template_results=checks,
+                      available_paths=available)
+    ok, published, capture = run_staged_repair_loop(
+        out_dir, stem, source=source, capture=capture, candidate=candidate,
+        report=report, max_rounds=max_rounds)
+    if ok:
+        # H1: the staged loop's no-edit convergence branch can report success
+        # with a failure message instead of a PDF path; never hand a non-path
+        # to the CLI success branch (it would crash in os.path.getsize()).
+        import os  # local import: keep the frozen byte region untouched
+        try:
+            valid = (isinstance(published, (str, os.PathLike))
+                     and Path(published).is_file()
+                     and Path(published).stat().st_size > 0)
+        except (OSError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            return (False, "L1 多轮暂存未修复为有效 PDF，沿旧失败路径。", capture)
+        return True, published, capture
+    return False, published, capture
+
+
+def maybe_staged_repair(ok, info, out_dir, stem, *, source, capture, enabled):
+    """CLI-facing wrapper: adopt the staged-loop result only on success.
+
+    On failure return the ORIGINAL info/capture unchanged: export_failure
+    binds its diagnostic via _initial_transcript(capture, message) (state.py),
+    which requires message to match capture['failure'].  Replacing either
+    with staged-loop values breaks the binding and downgrades an editable
+    failure to report-only 'unknown'.
+    """
+    if ok or not enabled or capture is None:
+        return ok, info, capture
+    staged_ok, staged_info, staged_capture = staged_repair_after_failure(
+        out_dir, stem, source=source, capture=capture)
+    if staged_ok:
+        return True, staged_info, staged_capture
+    return False, info, capture

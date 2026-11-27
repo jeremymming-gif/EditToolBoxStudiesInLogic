@@ -1096,6 +1096,7 @@ def build_arg_parser():
     ap.add_argument("--list-editors", action="store_true",
                     help="只列出全库出现过的「责任编辑」姓名（每行「姓名<TAB>篇数」），供界面下拉用")
     ap.add_argument("--compile", action="store_true", help="生成后立即编译出 PDF")
+    ap.add_argument("--no-compile-multiround", action="store_false", dest="compile_multiround", default=True, help="初排编译失败后禁用 A+C 多轮暂存自愈环（默认启用）")
     _add_handoff_args(ap)
     ap.add_argument("--scan", action="store_true",
                     help="只扫描源文件所在目录，列出各文件角色（正文/参考文献/脚注/图）后退出")

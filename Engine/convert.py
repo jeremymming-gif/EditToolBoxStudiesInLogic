@@ -672,6 +672,8 @@ def main() -> int:
         from slcn.compilefix import compile_with_l1, export_failure
         print("\n⑨ 编译")
         ok, info, repair_capture = compile_with_l1(compile_pdf, out_dir, stem, source=source, enabled=not args.coop_taskbook_only, planning_evidence=getattr(res, "planning_evidence", None))
+        from slcn.compilefix.l1 import maybe_staged_repair
+        ok, info, repair_capture = maybe_staged_repair(ok, info, out_dir, stem, source=source, capture=repair_capture, enabled=getattr(args, "compile_multiround", True) and not args.coop_taskbook_only)
         if ok:
             size = os.path.getsize(info) // 1024
             print(f"   ✅ {os.path.basename(info)}（{size} KB）")

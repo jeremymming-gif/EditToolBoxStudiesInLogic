@@ -64,6 +64,8 @@ class _FixtureCase(unittest.TestCase):
     maxDiff = None
 
     def setUp(self):
+        if shutil.which("xelatex") is None or shutil.which("biber") is None:
+            self.skipTest("BLOCKED: XeLaTeX/Biber unavailable")
         self.tmp = tempfile.mkdtemp(prefix="slcn-l15-impl-test-")
         self.root = Path(self.tmp)
         self.env = _env(self.root)

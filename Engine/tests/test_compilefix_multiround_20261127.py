@@ -90,6 +90,8 @@ class _ProjectCase(unittest.TestCase):
     candidate_override = None
 
     def setUp(self):
+        if shutil.which("xelatex") is None:
+            self.skipTest("BLOCKED: XeLaTeX is unavailable")
         self.tmp = tempfile.mkdtemp(prefix="slcn-t5-multiround-", dir="/tmp")
         self.root = Path(self.tmp)
         self.env = _env(self.root)
