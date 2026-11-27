@@ -42,15 +42,23 @@ _EN_MAX_BODY = sources._EN_SHEET_MAX_BODY  # 200：复用既有「正文长度�
 _MAX_FIELD = 2000
 _DOC_ATTR = {k: ("author" if k == "author_cn" else k) for k in _CANON
              if k not in ("grants", "thanks")}
-# 规范化字段 → 该语种模板槽位（另一语种加 CN/EN 后缀；中文稿用其余槽位）
+# 规范化字段 → 该语种模板槽位（另一语种加 CN/EN 后缀；中文稿用其余槽位）。
+# ⚠️ 两套模板的槽位语义**相反**，权威判据在 build.py:2850-2872（is_en = "mytitleCN" in tpl_fields）：
+#   CN 模板（含 mytitleEN）：mytitle/myabstract/mykeywords/myfirstauthor 是中文，
+#                            加 EN 后缀的槽位才是英文；
+#   EN 模板（含 mytitleCN）：mytitle/myabstract/myfirstauthor 是**英文**，
+#                            加 CN 后缀的槽位才是中文（英文模板没有关键词槽，
+#                            mykeywords/mykeywordsCN 仅为历史兼容保留）。
+# 切勿把 en 表按 zh 表「主槽=中文」的直觉反写：2026-11-27 的 bug(e) 就是
+# 该表整组反转，导致 GUI 预览把中英题名/摘要/作者全部对调。
 _CANON_MACRO = {
     "zh": dict(zip(_PREVIEW_FIELD_ORDER, ("mytitle", "mysubtitle", "mytitleEN", "mysubtitleEN",
         "myfirstauthor", "myfirstauthorEN", "myfirstaffiliation", "myfirstaffiliationEN",
         "myfirstemail", "myabstract", "myabstractEN", "mykeywords", "mykeywordsEN",
         "mygrants", "mythanks"))),
-    "en": dict(zip(_PREVIEW_FIELD_ORDER, ("mytitle", "mysubtitle", "mytitleCN", "mysubtitleCN",
-        "myfirstauthor", "myfirstauthorCN", "myfirstaffiliation", "myfirstaffiliationCN",
-        "myfirstemail", "myabstract", "myabstractCN", "mykeywords", "mykeywordsCN",
+    "en": dict(zip(_PREVIEW_FIELD_ORDER, ("mytitleCN", "mysubtitleCN", "mytitle", "mysubtitle",
+        "myfirstauthorCN", "myfirstauthor", "myfirstaffiliationCN", "myfirstaffiliation",
+        "myfirstemail", "myabstractCN", "myabstract", "mykeywordsCN", "mykeywords",
         # 英文标准模板只有 `\newcommand{\mythanks}` 一个致谢/基金槽（SLEN.sty 把它排成
         # 标题的 `\thanks` 脚注），没有 `\mygrants`。基金写 `\mygrants` 等于写进不存在的
         # 宏 → 字段丢失（P1 缺陷）。因此英文稿基金并进 mythanks（compose_latex 里拼接去重）。
