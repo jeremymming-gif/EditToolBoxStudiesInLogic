@@ -12,6 +12,8 @@
 2. `plan_migration()`：与模板（骨架 + 当前 .sty）做差集——模板已提供的、模板自己
    管理的（ctex / fontspec / geometry / hyperref / biblatex / 本刊 sty）一律不搬；
 3. `insert_lines()`：整块插到 `hyperref` 之前（模板把 hyperref 放在最后）；
+   `cleveref` 例外——它必须在 hyperref **之后**加载，否则编译报
+   `Package cleveref Error: cleveref must be loaded after hyperref!`；
 4. `defined_names()` / `select_custom_macros()`：宏名冲突判据——模板用
    `\\newtheorem{prop}` 定义的 `\\prop`、或 `\\usepackage[all]{xy}` 里的 `\\ar`，
    文本扫描 `\\newcommand` 是看不到的，这里补上；
@@ -128,6 +130,13 @@ _PKG_LINE_RE = re.compile(
     r"^\s*\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{([^}]*)\}"
 )
 _TIKZ_LINE_RE = re.compile(r"^\s*\\usetikzlibrary\s*\{([^}]*)\}")
+# 第 145 条：`cleveref` 必须在 hyperref 之后加载；识别带/不带选项的写法。
+_CLEVEREF_LINE_RE = re.compile(
+    r"^\s*\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{[^}]*\bcleveref\b[^}]*\}"
+)
+# 作者前言里的 tikz 自定义样式：\tikzset{...}（多行、花括号配对）/ \tikzstyle{...}。
+_TIKZSET_HEAD_RE = re.compile(r"^\s*\\tikzset\s*\{")
+_TIKZSTYLE_RE = re.compile(r"^\s*\\tikzstyle\s*\{[^}]*\}\s*=\s*(\{.*\}|[^%]*)$")
 
 # ── 第 130 条：本地支撑文件与定义位置加固 ────────────────────────────────────
 # 作者稿同目录里被前言加载的**非 .tex** 文件：本地旧模板 .sty、本地类 .cls，
@@ -1536,6 +1545,73 @@ def _plan_local_definitions(
                 )
 
 
+def _tikz_brace_delta(line: str) -> int:
+    """一行里未转义、未注释的 `{` / `}` 净增量（给多行 \\tikzset 配对用）。"""
+    delta = 0
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\":
+            i += 2  # 转义字符（\\{ \\} \\% 等）不参与配对
+            continue
+        if ch == "%":
+            break  # 注释里的花括号不算
+        if ch == "{":
+            delta += 1
+        elif ch == "}":
+            delta -= 1
+        i += 1
+    return delta
+
+
+def _collect_tikz_style_defs(pre: str) -> tuple[list[str], set[int]]:
+    """从作者前言抽出 `\\tikzset{...}` / `\\tikzstyle{...}` 定义。
+
+    返回 `(按源码顺序的定义块列表, 已被抽走的行号集合)`。多行 `\\tikzset` 按
+    花括号配对收集（跳过注释与转义），`#1` 等参数原样保留；被注释掉的整行不算。
+    """
+    defs: list[str] = []
+    consumed: set[int] = set()
+    rows = pre.splitlines()
+    i = 0
+    while i < len(rows):
+        clean = _clean_line(rows[i])
+        if _TIKZSET_HEAD_RE.match(clean):
+            start = i
+            depth = 0
+            block: list[str] = []
+            while i < len(rows):
+                raw = rows[i]
+                block.append(raw)
+                depth += _tikz_brace_delta(raw)
+                i += 1
+                if depth <= 0:
+                    break
+            if depth == 0:
+                defs.append("\n".join(block).strip())
+                consumed.update(range(start, i))
+            # 花括号未配平的残块不迁（宁可漏，也不把半截定义带进产物）
+            continue
+        if _TIKZSTYLE_RE.match(clean):
+            start = i
+            depth = 0
+            block: list[str] = []
+            while i < len(rows):
+                raw = rows[i]
+                block.append(raw)
+                depth += _tikz_brace_delta(raw)
+                i += 1
+                if depth <= 0:
+                    break
+            if depth == 0:
+                defs.append("\n".join(block).strip())
+                consumed.update(range(start, i))
+            # 花括号未配平同样不迁
+            continue
+        i += 1
+    return defs, consumed
+
+
 def plan_migration(
     source_text: str,
     skeleton_text: str,
@@ -1585,7 +1661,13 @@ def plan_migration(
         {"biblatex"} & (package_names(skeleton_text) | package_names(sty_text))
     )
 
-    for raw in pre.splitlines():
+    # 第 145 条：作者前言里的 tikz 自定义样式（\tikzset / \tikzstyle）单独收集，
+    # 插在依赖的 tikz 库之后；不进 scan_preamble 的八类定义，也不参与包差集。
+    tikz_style_defs, tikz_style_rows = _collect_tikz_style_defs(pre)
+
+    for lineno, raw in enumerate(pre.splitlines()):
+        if lineno in tikz_style_rows:
+            continue
         clean = _clean_line(raw)
         if not clean.strip():
             continue
@@ -1643,6 +1725,10 @@ def plan_migration(
                 plan.tikz_libs.extend(need)
                 libs.update(need)
             continue
+
+    # tikz 自定义样式放在所有宏包/tikz 库行之后、其余定义之前：样式键可能引用库，
+    # 必须先加载库再定义样式；整体又都在 \begin{document} 之前（insert_lines 保证）。
+    plan.lines.extend(tikz_style_defs)
 
     # 作者前言里的定义：八类声明（模板没有就搬）在前；其中 `\newcounter`（第 130 条补丁）
     # **只搬真正被用到的**——正文里直接用了（`\theX` 等），或已迁移的定义体里用了（如
@@ -1812,11 +1898,21 @@ def is_hyperref_line(line: str) -> bool:
     return s.startswith("%") is False and "\\usepackage" in s and "hyperref" in s
 
 
+def _is_cleveref_line(line: str) -> bool:
+    """是不是 `\\usepackage{cleveref}`（含带选项写法；忽略整行注释）。"""
+    s = line.strip()
+    return not s.startswith("%") and bool(_CLEVEREF_LINE_RE.match(s))
+
+
 def insert_lines(template_text: str, lines: list[str], anchor: str) -> str:
     """把依赖块插到 `anchor` 行之前（模板约定 hyperref 是最后一个包）。
 
-    找不到 anchor 就退到 `\\begin{document}` 之前；再找不到就追加到文件末尾
-    （不静默丢弃——宁可多一行，也不要「计划了却没插进去」）。
+    例外：`cleveref` 必须后于 hyperref 加载，否则报
+    `Package cleveref Error: cleveref must be loaded after hyperref!`。有锚点时
+    把块拆两段——非 cleveref 行仍插锚点前，cleveref 行插锚点（hyperref 行）之后，
+    且都在 `\\begin{document}` 前。找不到 anchor 就整块退到 `\\begin{document}`
+    之前（保持源内相对顺序）；再找不到就原样追加到文件末尾（不静默丢弃——
+    宁可多一行，也不要「计划了却没插进去」）。
     """
     if not lines:
         return template_text
@@ -1824,7 +1920,20 @@ def insert_lines(template_text: str, lines: list[str], anchor: str) -> str:
     rows = template_text.split("\n")
     for idx, ln in enumerate(rows):
         if (anchor and anchor in ln) or is_hyperref_line(ln):
-            rows.insert(idx, block)
+            cleveref_lines = [x for x in lines if _is_cleveref_line(x)]
+            other_lines = [x for x in lines if not _is_cleveref_line(x)]
+            if cleveref_lines:
+                # 模板末尾若连续多行 hyperref（选项写法不同），cleveref 要落在
+                # **最后一行** hyperref 之后，才算真正后于所有 hyperref。
+                last = idx
+                while last + 1 < len(rows) and is_hyperref_line(rows[last + 1]):
+                    last += 1
+                if other_lines:
+                    rows.insert(idx, "\n".join(other_lines))
+                    last += 1  # anchor 行整体后移一位
+                rows.insert(last + 1, "\n".join(cleveref_lines))
+            else:
+                rows.insert(idx, block)
             return "\n".join(rows)
     for idx, ln in enumerate(rows):
         if ln.strip().startswith("\\begin{document}"):
