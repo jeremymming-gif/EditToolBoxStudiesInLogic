@@ -87,6 +87,7 @@ class _ProjectCase(unittest.TestCase):
 
     maxDiff = None
     body = BODY_2
+    candidate_override = None
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="slcn-t5-multiround-", dir="/tmp")
@@ -108,8 +109,11 @@ class _ProjectCase(unittest.TestCase):
         )
         self.sty.write_text(ENV_DECL + "\n" + MACRO_DECL + "\n" + EXTRA_DECL + "\n",
                             encoding="utf-8")
-        self._candidate_path.write_text(TEMPLATE.replace("SKELMARK", self.body),
-                                        encoding="utf-8")
+        if self.candidate_override is not None:
+            self._candidate_path.write_bytes(self.candidate_override)
+        else:
+            self._candidate_path.write_text(TEMPLATE.replace("SKELMARK", self.body),
+                                            encoding="utf-8")
         self.original_candidate = self._candidate_path.read_bytes()
         # The round-bound capture belongs to the OUT dir candidate (what
         # apply_plan verifies), with a failure transcript from a real compile.
@@ -284,6 +288,73 @@ class TestRollback(_ProjectCase):
     """RecoveryRequired from apply_plan must not deliver."""
 
     def test_recovery_required_records_attempt_and_no_delivery(self):
+        import slcn.compilefix.l1 as l1mod
+        with patch.object(l1mod, "apply_plan", side_effect=RecoveryRequired("forced")):
+            ok, info, new_capture = run_staged_repair_loop(
+                self.out, self.stem, source=self.source, capture=self.capture,
+                candidate=self.original_candidate, report=self.report, max_rounds=3,
+            )
+        self.assertFalse(ok)
+        self.assertIn("回滚", info)
+        self.assertIn("recovery-required",
+                      [a["result"] for a in new_capture["l1"]["attempts"]])
+        self.assertNotIn("l1_repaired", new_capture)
+        self.assertEqual(self._candidate_path.read_bytes(), self.original_candidate)
+
+
+class TestCatcodeDirectPublish(_ProjectCase):
+    """A CATCODE EditPlan is a two-wrapper span edit, not a preamble line.
+
+    It cannot be folded into the single-continuous-slice combined plan, so the
+    loop must publish it directly with exactly one apply_plan call. Existing
+    fixtures carry amsmath/hyperref (so _definitions() admits nothing); this
+    fixture is a pure article with one @-control-word \newcommand so the
+    CATCODE rule fires.
+    """
+
+    def setUp(self):
+        # Pure article preamble: no packages, one @-control-word definition.
+        self.candidate_override = (
+            "\\documentclass{article}\n"
+            "\\newcommand{\\Demo}{\\@gobble{discard}Kept}\n"
+            "\\begin{document}\n"
+            "\\Demo\n"
+            "\\end{document}\n"
+        ).encode()
+        super().setUp()
+        self.assertEqual([(i.category, i.confidence) for i in self.report.items],
+                         [("catcode", "exact")])
+
+    def test_catcode_plan_is_published_once_with_reversible_patch(self):
+        from slcn.compilefix.l1_rules import select_plan
+        plan = select_plan(self.original_candidate, self.report)
+        self.assertIsNotNone(plan, "fixture must actually trigger the CATCODE rule")
+        self.assertEqual(plan.reverse(plan.patched), self.original_candidate)
+
+        import slcn.compilefix.l1 as l1mod
+        calls = []
+        real_apply = l1mod.apply_plan
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs["plan"])
+            return real_apply(*args, **kwargs)
+
+        with patch.object(l1mod, "apply_plan", side_effect=spy):
+            ok, info, new_capture = run_staged_repair_loop(
+                self.out, self.stem, source=self.source, capture=self.capture,
+                candidate=self.original_candidate, report=self.report, max_rounds=3,
+            )
+        self.assertTrue(ok, info)
+        self.assertEqual(len(calls), 1, "CATCODE plan must publish exactly once")
+        published_plan = calls[0]
+        self.assertEqual(published_plan.reverse(published_plan.patched),
+                         self.original_candidate)
+        self.assertEqual(self._candidate_path.read_bytes(), published_plan.patched)
+        self.assertIn("l1_repaired", new_capture)
+        results = [a["result"] for a in new_capture["l1"]["attempts"]]
+        self.assertIn("passed", results)
+
+    def test_catcode_rollback_records_attempt_and_no_delivery(self):
         import slcn.compilefix.l1 as l1mod
         with patch.object(l1mod, "apply_plan", side_effect=RecoveryRequired("forced")):
             ok, info, new_capture = run_staged_repair_loop(

@@ -258,6 +258,42 @@ def _stage_attempt(report, rule_id, result):
     report.attempts.append({"rule": rule_id, "result": result})
 
 
+def _stage_publish(out_dir, stem, *, source, capture, report, plan):
+    """The ONE publish call with the four attempt states.
+
+    Shared by the CATCODE direct-publish path and the combined-slice path so
+    both use exactly one ``apply_plan`` call and identical rollback semantics.
+    Returns ``(ok, info)``; a successful publish fills capture["l1"] and
+    capture["l1_repaired"]. Never swallows KeyboardInterrupt.
+    """
+    info = "L1 未修复：多轮暂存未收敛；请人工检查本地日志。"
+    try:
+        pdf = apply_plan(out_dir, stem, source=source, capture=capture,
+                         plan=plan, report=report)
+    except RecoveryRequired:
+        _stage_attempt(report, plan.rule_id, "recovery-required")
+        info = "L1 回滚未完成，禁止交付；请人工检查受限事务材料"
+        try:
+            print("   " + info, file=sys.stderr)
+        except Exception:
+            pass
+        return False, info
+    except Exception:
+        _stage_attempt(report, plan.rule_id, "failed-rolled-back")
+        from .state import capture_compile
+        rebound = capture_compile(out_dir, stem, source=source)
+        if (rebound is not None
+                and rebound.get("candidate_sha256") == capture.get("candidate_sha256")
+                and rebound.get("source_id") == capture.get("source_id")
+                and rebound.get("out_id") == capture.get("out_id")):
+            capture.update(rebound)
+        return False, info
+    _stage_attempt(report, plan.rule_id, "passed")
+    capture["l1"] = report.shareable()
+    capture["l1_repaired"] = plan.after_sha256
+    return True, pdf
+
+
 def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report, max_rounds=3):
     """Stage missing definitions in memory across real XeLaTeX dry compiles.
 
@@ -320,11 +356,22 @@ def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report,
                 except Exception:
                     plan = None
                 if plan is not None:
-                    # CATCODE wrappers are byte-span edits, not preamble lines:
-                    # keep the exact single-round plan and publish it directly.
-                    last_plan = plan
-                    _stage_attempt(report, plan.rule_id, "staged")
-                    break
+                    # CATCODE is a two-wrapper byte-span edit (prefix/suffix),
+                    # NOT a preamble line, so it cannot be folded into the
+                    # single-continuous-slice combined plan below (that would
+                    # break reverse()). Publish this exact plan directly with
+                    # exactly one apply_plan call and the same four states.
+                    ok, published = _stage_publish(
+                        out_dir, stem, source=source, capture=capture,
+                        report=report, plan=plan)
+                    if ok:
+                        print("   L1 多轮暂存修复通过、单次发布完成；"
+                              "PDF 版面仍待人工检查。")
+                        return True, published, capture
+                    if published != info:
+                        info = published  # RecoveryRequired carries its own message.
+                    capture["l1"] = report.shareable()
+                    return False, info, capture
 
                 context = None
                 try:
@@ -392,32 +439,14 @@ def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report,
                 )
             if combined.reverse(acc) != original:
                 raise RepairError("L1 多轮合并补丁不可逆")
-            try:
-                pdf = apply_plan(out_dir, stem, source=source, capture=capture,
-                                 plan=combined, report=report)
-            except RecoveryRequired:
-                _stage_attempt(report, combined.rule_id, "recovery-required")
-                info = "L1 回滚未完成，禁止交付；请人工检查受限事务材料"
-                try:
-                    print("   " + info, file=sys.stderr)
-                except Exception:
-                    pass
-            except Exception:
-                # New code must never swallow KeyboardInterrupt.
-                _stage_attempt(report, combined.rule_id, "failed-rolled-back")
-                from .state import capture_compile
-                rebound = capture_compile(out_dir, stem, source=source)
-                if (rebound is not None
-                        and rebound.get("candidate_sha256") == capture.get("candidate_sha256")
-                        and rebound.get("source_id") == capture.get("source_id")
-                        and rebound.get("out_id") == capture.get("out_id")):
-                    capture.update(rebound)
-            else:
-                _stage_attempt(report, combined.rule_id, "passed")
-                capture["l1"] = report.shareable()
-                capture["l1_repaired"] = combined.after_sha256
+            ok, published = _stage_publish(
+                out_dir, stem, source=source, capture=capture,
+                report=report, plan=combined)
+            if ok:
                 print("   L1 多轮暂存修复通过、单次发布完成；PDF 版面仍待人工检查。")
-                return True, pdf, capture
+                return True, published, capture
+            if published != info:
+                info = published  # RecoveryRequired carries its own message.
     except (Exception,):
         _stage_attempt(report, CATCODE.rule_id, "not-admitted")
 
