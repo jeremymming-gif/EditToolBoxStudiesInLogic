@@ -1,17 +1,17 @@
 # AGENTS.md —— 工具箱开发者上手（公开仓/开发主场）
 
-## 当前状态快照（CURRENT STATE · 2026-11-27 23:00）
+## 当前状态快照（CURRENT STATE · 2026-11-28 01:58）
 
 > **新会话先读这里**：本块是冷启动入口，告诉你"现在在哪、下一步做什么、按序读哪几份"。下方是长期规则；状态细节只在下面列出的活文档里，本块**只做导航、不重复状态**。笔记仓 §1「维护模式：只接用户点名，无点名不开工」依然有效——本块给上下文，不替代用户派活。
 
-- **仓库状态**：公开仓 `main == origin/main == 14dfb80dd3ff9bdc072504a5e15a14c289848152`，工作区干净，最新 tag `v1.7.2`（**禁打 tag**）；笔记仓 `bcdae4e252de13f1b2444d596535c43783883d00`，干净。
-- **一句话现状**：2A/2B、L1.5 自愈环、A+C 泛化闭环、deferred 命名空间修复、GUI 一批 bug 修复均已收口并 push；自愈环已具备五门槛规则族 + ≤3 轮闭环，但 `run_staged_repair_loop` **尚未接进** `convert.py` CLI。
-- **下一步（待用户确认）**：按 CLI 接线执行文档派 T1→T5（重活派子代理、lead 只规划与复核）；真机 GUI 截图留用户；Codex 会话在独立 worktree 并行 R1–R3 目录排序。
+- **仓库状态**：公开仓 `main == origin/main == 45fc6314c55bfd83a9c221e3864e9fa8c056a3ba`，工作区干净，最新 tag `v1.7.2`（**禁打 tag**）；笔记仓 `c265f2ecc3743c894ae52f680265d28862646e91`，干净。
+- **一句话现状**：2A/2B、L1.5 自愈环、A+C 泛化闭环、deferred 命名空间修复、GUI 一批 bug 修复均已收口并 push；**A+C 多轮暂存自愈环已接进 `convert.py` CLI 并 push（默认开启，`--no-compile-multiround` 关闭；五门槛仍为发布闸门，≤3 轮；已修 H1 潜伏 bug 与 capture 污染回归）**，见状态报告 §22 与验证计划 §9。另：R1/R2/R3 目录排序页码刷新候选已由 Codex 会话交付并在隔离工作副本完成 91 期真实稿件验收（R1/R2 PASS，R3 因真实数据两处阻塞 PARTIAL），候选未冻结、真实 R3 落盘待人工处理 F2/F3 后重验。
+- **下一步（待用户确认）**：R1/R2/R3 真实稿件 R3 的两处阻塞（F2 非整数页码宏、F3 CN TOC 单页适配压缩下限仍 2 页）待用户决策是否另立卡修复后重验；原生桌面 GUI/截图留用户；CLI 接线 T1→T5 已全部收口并 push，无待派任务。
 
 **按序必读（接管顺序）**：
 1. `/Users/zhangwenming/Documents/GitHub/new-session-lead-handoff-20261127.md` — 会话交接与首条提示词（总入口，先读）。
-2. `/Users/zhangwenming/Documents/GitHub/codex-2b-status-report-20261126.md` — 总状态报告，§1–§21 按时序，重点看末尾 §19–§21。
-3. `/Users/zhangwenming/Documents/GitHub/selfheal-cli-stitch-verification-plan-20261127.md` — 下一步执行文档（T1–T5，写域互斥、门禁、报告模板）。
+2. `/Users/zhangwenming/Documents/GitHub/codex-2b-status-report-20261126.md` — 总状态报告，§1–§22 按时序，重点看末尾 §19–§22（§22 = CLI 接线 + CI 修复 + H1 修复 + 回归修复）。
+3. `/Users/zhangwenming/Documents/GitHub/selfheal-cli-stitch-verification-plan-20261127.md` — CLI 接线验证文档（T1–T5 写域互斥、门禁、报告模板；§9 = 最终执行结论与门禁表）。
 4. `/Users/zhangwenming/Documents/GitHub/selfheal-loop-task-card-20261127.md` + `/Users/zhangwenming/Documents/GitHub/selfheal-loop-acceptance-card-20261127.md` — 自愈环任务卡/验收卡（五门槛、不算通过清单）。
 5. `/Users/zhangwenming/Documents/GitHub/selfheal-independent-test-optimization-codex-handoff-20261127.md`、`/Users/zhangwenming/Documents/GitHub/directory-order-paging-codex-handoff-20261127.md` — 两条 Codex 支线交接。
 6. 笔记仓 `BRIEF.md`（规则正文）、`HOT-STATE.md`、`BACKLOG.md`、`drafts/NEXT-SESSION.md`（活状态源，按任务裁剪读）。
