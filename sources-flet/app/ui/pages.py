@@ -545,6 +545,18 @@ class _SingleAiHost:
     def ai_initial_paths(self) -> tuple[str, str]:
         return self._single.field("single_source"), self._single.field("single_out")
 
+    def ai_initial_style_identity(self) -> tuple[str, str, str]:
+        """初排 AIW 任务的语种/样式/骨架身份。
+
+        与 ``_convert_kwargs`` 同源（form.convert_lang + convert_sty/skeleton），
+        供 BibAiAssistView 判断冻结 stage 是否仍适用于当前语种；切换语种后
+        旧任务不可恢复，必须重新 prepare（2026-11-27 缺陷 b）。
+        """
+        lang = str(self.store.get("form.convert_lang", "") or "").strip()
+        sty = str(self._single.field("convert_sty") or "").strip()
+        skeleton = str(self._single.field("convert_skeleton") or "").strip()
+        return lang, sty, skeleton
+
     def build_ai_initial_call(self, view, work_dir: str) -> EB.EngineCall:
         return self._single._build_ai_initial_call(view=view, work_dir=work_dir)
 

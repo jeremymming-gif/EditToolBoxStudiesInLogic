@@ -692,6 +692,10 @@ class BibAiAssistView:
         self._r3 = (taskbook_version == 3 if taskbook_version is not None
                     else purpose == "library" or callable(self._initial_call))
         self._parent_paths: tuple[str, str] | None = None
+        #: 父页「语种/样式/骨架」身份快照。初排冻结 stage 由这三者决定
+        #: （`templates.resolve`），与源/输出目录一起构成 AIW 任务身份；
+        #: 只比路径会让改语种后仍复用旧 SLCN-MIX 骨架（2026-11-27 缺陷 b）。
+        self._parent_style_identity: tuple[str, str, str] | None = None
         self._original_final_dir = ""
         self._original_dialog = None
         self._initial_open_stage = ""
@@ -1362,6 +1366,7 @@ class BibAiAssistView:
     def _restart(self) -> None:
         self._clear_task()
         self._parent_paths = None
+        self._parent_style_identity = None
         self.work_dir = ""
         if self._r3:
             self._store_set(self._task_store_key(), {})
@@ -1369,11 +1374,17 @@ class BibAiAssistView:
         self._refresh()
 
     def _check_parent_task(self) -> None:
-        if self._parent_paths is not None and self._parent_paths != self.page.ai_initial_paths():
+        paths_changed = (self._parent_paths is not None
+                         and self._parent_paths != self.page.ai_initial_paths())
+        style_changed = (self._parent_style_identity is not None
+                         and self._parent_style_identity != self._task_style_identity())
+        if paths_changed or style_changed:
             self._clear_task()
             self._parent_paths = None
+            self._parent_style_identity = None
             self.work_dir = ""
-            self.notice = "父页源稿或输出目录已更换，请生成新任务书。"
+            self.notice = ("父页源稿或输出目录已更换，请生成新任务书。" if paths_changed
+                           else "父页语种/样式/模板已更换，请生成新任务书。")
 
     def _on_execute(self, key: str):
         def _handler(e) -> None:
@@ -2681,12 +2692,33 @@ class BibAiAssistView:
             return [self.target_bib, ""]
         return [self.target_bib, self.tex_path]
 
+    def _task_style_identity(self) -> tuple[str, str, str]:
+        """初排冻结 stage 的语言身份：(语种, 样式 .sty, 模板骨架)。
+
+        只给初排 AIW（有 `_initial_call`）取宿主快照；引用库分支固定空元组，
+        保持其 store 记录形状与既有测试不变。三元素均为 str，可稳定 JSON 序列化。
+        宿主未暴露 `ai_initial_style_identity` 时（老桩/兼容）回退到 store 的
+        `form.convert_lang`（与 `_convert_kwargs` 同源），另外两项为空。
+        """
+        if not callable(self._initial_call):
+            return ("", "", "")
+        getter = getattr(self.page, "ai_initial_style_identity", None)
+        if callable(getter):
+            lang, sty, skeleton = getter()
+            return (str(lang), str(sty), str(skeleton))
+        store = getattr(self.page, "store", None) or getattr(self._app(), "store", None)
+        lang = store.get("form.convert_lang", "") if store is not None else ""
+        return (str(lang or ""), "", "")
+
     def _remember_task(self) -> None:
-        self._store_set(self._task_store_key(), {
+        record = {
             "inputs": self._task_inputs(),
             "work_dir": self.work_dir,
             "task_id": self.task_id,
-        })
+        }
+        if callable(self._initial_call):
+            record["style_identity"] = list(self._task_style_identity())
+        self._store_set(self._task_store_key(), record)
 
     async def _run_r3(self, op: str, call, label: str, *, blocked_ok: bool = False,
                       on_result=None) -> dict | None:
@@ -2918,6 +2950,7 @@ class BibAiAssistView:
 
         self._clear_task()
         self._parent_paths = inputs if initial else None
+        self._parent_style_identity = self._task_style_identity() if initial else None
         self.work_dir = work
         self.phase = "preparing"
         self.running = True
@@ -5098,13 +5131,21 @@ class BibAiAssistView:
                     and list(stored_inputs) != self._task_inputs()):
                 self._deactivate_legacy_library_task("任务身份与当前引用库范围不一致")
                 return
+            # 初排 AIW 的任务身份 = (源稿路径, 输出目录, 语种/样式/骨架)。
+            # 冻结 stage 由 templates.resolve(lang, sty, skeleton) 决定；只比路径
+            # 会让「同一篇稿子改成 en 后」继续交付旧的 SLCN-MIX stage（缺陷 b）。
+            style_identity = self._task_style_identity()
+            style_ok = (not callable(self._initial_call)
+                        or not isinstance(stored, dict)
+                        or stored.get("style_identity") == list(style_identity))
             if (isinstance(stored, dict) and not self.task_id and
-                    stored.get("inputs") == self._task_inputs()
+                    stored.get("inputs") == self._task_inputs() and style_ok
                     and stored.get("work_dir") and stored.get("task_id")):
                 self.work_dir = str(stored["work_dir"])
                 self.task_id = str(stored["task_id"])
                 if callable(self._initial_call):
                     self._parent_paths = tuple(self._task_inputs())
+                    self._parent_style_identity = style_identity
                 self._task(self.refresh_status)
             return
         restored = 0
