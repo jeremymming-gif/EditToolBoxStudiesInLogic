@@ -717,7 +717,7 @@ def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=
 
     `review_keys` 来自本次 synthesize_bib 的实际采纳清单，不扩到原 Bib 的保全项。
     兼容直接调用：未传时也只看回件与候选共有的键，且 AI 差异须在候选里生效。
-    同版库的缺值回填仍自动执行；AI 增删改优先审阅，默认保留原稿。
+    同版库的缺值回填以冲突行呈现（默认 library，可逐字段取消）；AI 增删改优先审阅，默认保留原稿。
     """
     original = _field_map(old_bib)
     reply = _field_map(reply_bib)
@@ -726,6 +726,9 @@ def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=
     if review_keys is not None:
         keys.intersection_update(review_keys)
     rows, auto_fills, notes = [], {}, []
+    # 回填行先入列，保持与旧 auto_fills 通道一致的处理顺序：字段插入位置由
+    # apply_decisions() 的 fills 迭代顺序决定，先处理回填才能与 HEAD 产出逐字节一致。
+    backfill_rows = []
     for key in sorted(keys):
         item = (snapshot or {}).get(key) or {}
         tier = str(item.get("tier") or "")
@@ -783,8 +786,14 @@ def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=
                     continue
                 if _same_value(name, before, value) and _same_value(name, replied, value):
                     continue
-                if not after and same_version:
-                    auto_fills.setdefault(key, {})[name] = value
+                if not after and same_version and value:
+                    backfill_rows.append({
+                        "conflict_id": conflict_id(key, name, before, value, replied, None),
+                        "key": key, "field": name,
+                        "original": before, "library": value, "reply": replied,
+                        "choices": ["original", "library"],
+                        "default": "library", "group": field_group(name),
+                    })
                     continue
             row = {
                 "conflict_id": conflict_id(
@@ -799,6 +808,7 @@ def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=
                 row["expressions"] = {"original": original_expression["raw"],
                                       "reply": reply_expression["raw"]}
             rows.append(row)
+    rows = backfill_rows + rows
     return rows, auto_fills, notes
 
 

@@ -292,7 +292,7 @@ class RejectedReplySkipsLibrary(LibraryBase):
 
 class SameVersionMatch(LibraryBase):
 
-    def test_same_version_fills_missing_field_without_conflict(self):
+    def test_same_version_fills_missing_field_as_reviewable_default_row(self):
         self.build_library()
         res = self.prepare(old_text=OLD_SAME)
         self.import_reply(res.task_id, OLD_SAME)
@@ -302,12 +302,24 @@ class SameVersionMatch(LibraryBase):
         self.assertTrue(library["checked"])
         self.assertEqual(library["state"], "ok")
         self.assertEqual(library["matched"], 1)
-        self.assertEqual(library["conflicts"], 0)
-        self.assertEqual(self.state()["conflicts"], [])
-        # 同版缺的 edition 由库值补齐（写进候选 Bib），不是留空也不是顶替。
+        self.assertEqual(library["conflicts"], 1)
+        rows = self.state()["conflicts"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["key"], row["field"]), ("LIBA", "edition"))
+        self.assertEqual((row["original"], row["library"], row["reply"]), ("", "1", ""))
+        self.assertEqual(row["choices"], ["original", "library"])
+        self.assertEqual(row["default"], "library")
+        # 默认回流库值：候选 Bib 与旧行为一致，edition=1 被补齐。
         candidate = _read(self.state()["preview"]["candidate_bib"])
         self.assertIn("edition", candidate)
         self.assertIn("1", candidate)
+        # 逐字段可取消：选 original 后缺值回填不再发生。
+        pv2 = self.preview(adopt={w.CAT_BIB_VERIFY},
+                           decisions={row["conflict_id"]: "original"})
+        self.assertTrue(pv2.ok, pv2.blocked)
+        candidate2 = _read(self.state()["preview"]["candidate_bib"])
+        self.assertNotIn("edition", sv3._field_map(candidate2)["LIBA"][1])
 
     def test_library_path_and_sha_recorded(self):
         self.build_library()

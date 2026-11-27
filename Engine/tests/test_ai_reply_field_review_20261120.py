@@ -156,12 +156,50 @@ class FieldReview(IsolatedTest):
                 self.assertEqual(fields(settle(reply, rows, {rows[0]["conflict_id"]: choice},
                                                 old=old))["number"], "7")
 
-    def test_same_version_missing_field_still_auto_fills(self):
+    def test_same_version_missing_field_is_reviewed_with_library_default(self):
+        # 同版库缺值回填：从静默 auto_fills 改为可见冲突行，默认 library → 产出不变，
+        # 用户逐字段选 original 即可取消回填。
         old = article(number=ABSENT)
         rows, fills, _ = compare(old, old, hit({"number": "9"}))
-        self.assertEqual(rows, [])
-        self.assertEqual(fills, {"CITED": {"number": "9"}})
-        self.assertEqual(fields(settle(old, rows, fills=fills, old=old))["number"], "9")
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["key"], row["field"]), ("CITED", "number"))
+        self.assertEqual((row["original"], row["library"], row["reply"]), ("", "9", ""))
+        self.assertEqual(row["choices"], ["original", "library"])
+        self.assertEqual(row["default"], "library")
+        self.assertEqual(row["group"], "serial")
+        self.assertEqual(fills, {})
+        self.assertEqual(fields(settle(old, rows, old=old))["number"], "9")
+        self.assertNotIn("number", fields(settle(old, rows, {row["conflict_id"]: "original"},
+                                                  old=old)))
+        with self.assertRaisesRegex(workflow.WorkflowError, row["conflict_id"]):
+            review.check_decisions(rows, {row["conflict_id"]: "reply"})
+
+    def test_same_version_multiple_missing_fields_are_independent_review_rows(self):
+        # BRV2001 式三字段（doi/isbn/number）：各自一行、默认全补、可逐项取消。
+        old = article(number=ABSENT)
+        library = {"doi": "10.1017/cbo-anon", "isbn": "0-521-80200-8", "number": "53"}
+        rows, fills, _ = compare(old, old, hit(library))
+        self.assertEqual(fills, {})
+        self.assertEqual([row["field"] for row in rows], ["doi", "isbn", "number"])
+        for row in rows:
+            self.assertEqual((row["key"], row["original"], row["reply"]), ("CITED", "", ""))
+            self.assertEqual(row["library"], library[row["field"]])
+            self.assertEqual(row["choices"], ["original", "library"])
+            self.assertEqual(row["default"], "library")
+        ids = {row["field"]: row["conflict_id"] for row in rows}
+        self.assertEqual(len(set(ids.values())), 3)
+        default = fields(settle(old, rows, old=old))
+        for name, value in library.items():
+            self.assertEqual(default[name], value)
+        all_original = fields(settle(old, rows, {cid: "original" for cid in ids.values()},
+                                     old=old))
+        for name in library:
+            self.assertNotIn(name, all_original)
+        mixed = fields(settle(old, rows, {ids["isbn"]: "original"}, old=old))
+        self.assertEqual(mixed["doi"], library["doi"])
+        self.assertEqual(mixed["number"], library["number"])
+        self.assertNotIn("isbn", mixed)
 
     def test_weak_or_miss_identity_cannot_offer_library_values(self):
         for snapshot in (hit({"number": "9"}, weak=True), hit({"number": "9"}, tier="miss")):
