@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 
 from .. import preamble as PRE
+from .. import preamble_blocks as PB
 from .. import sources
 from .environment_migration_rule import (
     EnvironmentContext,
@@ -28,7 +29,12 @@ from .environment_migration_rule import (
 )
 from .files import digest
 from .l1_diagnostics import mask_comments, normalize_subject
-from .l1_rules import MACRO_MIGRATION, MACRO_REGISTRY
+from .l1_rules import (
+    MACRO_MIGRATION,
+    MACRO_REGISTRY,
+    TIKZKEY_MIGRATION,
+    TIKZKEY_REGISTRY,
+)
 
 # v1 accepts only plain, non-conditional whole definitions that do not silently
 # override a template command (spec §11 #4).
@@ -209,6 +215,148 @@ def select_macro_plan(candidate, diagnosis, *, context, capture=None):
         )).encode("utf-8")).hexdigest(),
         env_name=name, target_binding=target_binding, declaration=declaration,
         separator=separator, offset=offset, added_bytes=added,
+        before_sha256=digest(candidate), after_sha256=digest(patched),
+        original=candidate, patched=patched, lines=tuple(lines),
+    )
+    plan.reverse(patched)
+    return plan
+
+
+# ── tikzkey-migration-v1: whole TikZ style block as the indivisible unit ──────
+
+# A key leaf is a plain pgfkeys name: no braces, control characters or TeX
+# comment/parameter tokens may enter a selector pattern.
+_TIKZ_KEY_LEAF = re.compile(r"[A-Za-z0-9@:.,/+*\-]{1,128}\Z")
+
+
+@dataclass(frozen=True)
+class TikZEditPlan(EnvironmentEditPlan):
+    """EnvironmentEditPlan plus the whole source blocks fed to ``insert_lines``."""
+
+    lines: tuple[str, ...] = ()
+
+
+def _defines_key(text, leaf):
+    """Structural key-definition probe over complete style blocks (spec §11 #5).
+
+    A definition is a ``<leaf>/.style=`` / ``<leaf>/.append style=`` assignment
+    or a ``\\tikzstyle{<leaf>}=[...]`` declaration inside a well-formed block.
+    There is deliberately no
+    per-key parser: only whole blocks returned by ``style_blocks`` are examined,
+    and malformed blocks (``source == ""``) are invisible here.
+    """
+    pattern = re.compile(re.escape(leaf) + r"\s*/\.(?:append\s+)?style\s*=")
+    style = re.compile(r"\\tikzstyle\s*\{\s*" + re.escape(leaf) + r"\s*\}\s*=\s*\[")
+    for block in PB.style_blocks(text):
+        if block.source and (pattern.search(block.source) or style.search(block.source)):
+            return True
+    return False
+
+
+def _unique_source_style_block(context, leaf):
+    """Locate the single source block defining ``leaf``; two or none refuse."""
+    found = []
+    for support_name, text in context.support_texts:
+        masked = mask_comments(text)
+        for block in PB.style_blocks(masked):
+            if not block.source or not _defines_key(block.source, leaf):
+                continue
+            found.append((support_name, block.source.strip()))
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
+def _rebuild_tikzkey_proof(context, candidate_text, leaf, block_source):
+    """Structural rebuild proof through two fresh ``style_blocks`` observations.
+
+    Call 1 observes the candidate and the bound template: neither may define
+    the key.  Call 2 observes the source support again: exactly one whole block
+    must define the key, and it must be the selected block.  This is a genuine
+    structural re-observation, not a substring gate (spec §11 #2/#5), and it
+    mirrors Task 2's two-call discipline.
+    """
+    if _defines_key(candidate_text, leaf) or _defines_key(context.style_text, leaf):
+        return None
+    again = _unique_source_style_block(context, leaf)
+    if again is None or again[1] != block_source:
+        return None
+    return [block_source]
+
+
+def _tikzkey_failure_subject(diagnosis, candidate):
+    """Bind the failure round and return the normalized TikZ key leaf."""
+    if len(TIKZKEY_REGISTRY) != 1 or TIKZKEY_REGISTRY[0] != TIKZKEY_MIGRATION:
+        return None
+    if TIKZKEY_MIGRATION.max_edits != 1:
+        return None
+    if not diagnosis.bound or digest(candidate) != diagnosis.candidate_sha256:
+        return None
+    if not str(diagnosis.phase).startswith("xelatex-"):
+        return None
+    if not isinstance(diagnosis.subject, tuple) or len(diagnosis.subject) != 2:
+        return None
+    kind, name = normalize_subject(*diagnosis.subject)
+    if kind != "tikz_key" or not isinstance(name, str) or not name:
+        return None
+    if not _TIKZ_KEY_LEAF.fullmatch(name):
+        return None
+    return name
+
+
+def select_tikzkey_plan(candidate, diagnosis, *, context, capture=None):
+    """Admit tikzkey-migration-v1 only when every gate holds in this bound round."""
+    if not isinstance(context, EnvironmentContext):
+        return None
+    try:
+        candidate_text = candidate.decode("utf-8")
+    except UnicodeError:
+        return None
+    if "^^" in candidate_text or "\0" in candidate_text or re.search(r"\r(?!\n)", candidate_text):
+        return None
+
+    leaf = _tikzkey_failure_subject(diagnosis, candidate)
+    if leaf is None:
+        return None
+    unique = _unique_source_style_block(context, leaf)
+    if unique is None:
+        return None
+    support_name, block_source = unique
+    lines = _rebuild_tikzkey_proof(context, candidate_text, leaf, block_source)
+    if lines is None:
+        return None
+
+    try:
+        context.verify()
+    except Exception:
+        return None
+
+    added = ("\n".join(lines) + "\n").encode("utf-8")
+    patched_text = PRE.insert_lines(candidate_text, list(lines), "")
+    patched = patched_text.encode("utf-8")
+    if len(patched) != len(candidate) + len(added):
+        return None
+    offset = _insert_offset(candidate, patched, added)
+    if offset is None:
+        return None
+    doc_at = candidate_text.find("\\begin{document}")
+    if doc_at < 0 or offset > len(candidate_text[:doc_at].encode("utf-8")):
+        return None
+
+    target_binding = next((b for b in context.support_bindings if b.relative == support_name), None)
+    if target_binding is None:
+        return None
+    plan = TikZEditPlan(
+        identity=diagnosis.identity, rule_id=TIKZKEY_MIGRATION.rule_id,
+        version=TIKZKEY_MIGRATION.version, diagnosis_identity=diagnosis.identity,
+        diagnosis_candidate_sha256=diagnosis.candidate_sha256,
+        context_fingerprint=hashlib.sha256(repr((
+            context.source_binding.byte_sha256, target_binding.byte_sha256,
+            _text_sha(context.retained_body_text),
+        )).encode("utf-8")).hexdigest(),
+        env_name=leaf, target_binding=target_binding, declaration=block_source,
+        separator=b"\r\n" if b"\r\n" in candidate else b"\n",
+        offset=offset, added_bytes=added,
         before_sha256=digest(candidate), after_sha256=digest(patched),
         original=candidate, patched=patched, lines=tuple(lines),
     )

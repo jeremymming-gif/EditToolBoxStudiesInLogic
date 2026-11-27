@@ -76,6 +76,29 @@ MACRO_MIGRATION = Rule(
     "Engine/tests/test_compilefix_migration_family_20261127.py",
 )
 MACRO_REGISTRY = (MACRO_MIGRATION,)
+
+
+TIKZKEY_MIGRATION = Rule(
+    "tikzkey-migration-v1", 1, 1,
+    "One bound XeLaTeX failure round with a single primary unknown TikZ key "
+    "subject, exactly one top-level \\tikzset/\\tikzstyle block in local support "
+    "defining that key (whole block as the indivisible unit), no candidate or "
+    "template definition of that key, a structural rebuild proof through "
+    "style_blocks, and verifiable same-round inputs.",
+    "One continuous inserted byte slice in the candidate preamble carrying the "
+    "entire source block; no original byte is modified, removed or reordered.",
+    "Insert exactly the whole source block plus separator; verify original hash "
+    "and position before apply, verify post hash and exact added bytes on "
+    "reverse, delete the slice and verify the original hash and bytes; preserve "
+    "#1 and nested braces verbatim.",
+    "Journaled L1 transaction; isolated compile and full delivery checks; restore "
+    "original TeX/PDF/state on failure; recovery-required if rollback is unsafe.",
+    "tests/test_compilefix_migration_family_20261127.py:TikzKeyMigrationPositiveTests",
+    "tests/test_compilefix_migration_family_20261127.py:TikzKeyMigrationNegativeTests",
+    "Engine/tests/test_compilefix_migration_family_20261127.py",
+)
+TIKZKEY_REGISTRY = (TIKZKEY_MIGRATION,)
+
 _INTERNAL = {"@gobble", "@firstofone", "@firstoftwo", "@secondoftwo", "@empty"}
 _PURE = {"textbf", "textit", "emph", "relax", "space"}
 _RESERVED = _PURE | {"makeatletter", "makeatother", "begin", "end", "documentclass", "newcommand"}

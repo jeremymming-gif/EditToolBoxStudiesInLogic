@@ -247,5 +247,164 @@ class MacroMigrationNegativeTests(_MacroFixtureCase):
         self.assertIsNone(plan)
 
 
+# ── Task 3: tikzkey-migration-v1 (missing TikZ style key → whole-block insert) ──
+import importlib
+
+
+_TIKZ_BLOCK = (
+    "\\tikzset{modal/.style={draw, rectangle, minimum width=#1},\n"
+    "  world/.style={modal={2cm}, fill=blue!20}}\n"
+)
+_TIKZ_CANDIDATE = (
+    "\\documentclass{article}\n"
+    "\\usepackage{tikz}\n"
+    "\\begin{document}\n"
+    "\\begin{tikzpicture}\n"
+    "\\node[modal] (a) at (0,0) {A};\n"
+    "\\node[world] (b) at (2,0) {B};\n"
+    "\\end{tikzpicture}\n"
+    "\\end{document}\n"
+).encode()
+_TIKZ_LOG = (
+    b"! Package pgfkeys Error: I do not know the key '/tikz/modal'. I am going to ignore it.\n"
+    b"l.5 \\node[modal] (a) at (0,0) {A};\n"
+)
+
+
+def _tikz_family():
+    return importlib.import_module("slcn.compilefix.migration_rule_family")
+
+
+def _tikz_diagnosis(candidate=_TIKZ_CANDIDATE, log=_TIKZ_LOG):
+    report = diagnose(candidate, captured(candidate, log))
+    assert report.subject == ("tikz_key", "modal"), report.subject
+    return report
+
+
+class _TikzFixtureCase(unittest.TestCase):
+    """Real source-bound context containing a whole TikZ style block."""
+
+    maxDiff = None
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="slcn-tikzkey-migration-")
+        self.root = Path(self.tmp)
+        self.src = self.root / "in"
+        self.out = self.root / "out"
+        self.src.mkdir()
+        self.out.mkdir()
+        self.source = self.src / "main.tex"
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.family = _tikz_family()
+
+    def _write_source(self, blocks, pre="\\usepackage{tikz}\n\\usepackage{helpers}\n",
+                      body="source body text\n"):
+        # The style definitions live in local support; the key USE lives only in
+        # the converted candidate body, so the source body must not use them.
+        self.source.write_text(
+            "\\documentclass{article}\n" + pre + "\\begin{document}\n"
+            + body + "\\end{document}\n"
+        )
+        (self.src / "helpers.sty").write_text(blocks)
+
+    def _context(self):
+        return build_macro_context(self.out, "main", self.source, None)
+
+    def _plan(self, blocks=_TIKZ_BLOCK, candidate=_TIKZ_CANDIDATE, context=None):
+        self._write_source(blocks)
+        return self.family.select_tikzkey_plan(
+            candidate, _tikz_diagnosis(candidate),
+            context=context if context is not None else self._context(),
+        )
+
+
+class TikzKeyMigrationPositiveTests(_TikzFixtureCase):
+    def test_single_tikzset_block_yields_whole_block_lines_and_byte_exact_reverse(self):
+        plan = self._plan()
+        self.assertIsNotNone(plan)
+        self.assertEqual(list(plan.lines), [_TIKZ_BLOCK.strip()])
+        restored = plan.reverse(plan.patched)
+        self.assertEqual(restored, plan.original)
+        self.assertEqual(restored, _TIKZ_CANDIDATE)
+        self.assertEqual(
+            plan.patched.replace((_TIKZ_BLOCK.strip() + "\n").encode(), b"", 1),
+            _TIKZ_CANDIDATE,
+        )
+
+    def test_block_source_keeps_parameter_and_nested_braces_verbatim(self):
+        plan = self._plan()
+        self.assertIsNotNone(plan)
+        inserted = plan.patched[len(plan.original[:plan.offset]):]
+        self.assertIn(b"#1", inserted)
+        self.assertIn(b"modal={2cm}", inserted)
+        self.assertIn("world/.style={modal={2cm}, fill=blue!20}", plan.lines[0])
+
+    def test_tikzstyle_block_is_also_admitted(self):
+        block = "\\tikzstyle{modal} = [draw, rectangle, minimum width=#1]\n"
+        candidate = _TIKZ_CANDIDATE.replace(b"[world]", b"[draw]")
+        plan = self._plan(blocks=block, candidate=candidate)
+        self.assertIsNotNone(plan)
+        self.assertEqual(list(plan.lines), [block.strip()])
+        self.assertEqual(plan.reverse(plan.patched), candidate)
+
+    def test_plan_offset_is_inside_the_candidate_preamble(self):
+        plan = self._plan()
+        self.assertIsNotNone(plan)
+        preamble_bytes = len(_TIKZ_CANDIDATE[:_TIKZ_CANDIDATE.index(b"\\begin{document}")])
+        self.assertLessEqual(plan.offset, preamble_bytes)
+        self.assertEqual(plan.reverse(plan.patched), _TIKZ_CANDIDATE)
+
+
+class TikzKeyMigrationNegativeTests(_TikzFixtureCase):
+    def assert_no_plan(self, blocks=_TIKZ_BLOCK, *, candidate=_TIKZ_CANDIDATE,
+                       context=None, diagnosis=None):
+        self._write_source(blocks)
+        plan = self.family.select_tikzkey_plan(
+            candidate,
+            diagnosis if diagnosis is not None else _tikz_diagnosis(candidate),
+            context=context if context is not None else self._context(),
+        )
+        self.assertIsNone(plan)
+
+    def test_two_source_blocks_defining_the_key_are_rejected(self):
+        self.assert_no_plan(blocks=_TIKZ_BLOCK + "\n" + _TIKZ_BLOCK)
+
+    def test_candidate_already_defines_the_key_is_rejected(self):
+        candidate = _TIKZ_CANDIDATE.replace(
+            b"\\begin{document}",
+            (_TIKZ_BLOCK + "\\begin{document}").encode(),
+        )
+        self.assert_no_plan(candidate=candidate)
+
+    def test_template_already_defines_the_key_is_rejected(self):
+        self._write_source(_TIKZ_BLOCK)
+        context = self._context()
+        # Mutate the bound template text only (no source rewrite: verify must stay
+        # valid) so the sole rejection reason is the template provider check.
+        object.__setattr__(context, "style_text", _TIKZ_BLOCK)
+        plan = self.family.select_tikzkey_plan(
+            _TIKZ_CANDIDATE, _tikz_diagnosis(), context=context
+        )
+        self.assertIsNone(plan)
+
+    def test_unbalanced_tikzset_is_rejected(self):
+        self.assert_no_plan(blocks="\\tikzset{modal/.style={draw\n")
+
+    def test_wrong_subject_kind_is_rejected(self):
+        report = _tikz_diagnosis()
+        object.__setattr__(report, "subject", ("environment", "modal"))
+        self.assert_no_plan(diagnosis=report)
+
+    def test_stale_diagnosis_is_rejected(self):
+        report = _tikz_diagnosis()
+        object.__setattr__(report, "candidate_sha256", "0" * 64)
+        self.assert_no_plan(diagnosis=report)
+
+    def test_unbound_diagnosis_is_rejected(self):
+        report = _tikz_diagnosis()
+        object.__setattr__(report, "bound", False)
+        self.assert_no_plan(diagnosis=report)
+
+
 if __name__ == "__main__":
     unittest.main()
