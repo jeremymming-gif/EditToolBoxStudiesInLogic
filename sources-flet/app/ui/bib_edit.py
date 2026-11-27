@@ -701,7 +701,8 @@ class BibEditView:
         t = self.t
         self._field_panes = [ft.Column(spacing=0, scroll=C.scrollbar(t),
                                      width=t.px(240),
-                                     controls=[self._field_cell(name) for name in names])
+                                     controls=[self._field_cell(name, first=(i == 0))
+                                               for i, name in enumerate(names)])
                              for names in self._field_columns()]
         self._field_label = ft.Container(content=self._fields_label())
         self._field_footnote = C.text(self._fields_footnote(), t, "caption",
@@ -715,15 +716,18 @@ class BibEditView:
             self._field_footnote,
         ])
 
-    def _field_cell(self, name: str) -> ft.Control:
+    def _field_cell(self, name: str, *, first: bool = False) -> ft.Control:
         t = self.t
         value = self.values.get(name, "")
         field = C.floating_field(
             t, f"{field_label(name)}", value=value,
             hint="空 = 删除该字段" if not value else None,
             on_change=lambda e, n=name: self._on_field(n, e), width=t.px(240))
+        # 上浮 label 锚在输入框顶边；滚动容器首行没有前一行垫着，需单独留出顶部空间，
+        # 否则「题名」/「丛书」被 330px 容器的上边缘裁切（其余行保持原几何）。
+        top = t.sp("s") if first else 0
         return ft.Container(
-            height=t.px(66), padding=ft.Padding(left=0, top=0, right=0, bottom=t.px(2)),
+            height=t.px(66), padding=ft.Padding(left=0, top=top, right=0, bottom=t.px(2)),
             content=ft.Column(spacing=0, controls=[
                 field,
                 C.text(name, t, "caption", t.palette.text_faint, max_lines=1),
