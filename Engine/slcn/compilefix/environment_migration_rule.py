@@ -308,9 +308,23 @@ def _unique_declaration(context, name):
     return support_name, item.source.strip()
 
 
+def _decision_for(observation, name, namespace):
+    """Select a decision by (name, namespace), not by the bare name alone.
+
+    A same-name macro and environment coexist in one support file (macro first
+    in the pre-dedup list); a bare ``d.name == name`` lookup would take the
+    macro entry and gate ④ would misjudge a legitimate env migration.
+    """
+    return next(
+        (d for d in observation.decisions
+         if d.name == name and getattr(d, "namespace", None) == namespace),
+        None,
+    )
+
+
 def _rebuild(context, candidate_text, name, begin_line, end_line, declaration):
     """Gates ③④⑤: fresh shared-migrator runs prove the missed migration."""
-    if declaration and declaration in PRE.defined_names(candidate_text):
+    if declaration and declaration in PRE.defined_environment_names(candidate_text):
         return None
     if declaration.encode("utf-8") in candidate_text.encode("utf-8"):
         return None
@@ -334,7 +348,7 @@ def _rebuild(context, candidate_text, name, begin_line, end_line, declaration):
     plan0, obs0 = run(context.retained_body_text)
     if list(plan0.lines) or name in list(getattr(plan0, "definitions", [])):
         return None
-    decision0 = next((d for d in obs0.decisions if d.name == name), None)
+    decision0 = _decision_for(obs0, name, "env")
     if decision0 is None or getattr(decision0, "action", "") != "skipped" or \
             getattr(decision0, "reason", "") != "body_unused":
         return None
@@ -344,7 +358,7 @@ def _rebuild(context, candidate_text, name, begin_line, end_line, declaration):
         return None
     if name in list(getattr(plan1, "converted_renews", [])):
         return None
-    decision1 = next((d for d in obs1.decisions if d.name == name), None)
+    decision1 = _decision_for(obs1, name, "env")
     if decision1 is None or getattr(decision1, "action", "") not in {"imported", "seed_missed"}:
         return None
     if getattr(decision1, "source_role", "") != "local_support":

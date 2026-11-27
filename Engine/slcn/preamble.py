@@ -726,6 +726,21 @@ def defined_names(text: str) -> set[str]:
     return names
 
 
+def defined_environment_names(text: str) -> set[str]:
+    """Text 里真正声明过的环境名（只认 newenvironment/newtheorem，注释不算）。
+
+    与 `defined_names()` 的扁平并集不同：这里只返回 env 命名空间的名字，
+    同名宏/计数器/列类型不混入。复用 `scan_preamble`（它自带的 comment 判据）
+    与 `_ENV_KINDS`，不复制任何正则。`defined_names()` 的行为逐字节不变，
+    build.py 的宏改名判据继续依赖它的扁平语义。
+    """
+    return {
+        item.name
+        for item in scan_preamble(strip_comments(text))
+        if item.kind in _ENV_KINDS
+    }
+
+
 def math_decl_names(text: str) -> set[str]:
     r"""文本里 `\DeclareMathAlphabet` / `\DeclareMathSymbol` 声明的目标名（注释不算）。
 
