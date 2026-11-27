@@ -34,6 +34,27 @@ CATCODE = Rule(
     "Engine/tests/test_compilefix_l1_rules.py",
 )
 REGISTRY = (CATCODE,)
+
+
+ENV_MIGRATION = Rule(
+    "environment-migration-v1", 1, 1,
+    "One bound XeLaTeX failure round with a single primary Environment X undefined error, "
+    "a uniquely paired anchored begin/end, a single pre-dedup top-level newenvironment "
+    "declaration in local support, verifiable same-round inputs, a missed migration "
+    "explained by retained-body coverage, and a shared-migrator rebuild yielding exactly "
+    "one declaration.",
+    "One continuous inserted byte slice in the candidate preamble; no original byte is "
+    "modified, removed or reordered.",
+    "Insert exactly one declaration plus separator; verify original hash and position "
+    "before apply, verify post hash and exact added bytes on reverse, delete the slice "
+    "and verify the original hash and bytes.",
+    "Journaled L1 transaction; isolated compile and full delivery checks; restore "
+    "original TeX/PDF/state on failure; recovery-required if rollback is unsafe.",
+    "tests/test_compilefix_l15_environment_migration.py:TEST_ENV_MIGRATION",
+    "tests/test_compilefix_l15_environment_migration.py:TestL15NegativeGuards",
+    "Engine/tests/test_compilefix_l15_environment_migration.py",
+)
+ENV_REGISTRY = (ENV_MIGRATION,)
 _INTERNAL = {"@gobble", "@firstofone", "@firstoftwo", "@secondoftwo", "@empty"}
 _PURE = {"textbf", "textit", "emph", "relax", "space"}
 _RESERVED = _PURE | {"makeatletter", "makeatother", "begin", "end", "documentclass", "newcommand"}

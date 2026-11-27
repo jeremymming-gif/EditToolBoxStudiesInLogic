@@ -104,6 +104,31 @@ def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True, plannin
             available = None
         report = diagnose(candidate, capture, template_results=checks, available_paths=available)
         plan = select_plan(candidate, report)
+        env_attempted = False
+        if plan is None and capture is not None:
+            # L1.5: only after the CATCODE rule declines do we consider the
+            # narrow environment-migration rule.  Its private input context is
+            # built from the live, source-bound inputs of THIS round (the same
+            # ``source`` that capture_compile binds via source_id), never from
+            # display strings, capture narratives or a taskbook.
+            try:
+                from .l1_rules import ENV_MIGRATION
+                from .environment_migration_rule import build_context, select_environment_plan
+                env_attempted = True
+                env_context = build_context(path, stem, source, capture)
+                plan = select_environment_plan(candidate, report, context=env_context,
+                                               capture=capture)
+            except Exception:
+                # FINDING 2: an unexpected exception from the NEW calls must not
+                # escape to the outer handler (which would drop all not-admitted
+                # accounting and the full failure JSON). KeyboardInterrupt is
+                # deliberately not caught.
+                plan = None
+            if plan is None and env_attempted:
+                # FINDING 3: attribute the env-path rejection to the env rule;
+                # the CATCODE not-admitted attempt below stays intact.
+                report.attempts.append({"rule": ENV_MIGRATION.rule_id,
+                                        "result": "not-admitted"})
         if plan is None or capture is None:
             report.attempts.append({"rule": "catcode-top-level-at-v1", "result": "not-admitted"})
         else:
