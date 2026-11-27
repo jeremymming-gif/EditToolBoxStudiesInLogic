@@ -123,10 +123,7 @@ def _has_cjk(s: str) -> bool:
 
 
 def detect_lang(source: str, metadata: str | None = None) -> tuple[str, str]:
-    """判断稿件语种，返回 (lang, 依据说明)。
-
-    只看稿件本身，不看文件名。
-    """
+    """判断稿件语种，返回 (lang, 依据说明)。只看稿件本身，不看文件名。"""
     ext = os.path.splitext(source)[1].lower()
     if ext in WORD_EXT:
         try:
@@ -167,12 +164,12 @@ def detect_lang(source: str, metadata: str | None = None) -> tuple[str, str]:
             return "en", f"{os.path.basename(p)} 用的是英文模板字段（mytitleCN）"
         if "mytitleEN" in names:
             return "zh", f"{os.path.basename(p)} 用的是中文模板字段（mytitleEN）"
-    # 退路：看正文有没有汉字
+    # 退路：正文前 4000 字汉字比例 <5% 判 en（NCML 实测 30/4000=0.75%；旧见字即 zh 选 SLCN-MIX → fact[theorem] 撞 theorem[lem] 计数器编译失败）。
     try:
-        text = open(source, encoding="utf-8", errors="replace").read()[:4000]
-        return ("zh" if _has_cjk(text) else "en"), "按正文汉字比例判断"
-    except OSError:
-        return "zh", "无法判断，回退中文"
+        t = open(source, encoding="utf-8", errors="replace").read()[:4000]
+        r = sum("\u4e00" <= c <= "\u9fff" for c in t) / max(len(t), 1)
+        return (("en", f"正文前 4000 字汉字占比 {r:.2%}，判为英文稿") if r < .05 else ("zh", "按正文汉字比例判断"))
+    except OSError: return "zh", "无法判断，回退中文"
 
 
 def author_from_source(source: str, metadata: str | None = None) -> tuple[str, str]:
