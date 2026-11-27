@@ -255,13 +255,26 @@ class TestDeathLoop(_ProjectCase):
         self.assertNotIn("l1_repaired", new_capture)
 
     def test_repeat_key_is_subject_normalized_and_acc_sha(self):
-        self.assertEqual(normalize_subject("command", "\\othermacro"),
-                         ("command", "othermacro"))
-        self.assertEqual(normalize_subject("environment", "firstenv"),
-                         ("environment", "firstenv"))
-        kind, name = normalize_subject("command", "\\othermacro")
-        key = (kind, name, _sha(b"candidate"))
-        self.assertEqual(key, ("command", "othermacro", _sha(b"candidate")))
+        # Call the PRODUCTION helper, not a hand-built tautology: the key must be
+        # FLAT (kind, normalized name, acc digest) per spec §11 decision 1.
+        from slcn.compilefix.l1 import _repeat_key
+
+        self.assertEqual(
+            _repeat_key(("command", "\\othermacro"), b"candidate"),
+            ("command", "othermacro", _sha(b"candidate")),
+        )
+        # Line-drift / backslash form: different subject spelling normalizes to
+        # the same flat key.
+        self.assertEqual(
+            _repeat_key(("command", "othermacro"), b"candidate"),
+            _repeat_key(("command", "\\othermacro"), b"candidate"),
+        )
+        # Digests of different accumulated candidates differ.
+        self.assertNotEqual(
+            _repeat_key(("command", "\\othermacro"), b"candidate"),
+            _repeat_key(("command", "\\othermacro"), b"other candidate"),
+        )
+        self.assertIsNone(_repeat_key(None, b"candidate"))
 
 
 class TestLineDrift(_ProjectCase):

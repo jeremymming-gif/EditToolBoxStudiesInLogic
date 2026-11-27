@@ -258,6 +258,14 @@ def _stage_attempt(report, rule_id, result):
     report.attempts.append({"rule": rule_id, "result": result})
 
 
+def _repeat_key(subject, acc):
+    """Flat private death-loop key: (kind, normalized name, acc digest)."""
+    if not subject:
+        return None
+    kind, name = normalize_subject(*subject)
+    return (kind, name, digest(acc))
+
+
 def _stage_publish(out_dir, stem, *, source, capture, report, plan):
     """The ONE publish call with the four attempt states.
 
@@ -340,10 +348,12 @@ def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report,
                     break
 
                 subject = round_report.subject
-                normalized = (subject[0], normalize_subject(*subject)) if subject else None
-                # Death-loop key: subject type + normalized subject + acc digest.
+                # FLAT (kind, normalized name), used by the no-new-subject
+                # comparison. ``normalize_subject`` already returns (kind, name).
+                normalized = normalize_subject(*subject) if subject else None
+                # Death-loop key: FLAT (kind, normalized name, acc digest).
                 # Line-number drift changes neither component, so it is not new.
-                key = (normalized[0], normalized[1], digest(acc)) if normalized else None
+                key = _repeat_key(subject, acc)
                 if key is not None and key in seen:
                     _stage_attempt(report, CATCODE.rule_id, "stopped-repeat")
                     break
