@@ -188,6 +188,107 @@ _SOURCE_ROLE_LABELS = {
 }
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_*@:.-]{1,64}\Z")
 
+# The migration ledger uses hashes, including for package names and TikZ keys.
+# Only these labels and checked line numbers cross into the local display.
+_MIGRATION_KINDS = {
+    "package": "宏包报错", "environment": "未定义环境",
+    "command": "未定义命令", "tikz_key": "未知 TikZ 键",
+}
+_MIGRATION_REASONS = REASON_LABELS | {
+    "template_managed": "模板管理", "already_imported": "先前已迁入",
+    "local_support": "本地支撑文件提供", "replaced": "模板替代",
+    "conflict": "宏包冲突", "unrecognized": "形态未识别", "renamed": "已改名",
+}
+_CANDIDATE_STATES = {
+    "present": "候选可见", "absent": "候选未见",
+    "style_provided": "模板样式提供", "unknown": "候选状态未知",
+}
+_PGF_KEY_PREFIX = "! Package pgfkeys Error: I do not know the key '"
+_TIKZ_KEY = re.compile(r"/tikz/([\w. :/+@*-]{1,128})'")
+_END_CONTROL = re.compile(r"(?<!\\)(?:\\\\)*\\([A-Za-z@]{1,128})\s*$")
+
+
+def _primary_subject(error_rows, candidate_lines):
+    """Extract the primary diagnostic's typed identifier for an exact lookup."""
+    if not error_rows:
+        return None
+    row = error_rows[0]
+    if len(row) > 1024:
+        return None
+    if row.startswith(_PGF_KEY_PREFIX):
+        # TeX hard-wraps at max_print_line, even in the middle of a key.
+        subject = "".join(error_rows[:3]) if all(len(s) <= 1024 for s in error_rows[:3]) else row
+        key = _TIKZ_KEY.match(subject, len(_PGF_KEY_PREFIX))
+        if subject[len(_PGF_KEY_PREFIX):].startswith("/tikz/"):
+            return "tikz_key", key[1] if key else ""
+    if match := re.match(r"! Package ([A-Za-z0-9_.-]{1,128}) Error:", row):
+        return "package", match[1]
+    if row.startswith("! LaTeX Error: ") and (match := _ENV_NAME.fullmatch(row[15:])):
+        return "environment", match[1]
+    if row != "! Undefined control sequence.":
+        return None
+    # In a direct error, l.N stops at the offending token. In an expansion,
+    # the first frame stops at that token; a later l.N points at its caller.
+    name = ""
+    frame = error_rows[1] if len(error_rows) > 1 else ""
+    if len(frame) <= 1024:
+        if direct := _BEGIN_LINE.fullmatch(frame):
+            n = int(direct[1])
+            context = direct[2].strip()
+            if 1 <= n <= len(candidate_lines) and candidate_lines[n-1].lstrip().startswith(context):
+                word = _END_CONTROL.search(context)
+                name = word[1] if word else ""
+        elif re.match(r"(?:<[a-z ]+>\s|\\[A-Za-z@]+\s*->)", frame):
+            word = _END_CONTROL.search(frame)
+            name = word[1] if word else ""
+    return "command", name
+
+
+def _migration_hint(evidence, subject):
+    if subject is None:
+        return None
+    kind, name = subject
+    label = _MIGRATION_KINDS[kind]
+    items = evidence.get("migration")
+    if (not isinstance(items, list) or len(items) > 4096
+            or evidence.get("migration_incomplete") is not False):
+        return f"{label}，规划证据不完整，无法唯一定位"
+    if not name:
+        return f"{label}，未能核实出错名称"
+    key = digest(name.encode("utf-8"))
+    matches = [item for item in items if isinstance(item, dict) and item.get("kind") == kind
+               and (item.get("name_sha256") == key or item.get("target_sha256") == key)]
+    if not matches:
+        return f"{label}，未找到对应决定"
+    if len(matches) != 1:
+        support = [item for item in matches if item.get("coordinate") == "support_file_line"
+                   and isinstance(item.get("source_sha256"), str)
+                   and re.fullmatch(r"[0-9a-f]{64}", item["source_sha256"])]
+        if len(support) == len(matches):
+            locations = []
+            for item in support[:3]:
+                position = _num(item.get("position"))
+                source = item["source_sha256"][:12]
+                locations.append(f"第 {position} 行来源 {source}" if position else f"来源 {source}")
+            return f"{label}，本地支撑文件有 {len(matches)} 条同名记录，无法唯一定位（{'；'.join(locations)}）"
+        return f"{label}，匹配到 {len(matches)} 条规划记录，无法唯一定位"
+    item = matches[0]
+
+    def label_for(field, vocabulary, fallback):
+        value = item.get(field)
+        return vocabulary.get(value, fallback) if isinstance(value, str) else fallback
+
+    role = label_for("source_role", _SOURCE_ROLE_LABELS, "来源不清")
+    if item.get("coordinate") == "support_file_line":
+        role = "本地支撑文件"
+    position = _num(item.get("position"))
+    location = f"第 {position} 行" if position else ""
+    action = label_for("action", _ACTION_LABELS, "动作未归类")
+    reason = label_for("reason", _MIGRATION_REASONS, "原因未归类")
+    state = label_for("candidate_state", _CANDIDATE_STATES, "候选状态未知")
+    order = "，相对位置已调整" if item.get("reordered") is True else ""
+    return f"{label}，对应{role}{location}，决定{action}，理由{reason}，{state}{order}"
+
 
 def _clean_hints(hints):
     cleaned = []
@@ -256,21 +357,26 @@ def environment_hint(candidate, capture, *, planning_evidence=None):
     if not bound:
         return ()
     _, step, code, raw = failure
-    if step not in (1, 3, 4):
+    if type(step) is not int or step not in (1, 3, 4) or type(code) is not int:
         return ()
-    log = raw.decode("utf-8", errors="replace")
+    log_rows = raw.decode("utf-8", errors="replace").splitlines()
+    first = next((i for i, row in enumerate(log_rows) if row.startswith("! ")), len(log_rows))
+    end = next((i for i in range(first + 1, len(log_rows)) if log_rows[i].startswith("! ")), len(log_rows))
+    error_rows = log_rows[first:end]
     lines = candidate.decode("utf-8", errors="replace").splitlines()
     hints = []
-    # Environment names come from a fixed vocabulary pattern, never raw log text.
+    subject = _primary_subject(error_rows, lines)
+    # Preserve the legacy environment observations across the captured log. The
+    # migration lookup below remains bound to the primary error only.
     names = []
-    for row in log.splitlines():
+    for row in log_rows:
         if not row.startswith("! "):
             continue
         for match in _ENV_NAME.finditer(row):
-            if match.group(1) not in names:
-                names.append(match.group(1))
+            if match[1] not in names:
+                names.append(match[1])
     anchors = []
-    for row in log.splitlines():
+    for row in error_rows:
         if match := _BEGIN_LINE.fullmatch(row):
             anchors.append((int(match.group(1)), match.group(2).strip()))
     for name in names[:3]:
@@ -299,7 +405,15 @@ def environment_hint(candidate, capture, *, planning_evidence=None):
         # Values are mapped through SAFE vocabularies only (no raw echo) and
         # this is a recorded observation, not a re-check of source files now.
         try:
-            details = _planning_hints(planning_evidence, names)
+            if "migration" in planning_evidence:
+                # The new ledger preserves both namespaces and repeated names;
+                # looking in the legacy name-only dict could pick a wrong winner.
+                details = _planning_hints(planning_evidence, [])
+                migration_hint = _migration_hint(planning_evidence, subject)
+                if migration_hint:
+                    details.insert(0, migration_hint)
+            else:
+                details = _planning_hints(planning_evidence, names)
         except Exception:
             details = []
         hints.append("本轮规划时观察到：" + ("；".join(details) if details else "本轮候选绑定一致"))

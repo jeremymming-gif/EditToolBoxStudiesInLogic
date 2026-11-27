@@ -1568,6 +1568,8 @@ def build_latex(
             kind = "newcommand"
         renamed_macros.append((kind, new_name, snippet))
     tpl, added = insert_custom_macros(tpl, renamed_macros)
+    with _obs.migration.guard():
+        _obs.migration.macros(macro_scope, custom, selected, renames, added)
     say(f"   新增自定义命令 {len(added)} 个：{'、'.join(added) if added else '（无）'}")
     if len(custom) > len(selected):
         kept = {name for _kind, name, _src in selected}
@@ -1716,10 +1718,22 @@ def build_latex(
     if _disk_bytes == _expected_bytes:
         _obs.candidate_sha256 = _sha256(_expected_bytes)
         _obs.binding_verified = True
+        with _obs.migration.guard():
+            _obs.migration.compare(tpl, sty_text, tpl_sel.sty_name)
     else:
         _obs.candidate_sha256 = None
         _obs.binding_verified = False
         _obs.incomplete = True
+        _obs.migration.incomplete = True
+
+    counts = _obs.migration.counts
+    if counts:
+        say(f"   前言迁移审计：观察 {counts['observed']} 项，候选未见 {counts['absent']} 项，"
+            f"其中计划迁入 {counts['missing_imports']} 项，样式提供 {counts['style_provided']} 项，"
+            f"重排 {counts['reordered']} 项，未识别 {counts['unrecognized']} 项"
+            + ("（观察不完整）" if _obs.migration.incomplete else ""))
+    elif _obs.migration.incomplete:
+        say("   前言迁移审计：观察不完整")
 
     used_keys = extract_bibkeys_from_body(body)
     bib_out = None

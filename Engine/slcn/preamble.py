@@ -49,6 +49,8 @@ import re
 from dataclasses import dataclass, field
 
 from . import paths as P
+from .migration_audit import MigrationAudit
+from .preamble_blocks import insert_lines, is_hyperref_line, style_blocks
 from .latex import (
     Macro,
     find_all_macros,
@@ -130,14 +132,6 @@ _PKG_LINE_RE = re.compile(
     r"^\s*\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{([^}]*)\}"
 )
 _TIKZ_LINE_RE = re.compile(r"^\s*\\usetikzlibrary\s*\{([^}]*)\}")
-# 第 145 条：`cleveref` 必须在 hyperref 之后加载；识别带/不带选项的写法。
-_CLEVEREF_LINE_RE = re.compile(
-    r"^\s*\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{[^}]*\bcleveref\b[^}]*\}"
-)
-# 作者前言里的 tikz 自定义样式：\tikzset{...}（多行、花括号配对）/ \tikzstyle{...}。
-_TIKZSET_HEAD_RE = re.compile(r"^\s*\\tikzset\s*\{")
-_TIKZSTYLE_RE = re.compile(r"^\s*\\tikzstyle\s*\{[^}]*\}\s*=\s*(\{.*\}|[^%]*)$")
-
 # ── 第 130 条：本地支撑文件与定义位置加固 ────────────────────────────────────
 # 作者稿同目录里被前言加载的**非 .tex** 文件：本地旧模板 .sty、本地类 .cls，
 # 以及被它们 \input / \RequirePackage 带进来的 .def / .cfg。只读同目录（不查
@@ -385,6 +379,8 @@ class PlanningObservation:
     candidate_sha256: str | None = None
     binding_verified: bool = False
 
+    migration: MigrationAudit = field(default_factory=MigrationAudit)
+
     def to_display(self) -> dict:
         """给 2A 独立展示层的扁平 dict：只含安全码/摘要/计数，无路径与自由文本。"""
         display_decisions: dict[str, dict] = {}
@@ -403,6 +399,7 @@ class PlanningObservation:
                 "scope_confidence": d.scope_confidence,
             }
         return {
+            **self.migration.display(),
             "candidate_sha256": self.candidate_sha256,
             "decisions": display_decisions,
             "counts": {
@@ -1341,6 +1338,8 @@ def _plan_local_definitions(
 
             items = scan_support_definitions(ftext, observer=_observe_decls)
             if observation is not None:
+                with observation.migration.guard():
+                    observation.migration.register_support_file(fname, ftext)
                 # 顶层宏折叠前 = 原始命令出现数；折叠后 = 最后保留数。
                 containers = [
                     (it.pos, it.pos + len(it.source)) for it in
@@ -1545,73 +1544,6 @@ def _plan_local_definitions(
                 )
 
 
-def _tikz_brace_delta(line: str) -> int:
-    """一行里未转义、未注释的 `{` / `}` 净增量（给多行 \\tikzset 配对用）。"""
-    delta = 0
-    i = 0
-    while i < len(line):
-        ch = line[i]
-        if ch == "\\":
-            i += 2  # 转义字符（\\{ \\} \\% 等）不参与配对
-            continue
-        if ch == "%":
-            break  # 注释里的花括号不算
-        if ch == "{":
-            delta += 1
-        elif ch == "}":
-            delta -= 1
-        i += 1
-    return delta
-
-
-def _collect_tikz_style_defs(pre: str) -> tuple[list[str], set[int]]:
-    """从作者前言抽出 `\\tikzset{...}` / `\\tikzstyle{...}` 定义。
-
-    返回 `(按源码顺序的定义块列表, 已被抽走的行号集合)`。多行 `\\tikzset` 按
-    花括号配对收集（跳过注释与转义），`#1` 等参数原样保留；被注释掉的整行不算。
-    """
-    defs: list[str] = []
-    consumed: set[int] = set()
-    rows = pre.splitlines()
-    i = 0
-    while i < len(rows):
-        clean = _clean_line(rows[i])
-        if _TIKZSET_HEAD_RE.match(clean):
-            start = i
-            depth = 0
-            block: list[str] = []
-            while i < len(rows):
-                raw = rows[i]
-                block.append(raw)
-                depth += _tikz_brace_delta(raw)
-                i += 1
-                if depth <= 0:
-                    break
-            if depth == 0:
-                defs.append("\n".join(block).strip())
-                consumed.update(range(start, i))
-            # 花括号未配平的残块不迁（宁可漏，也不把半截定义带进产物）
-            continue
-        if _TIKZSTYLE_RE.match(clean):
-            start = i
-            depth = 0
-            block: list[str] = []
-            while i < len(rows):
-                raw = rows[i]
-                block.append(raw)
-                depth += _tikz_brace_delta(raw)
-                i += 1
-                if depth <= 0:
-                    break
-            if depth == 0:
-                defs.append("\n".join(block).strip())
-                consumed.update(range(start, i))
-            # 花括号未配平同样不迁
-            continue
-        i += 1
-    return defs, consumed
-
-
 def plan_migration(
     source_text: str,
     skeleton_text: str,
@@ -1641,13 +1573,19 @@ def plan_migration(
         # 同一 observation 的第二轮：源文本变了 → 证据不完整。
         _note_source_digest(observation, "source_text", source_text)
     pre = source_preamble(source_text)
+    audit = observation.migration if observation is not None else None
+    if audit is not None:
+        with audit.guard():
+            audit.begin(pre)
     if not pre.strip():
         return plan
 
-    loaded = package_names(skeleton_text) | package_names(sty_text) | set(TEMPLATE_MANAGED_PACKAGES)
+    template_packages = package_names(skeleton_text) | package_names(sty_text)
+    loaded = template_packages | set(TEMPLATE_MANAGED_PACKAGES)
     if template_sty_name:
         loaded.add(template_sty_name)
-    libs = tikz_lib_names(skeleton_text) | tikz_lib_names(sty_text)
+    template_libs = tikz_lib_names(skeleton_text) | tikz_lib_names(sty_text)
+    libs = set(template_libs)
     names = defined_names(skeleton_text) | defined_names(sty_text)
     # 第 130 条补丁：模板显式 `\newcounter{X}` 也算「模板已有」（`\newtheorem` 隐式定义的
     # 计数器已由 defined_names 的定理环境名覆盖）。当前两套模板都没有显式 newcounter。
@@ -1663,7 +1601,14 @@ def plan_migration(
 
     # 第 145 条：作者前言里的 tikz 自定义样式（\tikzset / \tikzstyle）单独收集，
     # 插在依赖的 tikz 库之后；不进 scan_preamble 的八类定义，也不参与包差集。
-    tikz_style_defs, tikz_style_rows = _collect_tikz_style_defs(pre)
+    blocks = style_blocks(pre)
+    tikz_style_defs = [block.source for block in blocks if block.source]
+    tikz_style_rows = {row for block in blocks for row in range(block.row, block.last_row + 1)}
+    if audit is not None:
+        with audit.guard():
+            for block in blocks:
+                audit.record_block(block)
+
 
     for lineno, raw in enumerate(pre.splitlines()):
         if lineno in tikz_style_rows:
@@ -1679,20 +1624,28 @@ def plan_migration(
             for p in pkgs:
                 if p in loaded:
                     skipped.append(p)
+                    if audit is not None:
+                        reason = ("template_exists" if p in template_packages else
+                                  "template_managed" if p in TEMPLATE_MANAGED_PACKAGES or p == template_sty_name
+                                  else "already_imported")
+                        audit.record("package", p, lineno + 1, "skipped", reason)
                     continue
                 # 第 141 条：模板已用 biblatex 时，natbib / gbt7714 与它互斥 → 包行不迁。
                 # 正文里的 natbib 专用引用命令由 rewrite_natbib_commands() 改写。
                 if p in BIBLATEX_REPLACED_PACKAGES and template_has_biblatex:
                     if p not in plan.replaced_packages:
                         plan.replaced_packages.append(p)
+                    if audit is not None:
+                        audit.record("package", p, lineno + 1, "skipped", "replaced")
                     continue
                 # 第 141 条：与模板已加载宏包重合同名命令 → 整包不迁（否则加载阶段
                 # 就报 `Command \X already defined`，整篇编译失败）。
                 if p in PACKAGE_COMMAND_CONFLICTS:
                     reason, trigger = PACKAGE_COMMAND_CONFLICTS[p]
-                    tpl_pkgs = package_names(skeleton_text) | package_names(sty_text)
-                    if trigger in tpl_pkgs:
+                    if trigger in template_packages:
                         plan.conflicts.append(f"{p}（{reason}）")
+                        if audit is not None:
+                            audit.record("package", p, lineno + 1, "skipped", "conflict")
                         continue
                 # 第 130 条补丁：源目录里就有同名 .sty → 它是作者的旧模板/本地包，
                 # **不迁包行**（顶部加载交给模板），文件按「本地支撑文件」差集搬定义。
@@ -1700,8 +1653,12 @@ def plan_migration(
                 if source_dir and _resolve_local_file(source_dir, p, exts=(".sty",)):
                     if p not in plan.local_packages:
                         plan.local_packages.append(p)
+                    if audit is not None:
+                        audit.record("package", p, lineno + 1, "skipped", "local_support")
                     continue
                 need.append(p)
+                if audit is not None:
+                    audit.record("package", p, lineno + 1, "imported", "imported")
             if not need:
                 continue
             if opts:
@@ -1719,6 +1676,13 @@ def plan_migration(
         if m:
             names_in_line = [x.strip() for x in m.group(1).split(",") if x.strip()]
             need = [x for x in names_in_line if x not in libs]
+            if audit is not None:
+                for name in names_in_line:
+                    if name in libs:
+                        reason = "template_exists" if name in template_libs else "already_imported"
+                        audit.record("tikz_library", name, lineno + 1, "skipped", reason)
+                    else:
+                        audit.record("tikz_library", name, lineno + 1, "imported", "imported")
             skipped.extend(x for x in names_in_line if x in libs)
             if need:
                 plan.lines.append(f"\\usetikzlibrary{{{','.join(need)}}}")
@@ -1888,58 +1852,11 @@ def plan_migration(
             plan.env_packages.append(pkg)
             loaded.add(pkg)
 
+    if audit is not None:
+        with audit.guard():
+            audit.declarations(observation.decisions, set(plan.counter_definitions), pre)
     plan.skipped = sorted(set(skipped))
     return plan
-
-
-def is_hyperref_line(line: str) -> bool:
-    """是不是加载 hyperref 的那一行（CN/EN 模板的选项写法与空格不同）。"""
-    s = line.strip()
-    return s.startswith("%") is False and "\\usepackage" in s and "hyperref" in s
-
-
-def _is_cleveref_line(line: str) -> bool:
-    """是不是 `\\usepackage{cleveref}`（含带选项写法；忽略整行注释）。"""
-    s = line.strip()
-    return not s.startswith("%") and bool(_CLEVEREF_LINE_RE.match(s))
-
-
-def insert_lines(template_text: str, lines: list[str], anchor: str) -> str:
-    """把依赖块插到 `anchor` 行之前（模板约定 hyperref 是最后一个包）。
-
-    例外：`cleveref` 必须后于 hyperref 加载，否则报
-    `Package cleveref Error: cleveref must be loaded after hyperref!`。有锚点时
-    把块拆两段——非 cleveref 行仍插锚点前，cleveref 行插锚点（hyperref 行）之后，
-    且都在 `\\begin{document}` 前。找不到 anchor 就整块退到 `\\begin{document}`
-    之前（保持源内相对顺序）；再找不到就原样追加到文件末尾（不静默丢弃——
-    宁可多一行，也不要「计划了却没插进去」）。
-    """
-    if not lines:
-        return template_text
-    block = "\n".join(lines)
-    rows = template_text.split("\n")
-    for idx, ln in enumerate(rows):
-        if (anchor and anchor in ln) or is_hyperref_line(ln):
-            cleveref_lines = [x for x in lines if _is_cleveref_line(x)]
-            other_lines = [x for x in lines if not _is_cleveref_line(x)]
-            if cleveref_lines:
-                # 模板末尾若连续多行 hyperref（选项写法不同），cleveref 要落在
-                # **最后一行** hyperref 之后，才算真正后于所有 hyperref。
-                last = idx
-                while last + 1 < len(rows) and is_hyperref_line(rows[last + 1]):
-                    last += 1
-                if other_lines:
-                    rows.insert(idx, "\n".join(other_lines))
-                    last += 1  # anchor 行整体后移一位
-                rows.insert(last + 1, "\n".join(cleveref_lines))
-            else:
-                rows.insert(idx, block)
-            return "\n".join(rows)
-    for idx, ln in enumerate(rows):
-        if ln.strip().startswith("\\begin{document}"):
-            rows.insert(idx, block)
-            return "\n".join(rows)
-    return template_text.rstrip("\n") + "\n" + block + "\n"
 
 
 _MACRO_USE_RE = re.compile(r"\\([A-Za-z@]+)")
