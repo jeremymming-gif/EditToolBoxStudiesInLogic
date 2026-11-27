@@ -4,9 +4,16 @@ from pathlib import Path
 import re
 import sys
 
+import subprocess
+import tempfile
+import uuid
+
 from .files import RepairError, digest, directory, read, regular
-from .l1_diagnostics import diagnose, environment_hint, mask_comments
-from .l1_rules import select_plan
+from .l1_diagnostics import diagnose, environment_hint, mask_comments, normalize_subject
+from .environment_migration_rule import (EnvironmentEditPlan,
+                                         build_context, select_environment_plan)
+from .migration_rule_family import select_macro_plan, select_tikzkey_plan
+from .l1_rules import CATCODE, select_plan
 from .l1_transaction import RecoveryRequired, apply_plan, recover
 
 
@@ -168,4 +175,253 @@ def compile_with_l1(compile_pdf, out_dir, stem, *, source, enabled=True, plannin
             pass
     except Exception:
         print("   L1 未修复：诊断条件不足，请人工检查本地日志。", file=sys.stderr)
+    return False, info, capture
+
+
+# ── Task 5: multi-round staged repair loop (one publish, ≤3 rounds) ──────────
+# Wiring decision: ``compile_with_l1`` above stays the unchanged single-round
+# driver (byte-identical attempts/shareable for its callers).  This loop is an
+# internal opt-in; with ``max_rounds=1`` it reproduces the frozen one-round
+# shareable shape (one flat ``{"rule","result"}`` entry, no round number).
+_STAGED_ROUND_TIMEOUT = 90
+
+
+def _staged_lines(plan):
+    """Private declaration lines carried by an admitted one-edit plan."""
+    lines = getattr(plan, "lines", None)
+    if lines:
+        return list(lines)
+    declaration = getattr(plan, "declaration", None)
+    if declaration:
+        return [declaration]
+    return None
+
+
+def _staged_insert(original, patched, preferred=None):
+    """Recover the single continuous inserted slice by exact forward/reverse.
+
+    Common-prefix-only or forward-plus-backward matching can overshoot into the
+    inserted block when the block shares leading/trailing bytes with the text at
+    the insertion point (as preamble declarations do). Prefer the offset already
+    proved by the first selector, then fall back to the smallest offset whose
+    removal restores the original byte-for-byte — the same proof the selectors
+    use. Smallest wins over a shifted equivalent slice so the added bytes stay
+    the exact accumulated declaration block.
+    """
+    added_len = len(patched) - len(original)
+    if added_len <= 0:
+        raise RepairError("L1 多轮暂存不是单一连续插入切片")
+    if preferred is not None and 0 <= preferred <= len(patched) - added_len:
+        if patched[:preferred] + patched[preferred + added_len:] == original:
+            return preferred, patched[preferred:preferred + added_len]
+    prefix = 0
+    while (prefix < min(len(original), len(patched))
+           and original[prefix] == patched[prefix]):
+        prefix += 1
+    low = max(0, prefix - added_len - 1)
+    for offset in range(low, prefix + 1):
+        if patched[:offset] + patched[offset + added_len:] == original:
+            return offset, patched[offset:offset + added_len]
+    raise RepairError("L1 多轮暂存不是单一连续插入切片")
+
+
+def _stage_dry_compile(out_dir, stem, candidate, capture, *, private_dir):
+    """REAL XeLaTeX in a private dir; returns (code, round_capture, raw)."""
+    from .compiler import _environment, copy_support, support_manifest
+    work = Path(private_dir) / "candidate"
+    home = Path(private_dir) / "home"
+    work.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    try:
+        manifest = support_manifest(out_dir, stem)
+        copy_support(out_dir, work, manifest)
+    except (OSError, RepairError):
+        manifest = {}
+    (work / f"{stem}.tex").write_bytes(candidate)
+    proc = subprocess.run(
+        ["xelatex", "-no-shell-escape", "-interaction=nonstopmode", f"{stem}.tex"],
+        cwd=work, env=_environment(home), stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=_STAGED_ROUND_TIMEOUT,
+    )
+    raw = proc.stdout[:2 * 1024 * 1024]
+    round_capture = {key: capture[key] for key in
+                     ("candidate_sha256", "candidate_id", "source_id", "out_id")
+                     if key in capture}
+    round_capture["candidate_sha256"] = digest(candidate)
+    if proc.returncode:
+        round_capture["failure"] = (uuid.uuid4().hex, 1, proc.returncode, raw)
+    return proc.returncode, round_capture, raw, set(manifest) | {f"{stem}.tex"}
+
+
+def _stage_attempt(report, rule_id, result):
+    """Flat, private-round-free attempt row (frozen shareable shape)."""
+    report.attempts.append({"rule": rule_id, "result": result})
+
+
+def run_staged_repair_loop(out_dir, stem, *, source, capture, candidate, report, max_rounds=3):
+    """Stage missing definitions in memory across real XeLaTeX dry compiles.
+
+    ``apply_plan`` publishes only when its isolated recompile passes, so an
+    intermediate failed patch can never be the next round's baseline.  Every
+    round therefore dry-compiles the accumulated candidate in a private dir,
+    carries the accumulated lines forward in memory, and only the converged
+    candidate is handed to ONE ``apply_plan`` call as one continuous insert.
+    Round numbers and the typed subject are private: only flat
+    ``{"rule","result"}`` rows reach ``report.shareable()``.
+    """
+    from .. import preamble as PRE
+
+    out_dir = directory(out_dir)
+    original = candidate
+    original_text = original.decode("utf-8", errors="strict")
+    staged_lines = []
+    acc = original
+    seen = set()
+    previous_subject = None
+    last_plan = None
+    anchor_offset = None
+    converged = False
+    rounds = max(0, min(int(max_rounds), 3))
+    info = "L1 未修复：多轮暂存未收敛；请人工检查本地日志。"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="compilefix-staged-") as private:
+            for _round in range(rounds):
+                try:
+                    code, round_capture, raw, available = _stage_dry_compile(
+                        out_dir, stem, acc, capture, private_dir=private)
+                except (Exception,):
+                    _stage_attempt(report, CATCODE.rule_id, "dry-compile-failed")
+                    break
+                if code == 0:
+                    converged = True
+                    break
+
+                try:
+                    round_report = diagnose(acc, round_capture, available_paths=available)
+                except Exception:
+                    _stage_attempt(report, CATCODE.rule_id, "not-admitted")
+                    break
+
+                subject = round_report.subject
+                normalized = (subject[0], normalize_subject(*subject)) if subject else None
+                # Death-loop key: subject type + normalized subject + acc digest.
+                # Line-number drift changes neither component, so it is not new.
+                key = (normalized[0], normalized[1], digest(acc)) if normalized else None
+                if key is not None and key in seen:
+                    _stage_attempt(report, CATCODE.rule_id, "stopped-repeat")
+                    break
+                if key is not None:
+                    seen.add(key)
+
+                plan = None
+                try:
+                    plan = select_plan(acc, round_report)
+                except Exception:
+                    plan = None
+                if plan is not None:
+                    # CATCODE wrappers are byte-span edits, not preamble lines:
+                    # keep the exact single-round plan and publish it directly.
+                    last_plan = plan
+                    _stage_attempt(report, plan.rule_id, "staged")
+                    break
+
+                context = None
+                try:
+                    context = build_context(out_dir, stem, source, capture)
+                except Exception:
+                    context = None
+                if context is not None:
+                    for selector in (select_environment_plan, select_macro_plan,
+                                     select_tikzkey_plan):
+                        try:
+                            plan = selector(acc, round_report, context=context,
+                                            capture=round_capture)
+                        except Exception:
+                            plan = None
+                        if plan is not None:
+                            break
+                if plan is None:
+                    _stage_attempt(report, CATCODE.rule_id, "not-admitted")
+                    if previous_subject is not None and normalized == previous_subject:
+                        _stage_attempt(report, CATCODE.rule_id, "stopped-no-new-subject")
+                        break
+                    previous_subject = normalized
+                    continue
+
+                lines = _staged_lines(plan)
+                if not lines:
+                    _stage_attempt(report, plan.rule_id, "not-admitted")
+                    break
+                # Remember the insertion offset proved on the ORIGINAL candidate:
+                # later selectors' offsets are relative to an accumulated candidate,
+                # so only the first one anchors the final continuous slice.
+                if anchor_offset is None:
+                    anchor_offset = getattr(plan, "offset", None)
+                staged_lines.extend(lines)
+                acc = PRE.insert_lines(original_text, staged_lines, "").encode("utf-8")
+                last_plan = plan
+                previous_subject = normalized
+                _stage_attempt(report, plan.rule_id, "staged")
+
+        if converged:
+            if last_plan is None or acc == original:
+                _stage_attempt(report, CATCODE.rule_id, "passed")
+                capture["l1"] = report.shareable()
+                return True, info, capture
+            offset, added = _staged_insert(original, acc, preferred=anchor_offset)
+            if isinstance(last_plan, EnvironmentEditPlan):
+                combined = EnvironmentEditPlan(
+                    identity=last_plan.identity, rule_id=last_plan.rule_id,
+                    version=last_plan.version,
+                    diagnosis_identity=last_plan.diagnosis_identity,
+                    diagnosis_candidate_sha256=last_plan.diagnosis_candidate_sha256,
+                    context_fingerprint=last_plan.context_fingerprint,
+                    env_name=last_plan.env_name, target_binding=last_plan.target_binding,
+                    declaration=last_plan.declaration, separator=last_plan.separator,
+                    offset=offset, added_bytes=added, before_sha256=digest(original),
+                    after_sha256=digest(acc), original=original, patched=acc,
+                )
+            else:
+                from .l1_rules import EditPlan
+                combined = EditPlan(
+                    identity=last_plan.identity, rule_id=last_plan.rule_id,
+                    before_sha256=digest(original), after_sha256=digest(acc),
+                    start=offset, end=offset + len(added), prefix=b"", suffix=b"",
+                    original=original, patched=acc,
+                )
+            if combined.reverse(acc) != original:
+                raise RepairError("L1 多轮合并补丁不可逆")
+            try:
+                pdf = apply_plan(out_dir, stem, source=source, capture=capture,
+                                 plan=combined, report=report)
+            except RecoveryRequired:
+                _stage_attempt(report, combined.rule_id, "recovery-required")
+                info = "L1 回滚未完成，禁止交付；请人工检查受限事务材料"
+                try:
+                    print("   " + info, file=sys.stderr)
+                except Exception:
+                    pass
+            except Exception:
+                # New code must never swallow KeyboardInterrupt.
+                _stage_attempt(report, combined.rule_id, "failed-rolled-back")
+                from .state import capture_compile
+                rebound = capture_compile(out_dir, stem, source=source)
+                if (rebound is not None
+                        and rebound.get("candidate_sha256") == capture.get("candidate_sha256")
+                        and rebound.get("source_id") == capture.get("source_id")
+                        and rebound.get("out_id") == capture.get("out_id")):
+                    capture.update(rebound)
+            else:
+                _stage_attempt(report, combined.rule_id, "passed")
+                capture["l1"] = report.shareable()
+                capture["l1_repaired"] = combined.after_sha256
+                print("   L1 多轮暂存修复通过、单次发布完成；PDF 版面仍待人工检查。")
+                return True, pdf, capture
+    except (Exception,):
+        _stage_attempt(report, CATCODE.rule_id, "not-admitted")
+
+    capture["l1"] = report.shareable()
+    print("   L1 多轮暂存未修复：" + json.dumps(report.shareable(), ensure_ascii=False,
+                                          sort_keys=True), file=sys.stderr)
     return False, info, capture
