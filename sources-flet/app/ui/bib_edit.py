@@ -68,6 +68,14 @@ def field_label(name: str) -> str:
     return FIELD_LABEL.get(str(name or ""), str(name or ""))
 
 
+def _is_pending_conflict(c) -> bool:
+    """只算「待裁决」冲突：以 resolved_at 是否存在为准。
+
+    与引擎 `Engine/slcn/bibdb.py:1190 conflict_is_pending` 同口径；GUI 层不 import 引擎。
+    """
+    return isinstance(c, dict) and not str(c.get("resolved_at") or "").strip()
+
+
 def record_from_payload(payload: dict | None) -> dict:
     """从 `query --json` 取记录（`hits[].record`，兼容直接给 record）。"""
     payload = payload or {}
@@ -389,7 +397,7 @@ class BibEditView:
         self.entry_type = str(record.get("entry_type") or "")
         self.new_key = ""
         conflicts = record.get("conflicts")
-        self.conflicts = [c for c in conflicts if isinstance(c, dict)] \
+        self.conflicts = [c for c in conflicts if _is_pending_conflict(c)] \
             if isinstance(conflicts, list) else []
         self.payload = None
         self.expect_sha = ""

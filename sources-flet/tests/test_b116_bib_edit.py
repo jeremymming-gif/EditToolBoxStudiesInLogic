@@ -180,6 +180,49 @@ def test_load_conflicts_disable_confirm(tmp_path, monkeypatch):
     assert view._can_confirm() is False
 
 
+def test_load_keeps_only_pending_conflicts_excluding_resolved(tmp_path, monkeypatch):
+    """编辑页只算「待裁决」冲突：有非空 resolved_at 的已裁决冲突不进 self.conflicts。
+
+    口径与引擎 bibdb.py:1190 conflict_is_pending 一致（resolved_at 为准）。
+    """
+    host = _Host(_db(tmp_path))
+    view = BE.BibEditView(host)
+    view.key_input = "k1"
+    record = dict(RECORD)
+    record["conflicts"] = [
+        {"field": "year", "resolved_at": "2026-11-20T00:00:00Z", "resolution": "adopted"},
+        {"field": "title"},
+        {"field": "author", "resolved_at": "2026-11-21T00:00:00Z"},
+        {"field": "publisher"},
+    ]
+    _install(monkeypatch, query={"hits": [{"record": record}]})
+    asyncio.run(view._load())
+    assert len(view.conflicts) == 2
+    assert [c["field"] for c in view.conflicts] == ["title", "publisher"]
+    assert all(not str(c.get("resolved_at") or "").strip() for c in view.conflicts)
+
+
+def test_preview_not_blocked_when_all_conflicts_resolved(tmp_path, monkeypatch):
+    """全部冲突已裁决时 view.conflicts == []，_preview 不因 conflicts 提前 return。"""
+    host = _Host(_db(tmp_path))
+    view = BE.BibEditView(host)
+    view.key_input = "k1"
+    record = dict(RECORD)
+    record["conflicts"] = [
+        {"field": "year", "resolved_at": "2026-11-20T00:00:00Z", "resolution": "adopted"},
+        {"field": "title", "resolved_at": "2026-11-21T00:00:00Z"},
+    ]
+    calls = _install(monkeypatch, query={"hits": [{"record": record}]})
+    asyncio.run(view._load())
+    assert view.conflicts == []
+    before = len(calls)
+    asyncio.run(view._preview())
+    # 没有拦截：真的发出了 dry-run 预览调用
+    assert len(calls) == before + 1
+    assert "--dry-run" in args_of(calls[-1])
+    assert view.expect_sha == "a" * 64
+
+
 def test_preview_sends_full_field_dict_and_no_sha(tmp_path, monkeypatch):
     host = _Host(_db(tmp_path))
     view = BE.BibEditView(host)
