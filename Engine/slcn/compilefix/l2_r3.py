@@ -30,8 +30,9 @@ def _identity(state, preview):
 def _record_path(work, task_id, *, create=False):
     if not task_id or Path(task_id).name != task_id or task_id in {".", ".."}:
         raise RepairError("无效的 R3 任务编号")
-    task = directory(Path(work) / ".aiw" / task_id)
-    return directory(task / "compile-fix", private=True, create=create) / "state.json"
+    task = directory(Path(work) / ".aiw" / task_id, allow_source_area=True)
+    return directory(task / "compile-fix", private=True, create=create,
+                     allow_source_area=True) / "state.json"
 
 
 def _load(path):

@@ -48,12 +48,13 @@ def decode_json(data):
         raise RepairError("无法解析 UTF-8 JSON") from exc
 
 
-def absolute(path):
+def absolute(path, *, allow_source_area=False):
     path = Path(os.path.abspath(path))
     if sys.platform == "darwin" and len(path.parts) > 1 and path.parts[1] in {"tmp", "var"}:
         # Canonicalize only the fixed system aliases, without following user links.
         path = Path("/private", *path.parts[1:])
-    if any(part.casefold() in DENIED_COMPONENTS or re.match(r"^\d{4}年第", part) for part in path.parts):
+    if not allow_source_area and any(part.casefold() in DENIED_COMPONENTS or re.match(r"^\d{4}年第", part)
+                                     for part in path.parts):
         raise RepairError("路径属于受保护源区")
     return path
 
@@ -75,8 +76,8 @@ def _is_link(info):
     return stat.S_ISLNK(info.st_mode) or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def directory(path, *, private=False, create=False, parents=False):
-    path = absolute(path)
+def directory(path, *, private=False, create=False, parents=False, allow_source_area=False):
+    path = absolute(path, allow_source_area=allow_source_area)
     # Walk from the anchor so a symlink cannot escape into a protected tree.
     for part in reversed((path, *path.parents)):
         try:
