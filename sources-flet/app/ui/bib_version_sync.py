@@ -120,7 +120,7 @@ class BibVersionSyncView:
         if not self.loaded and not self.loading:
             self._run(self.ensure_loaded())
         t = self.t
-        body = ft.Column(spacing=t.sp("2"), controls=[
+        body = ft.Column(spacing=t.sp("2"), scroll=C.scrollbar(t), expand=True, controls=[
             self._target_card(), self._status_card(), self._actions_card(),
             *[C.notice_bar(message, t, tone) for tone, message in self.notices],
         ])
