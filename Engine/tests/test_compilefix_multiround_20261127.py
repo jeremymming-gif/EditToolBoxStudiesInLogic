@@ -392,5 +392,182 @@ class TestFrozenBytes(_ProjectCase):
         self.assertEqual(dumped, json.dumps(l1, ensure_ascii=False, sort_keys=True))
 
 
+# ── Task 6 Step 1: end-to-end rc=2 → rc=0 evidence ───────────────────────────
+#
+# Each test below is a synthetic COMPLETE TeX project compiled through the real
+# converter chain ``convert_compile.compile_pdf`` (xelatex → biber → xelatex ×2,
+# no compiler mocks).  ``compile_pdf`` returns ``(False, msg)`` on a failing
+# real xelatex step; convert.py's contract turns that into process rc=2
+# ("转换已完成，但 ⑨ 编译未通过（退出码 2）").  We assert the failing real step's
+# returncode directly via ``collecting_results`` and map it to the documented
+# rc=2 contract explicitly; after the self-heal publishes, the same real chain
+# returns ``(True, pdf)`` → convert rc=0.  The raw xelatex rc (1) is recorded,
+# never claimed to be 2.  All fixes come from source-side definitions supplied
+# to the real staged loop, which performs its own real XeLaTeX dry compiles.
+
+from slcn.compilefix.l1_detailed import collecting_results  # noqa: E402
+from slcn import convert_compile  # noqa: E402
+
+# All subject material is generic synthetic text (no real author/title, no
+# ≥91-period information).  Only digit criteria appear (line numbers, codes).
+_E2E_ENV_DECL = r"\newenvironment{firstenv}{}{}"
+_E2E_MACRO_DECL = r"\newcommand{\othermacro}{Other text.}"
+_E2E_TIKZ_BLOCK = (
+    "\\tikzset{modal/.style={draw, rectangle, minimum width=#1},\n"
+    "  world/.style={modal={2cm}, fill=blue!20}}\n"
+)
+
+
+class _EndToEndCase(_ProjectCase):
+    """Real converter-chain compile + real staged-loop repair, source-side subject."""
+
+    # subclasses set: support_sty (the EXACT source-side support file contents),
+    # body, and subject_decl.  No duplicate declarations: the uniqueness gate
+    # counts every source definition, so the support file must contain exactly
+    # one definition of the subject.
+    support_sty = ""
+    subject_decl = ""
+
+    def setUp(self):
+        super().setUp()
+        # Support definitions live ONLY in the source-side probe.sty, matching
+        # the migration family's source-bound gate (candidate dir has none).
+        self.sty.write_text(self.support_sty, encoding="utf-8")
+        self.capture = capture_compile(self.out, self.stem, source=self.source)
+        code, cap, raw = self._dry_compile(self.original_candidate, "e2e-orig")
+        self.assertNotEqual(code, 0, "pre-repair candidate must really fail")
+        self.capture["failure"] = ("c" * 32, 1, code, raw)
+        self.report = diagnose(self.original_candidate, self.capture,
+                               available_paths={"demo.tex"})
+
+    def _real_convert_compile(self):
+        """Run the REAL convert.py compile chain; return (convert_rc, result)."""
+        with collecting_results() as results:
+            ok, info = convert_compile.compile_pdf(str(self.out), self.stem)
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        # convert.py rc contract: failure → 2, success → 0.
+        convert_rc = 0 if ok else 2
+        return convert_rc, result, info
+
+    def _assert_e2e_contract(self, decl: str, kind: str):
+        # (a) pre-repair: real chain fails, raw xelatex rc is a real nonzero.
+        before_rc, before_result, before_info = self._real_convert_compile()
+        self.assertEqual(before_rc, 2, before_info)
+        self.assertFalse(before_result.ok)
+        self.assertTrue(str(before_result.phase).startswith("xelatex-"))
+        self.assertIsNotNone(before_result.returncode)
+        self.assertNotEqual(before_result.returncode, 0)
+        self.assertEqual(before_result.candidate_sha256, _sha(self.original_candidate))
+        self.assertEqual(self.report.subject[0], kind)
+
+        # (b) real staged repair, one publish, source-side subject.
+        calls = []
+        import slcn.compilefix.l1 as l1mod
+        real_apply = l1mod.apply_plan
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs["plan"])
+            return real_apply(*args, **kwargs)
+
+        with patch.object(l1mod, "apply_plan", side_effect=spy):
+            ok, info, new_capture = run_staged_repair_loop(
+                self.out, self.stem, source=self.source, capture=self.capture,
+                candidate=self.original_candidate, report=self.report, max_rounds=3,
+            )
+        self.assertTrue(ok, info)
+        self.assertEqual(len(calls), 1, "exactly one apply_plan publish")
+        plan = calls[0]
+        published = self._candidate_path.read_bytes()
+        self.assertEqual(published, plan.patched)
+        self.assertEqual(plan.reverse(plan.patched), self.original_candidate)
+        self.assertEqual(published.count(decl.encode()), 1,
+                         "definition appears exactly once")
+        self.assertIn("l1_repaired", new_capture)
+        for key in CAPTURE_KEYS:
+            self.assertIn(key, new_capture)
+        l1 = new_capture["l1"]
+        self.assertEqual(set(l1), SHAREABLE_KEYS)
+        dumped = json.dumps(l1, ensure_ascii=False, sort_keys=True)
+        self.assertNotIn("subject", dumped)
+        self.assertNotIn("round", dumped)
+
+        # (c) post-repair: SAME real chain now passes → convert rc=0.
+        after_rc, after_result, after_info = self._real_convert_compile()
+        self.assertEqual(after_rc, 0, after_info)
+        self.assertTrue(after_result.ok, after_info)
+        self.assertEqual(after_result.phase, "complete")
+        self.assertEqual(after_result.returncode, 0)
+        self.assertEqual(after_result.candidate_sha256, _sha(published))
+        self.assertTrue((self.out / (self.stem + ".pdf")).exists())
+        return before_result, after_result, plan
+
+
+class TestEndToEndEnvironment(_EndToEndCase):
+    """Environment missing: real rc=2 → publish → real rc=0."""
+
+    support_sty = _E2E_ENV_DECL + "\n"
+    subject_decl = _E2E_ENV_DECL
+    body = ("\\begin{firstenv}\ninside first environment.\n\\end{firstenv}\n")
+
+    def test_missing_environment_real_rc2_to_rc0(self):
+        self._assert_e2e_contract(self.subject_decl, "environment")
+
+
+class TestEndToEndMacro(_EndToEndCase):
+    """Macro missing: real rc=2 → publish → real rc=0."""
+
+    support_sty = _E2E_MACRO_DECL + "\n"
+    subject_decl = _E2E_MACRO_DECL
+    # Unconditional use: the real xelatex log carries the anchored l.N frame
+    # the command-subject predicate needs (gating on \ifdefined hides it).
+    body = ("\\othermacro marker.\n")
+
+    def test_missing_macro_real_rc2_to_rc0(self):
+        self._assert_e2e_contract(self.subject_decl, "command")
+
+
+class TestEndToEndTikzKey(_EndToEndCase):
+    """TikZ key missing: real rc=2 → publish → real rc=0."""
+
+    support_sty = _E2E_TIKZ_BLOCK
+    subject_decl = "modal/.style"
+    body = ("\\begin{tikzpicture}\n\\node[modal]{modal node};\n\\node[world]{world node};\n"
+            "\\end{tikzpicture}\n")
+
+    def setUp(self):
+        # TikZ candidate needs \usepackage{tikz} FIRST: insert_lines() places
+        # the source-bound \tikzset block after the first \usepackage, so tikz
+        # must already be loaded there (mirrors the family fixture's order).
+        self.candidate_override = TEMPLATE.replace(
+            "\\usepackage{amsmath}\n",
+            "\\usepackage{tikz}\n\\usepackage{amsmath}\n"
+        ).replace("SKELMARK", self.body).encode("utf-8")
+        super().setUp()
+
+    def test_missing_tikzkey_real_rc2_to_rc0(self):
+        self._assert_e2e_contract(self.subject_decl, "tikz_key")
+
+
+class TestEndToEndMultiroundChain(_EndToEndCase):
+    """Real multiround chain env→macro: one publish, byte-exact reverse each round."""
+
+    support_sty = _E2E_ENV_DECL + "\n" + _E2E_MACRO_DECL + "\n"
+    subject_decl = _E2E_ENV_DECL
+    body = BODY_2  # env → gated macro → convergence in ≤3 rounds
+
+    def test_multiround_chain_converges_with_single_publish(self):
+        before_result, after_result, plan = self._assert_e2e_contract(
+            self.subject_decl, "environment")
+        # Chain must have staged BOTH definitions and converged in ≤3 rounds.
+        published = self._candidate_path.read_bytes()
+        self.assertEqual(published.count(_E2E_ENV_DECL.encode()), 1)
+        self.assertEqual(published.count(_E2E_MACRO_DECL.encode()), 1)
+        self.assertIn(_E2E_MACRO_DECL.encode(), plan.added_bytes)
+        # The chain is continuous and reversible as one final slice.
+        self.assertEqual(plan.start + len(plan.added_bytes), plan.end)
+        self.assertEqual(plan.reverse(plan.patched), self.original_candidate)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
