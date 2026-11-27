@@ -1,7 +1,9 @@
-"""回归：引用库编辑页字段列首行浮动标签被上边缘裁切。
+"""回归：引用库编辑页字段输入框下方不再渲染英文字段名小字。
 
-结构性断言：字段列的第一个 cell 必须为上浮标签留出顶部空间；
-其余 cell 与 66px 行高保持不变（最小、局部修复）。
+结构性断言（不碰真机视觉）：
+- 每个 cell 内不含以英文字段名渲染的 caption Text；
+- 浮动输入框仍存在，中文浮动标签与 66px 行高不变；
+- 上一轮 5c9a8df 引入的 first/padding.top 补丁已回退。
 """
 from __future__ import annotations
 
@@ -22,33 +24,48 @@ class _Host:
         self.t = Tokens()
 
 
-def _cells(view: BE.BibEditView) -> list[ft.Container]:
-    return [cell for pane in view._field_panes for cell in pane.controls]
-
-
 def _view() -> BE.BibEditView:
     view = BE.BibEditView(_Host())
     view.build()
     return view
 
 
-def test_first_field_cell_reserves_top_space_for_floating_label():
-    cells = _cells(_view())
-    assert cells, "字段列应至少有一个 cell"
-    first = cells[0]
-    assert isinstance(first, ft.Container)
-    assert first.padding is not None and first.padding.top > 0, (
-        "首行 padding.top 必须 > 0，给上浮 label 让出空间，避免被滚动容器上边缘裁切"
-    )
+def _cells_and_names(view: BE.BibEditView):
+    cells = [cell for pane in view._field_panes for cell in pane.controls]
+    names = [name for pane_names in view._field_columns() for name in pane_names]
+    assert len(cells) == len(names), "cell 数应与字段名数一致"
+    return list(zip(cells, names))
 
 
-def test_only_first_cell_has_top_padding_and_geometry_is_unchanged():
-    cells = _cells(_view())
-    assert len(cells) > 1, "需要多行才能验证只有首行改变"
-    first, *rest = cells
-    assert first.height == 66
-    # 两列各有自己的首行（左列「题名」、右列「丛书」），都需留顶部空间；
-    # 其余行不变，保持原有对齐/间距。
-    assert sum(1 for cell in cells if cell.padding and cell.padding.top > 0) == 2
-    assert first.padding.top > 0 and rest[0].padding.top == 0
-    assert all(cell.height == 66 for cell in cells), "行高必须保持 66px"
+def test_no_english_caption_text_in_any_field_cell():
+    pairs = _cells_and_names(_view())
+    assert pairs, "字段列应至少有一个 cell"
+    for cell, name in pairs:
+        assert isinstance(cell, ft.Container)
+        assert isinstance(cell.content, ft.Column)
+        english_captions = [
+            ctl for ctl in cell.content.controls
+            if isinstance(ctl, ft.Text) and ctl.value == name
+        ]
+        assert not english_captions, (
+            f"cell（字段 {name!r}）内不应有以英文字段名渲染的 caption Text"
+        )
+
+
+def test_floating_input_still_present_with_chinese_label_and_66px_height():
+    pairs = _cells_and_names(_view())
+    assert len(pairs) > 1, "需要多行才能验证结构"
+    for cell, name in pairs:
+        assert cell.height == 66, "行高保持 66px"
+        # 上一轮 5c9a8df 的 first/padding.top 补丁已回退：所有 cell 顶部零留白。
+        assert cell.padding is not None and cell.padding.top == 0, (
+            "padding.top 应回退为 0，不再为首行单独留顶部空间"
+        )
+        # content 只保留浮动输入框（TextField），标签是中文（或字段名的中文映射）。
+        assert len(cell.content.controls) == 1, "cell 内应只有一个浮动输入框控件"
+        field = cell.content.controls[0]
+        assert isinstance(field, ft.TextField), "浮动输入框应为 TextField"
+        expected_label = BE.field_label(name)
+        assert field.label == expected_label, (
+            f"浮动输入框 label 应为中文映射 {expected_label!r}，实际 {field.label!r}"
+        )
