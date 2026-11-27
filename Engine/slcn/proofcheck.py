@@ -34,8 +34,9 @@ _MATH_ENVS = ("equation", "align", "gather", "multline", "eqnarray",
               "array", "matrix", "pmatrix", "bmatrix", "cases", "displaymath")
 #: 这些命令的花括号参数是**键**或**路径**，文本规则一律不碰
 _KEY_ARGS = ("cite", "parencite", "textcite", "footcite", "nocite", "ref", "eqref",
-             "label", "pageref", "url", "href", "includegraphics", "bibitem", "input",
-             "include", "usepackage", "documentclass", "bibliography", "addbibresource")
+             "cref", "Cref", "autoref", "label", "pageref", "url", "href",
+             "includegraphics", "bibitem", "input", "include", "usepackage",
+             "documentclass", "bibliography", "addbibresource")
 
 
 #: 数学区三种形态：环境、`\[..\]`/`\(..\)`、行内 `$..$`（允许 `$$..$$`）。

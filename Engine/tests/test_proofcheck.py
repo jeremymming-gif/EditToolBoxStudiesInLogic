@@ -363,6 +363,13 @@ check("(a) EN-01 `John(2009)` 缺空格 → 报并可自动改",
       [h.replacement for h in hits_of("John(2009) argues\n", "EN-01", lang="en")] == ["n (2"])
 check("(a) EN-02 英文冒号后缺空格 → 报并可自动改",
       [h.replacement for h in hits_of("Note:this is it\n", "EN-02", lang="en")] == [": t"])
+# 引用键里的冒号（\Cref{def:prf}）不是英文冒号后缺空格——键参数必须整段屏蔽，
+# 否则 EN-02 会把 def:prf 改成 def: prf（用户 m03498 登记的真 bug）。
+check("(a) EN-02 反例：\\Cref/\\cref 键参数里的冒号不报（def:prf 不被改成 def: prf）",
+      not hits_of("See \\Cref{def:prf} and \\cref{sec:intro}\n", "EN-02", lang="en")
+      and P.apply_fixes("See \\Cref{def:prf}\n",
+                        P.check("See \\Cref{def:prf}\n", lang="en"))[0]
+      == "See \\Cref{def:prf}\n")
 check("(a) EN-03 覆盖 Word 中文撇号（原 EN-04 已并入：同一批字符，不再重复报）",
       len(hits_of("Under Kaplan’s framework\n", "EN-03", lang="en")) == 1
       and not any(r.id == "EN-04" for r in P.RULES))
