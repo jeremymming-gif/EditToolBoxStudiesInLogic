@@ -27,7 +27,7 @@ class _LocalStore:
     def task_dir(self, task_id):
         if len(task_id) != 64 or any(c not in "0123456789abcdef" for c in task_id):
             raise RecoveryRequired("L1 恢复身份无效")
-        return directory(self.root / task_id, private=True)
+        return directory(self.root / task_id, private=True, allow_source_area=True)
 
     def save(self, task_id, state):
         put_json(self.task_dir(task_id) / "state.json", state)
@@ -39,7 +39,7 @@ def _store(out_dir, stem, source):
     # Reuse Stage A provenance separation before any directory creation.
     if _overlap(root, Path(source).parent):
         raise RepairError("L1 恢复区与源目录重叠")
-    return _LocalStore(directory(root, create=True, private=True))
+    return _LocalStore(directory(root, create=True, private=True, allow_source_area=True))
 
 
 def _finish_pending(store, task_id, out_dir, state):
@@ -52,8 +52,8 @@ def _finish_pending(store, task_id, out_dir, state):
     filename = pending.get("file")
     if filename not in journal["files"]:
         raise RecoveryRequired("L1 中断记录文件无效")
-    stage = directory(_stage_path(out_dir, journal), private=True)
-    if directory_id(stage) != journal.get("stage_id"):
+    stage = directory(_stage_path(out_dir, journal), private=True, allow_source_area=True)
+    if directory_id(stage, allow_source_area=True) != journal.get("stage_id"):
         raise RecoveryRequired("L1 中断目录身份不符")
     retained = pending.get("retained")
     incoming = pending.get("incoming")
@@ -92,7 +92,7 @@ def recover(out_dir, stem, *, source, stage_log=None):
         stage(label)  # record on entry: only operations actually entered are reported
         return fn(*args, **kwargs)
 
-    out_dir = call("产物目录", directory, out_dir)
+    out_dir = call("产物目录", directory, out_dir, allow_source_area=True)
     marker = call("事务标记", read_json, _guard_path(out_dir, stem_name(stem)), optional=True)
     if marker is None:
         return
@@ -157,7 +157,7 @@ def apply_plan(out_dir, stem, *, source, capture, plan, report, compiler=None, c
     """
     compiler = compile_candidate if compiler is None else compiler
     checkpoint = (lambda phase: None) if checkpoint is None else checkpoint
-    out_dir = directory(out_dir)
+    out_dir = directory(out_dir, allow_source_area=True)
     stem_name(stem)
     if capture_compile(out_dir, stem, source=source) != {k: capture[k] for k in
             ("candidate_sha256", "candidate_id", "source_id", "out_id") if k in capture}:
@@ -167,14 +167,14 @@ def apply_plan(out_dir, stem, *, source, capture, plan, report, compiler=None, c
     store = _store(out_dir, stem, source)
     # Bounded retention only within this target's private L1 root.
     for child in store.root.iterdir():
-        directory(child, private=True)
+        directory(child, private=True, allow_source_area=True)
         old = read_json(child / "state.json", optional=True)
         if (old and old.get("state") in {"completed", "failed", "rolled_back"}
                 and old.get("expires_at", float("inf")) <= time.time()):
             import shutil
             archive = out_dir / ".compilefix-displaced" / child.name
             try:
-                directory(archive, private=True)
+                directory(archive, private=True, allow_source_area=True)
                 record = read_json(archive / "journal.json")
             except FileNotFoundError:
                 pass
@@ -185,10 +185,10 @@ def apply_plan(out_dir, stem, *, source, capture, plan, report, compiler=None, c
             shutil.rmtree(child)
     import uuid
     task_id = digest((report.identity + uuid.uuid4().hex).encode("ascii"))
-    task_dir = directory(store.root / task_id, create=True, private=True)
+    task_dir = directory(store.root / task_id, create=True, private=True, allow_source_area=True)
     state = {"identity": {"task_id": task_id, "diagnostic_id": report.identity},
              "state": "isolating", "expires_at": time.time() + RETENTION_SECONDS,
-             "provenance": {"out_id": directory_id(out_dir)}, "rule": plan.rule_id,
+             "provenance": {"out_id": directory_id(out_dir, allow_source_area=True)}, "rule": plan.rule_id,
              "candidate_sha256": plan.before_sha256, "repaired_sha256": plan.after_sha256,
              "byte_spans": [[plan.start, plan.start], [plan.end, plan.end]], "rollback": "not-needed"}
     store.save(task_id, state)
@@ -202,7 +202,7 @@ def apply_plan(out_dir, stem, *, source, capture, plan, report, compiler=None, c
             original_pdf_hash = None if original_pdf is None else digest(original_pdf)
             state["original_pdf_sha256"] = original_pdf_hash
             state["dependencies"] = support
-            isolated = directory(task_dir / "candidate", create=True, private=True)
+            isolated = directory(task_dir / "candidate", create=True, private=True, allow_source_area=True)
             copy_support(out_dir, isolated, support)
             atomic_write(isolated / f"{stem}.tex", plan.patched)
             checkpoint("applied")
@@ -236,7 +236,7 @@ def apply_plan(out_dir, stem, *, source, capture, plan, report, compiler=None, c
             journal_path = task_dir / "journal.json"
             stage = _stage_path(out_dir, journal)
             stage.mkdir(mode=0o700)
-            journal["stage_id"] = directory_id(stage)
+            journal["stage_id"] = directory_id(stage, allow_source_area=True)
             put_json(journal_path, journal)
             state["state"] = "publishing"
             store.save(task_id, state)

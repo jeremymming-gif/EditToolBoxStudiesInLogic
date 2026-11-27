@@ -97,14 +97,14 @@ def directory(path, *, private=False, create=False, parents=False, allow_source_
     return path
 
 
-def directory_id(path):
-    info = directory(path).stat()
+def directory_id(path, *, allow_source_area=False):
+    info = directory(path, allow_source_area=allow_source_area).stat()
     return [info.st_dev, info.st_ino]
 
 
-def directory_ancestry(path):
+def directory_ancestry(path, *, allow_source_area=False):
     """Collect existing directory identities up to a missing or unsafe component."""
-    path = absolute(path)
+    path = absolute(path, allow_source_area=allow_source_area)
     identities = []
     for part in reversed((path, *path.parents)):
         try:
