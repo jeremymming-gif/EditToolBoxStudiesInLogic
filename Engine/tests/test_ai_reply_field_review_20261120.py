@@ -185,17 +185,22 @@ class FieldReview(IsolatedTest):
                 self.assertTrue(any("版本不同" in note for note in notes))
                 self.assertNotIn("number", fields(settle(old, rows, old=old)))
 
-    def test_group_decisions_include_implicit_original_and_reject_missing_library(self):
+    def test_group_decisions_include_implicit_original(self):
+        """部分裁决 + 另一行隐式 original → 接受，另一行按 default 落地。"""
         old, reply = article(pages="1--9"), article(number="7", pages="10--19")
         rows, _, _ = compare(old, reply, hit({"number": "9"}))
         self.assertEqual([row["field"] for row in rows], ["number", "pages"])
-        with self.assertRaisesRegex(workflow.WorkflowError, "整组一致"):
-            review.check_decisions(rows, {rows[0]["conflict_id"]: "reply"})
+        decisions = {rows[0]["conflict_id"]: "reply"}
+        self.assertEqual(review.check_decisions(rows, decisions), decisions)
+        actual = fields(settle(reply, rows, decisions, old=old))
+        self.assertEqual((actual["number"], actual["pages"]), ("7", "1--9"))
+
+    def test_group_decisions_reject_missing_library(self):
+        """逐行合法性不变：library 但本行无库值 → 仍按 conflict_id 定位拒绝。"""
+        old, reply = article(pages="1--9"), article(number="7", pages="10--19")
+        rows, _, _ = compare(old, reply, hit({"number": "9"}))
         with self.assertRaisesRegex(workflow.WorkflowError, rows[1]["conflict_id"]):
             review.check_decisions(rows, {row["conflict_id"]: "library" for row in rows})
-        choices = {row["conflict_id"]: "reply" for row in rows}
-        actual = fields(settle(reply, rows, choices, old=old))
-        self.assertEqual((actual["number"], actual["pages"]), ("7", "10--19"))
 
     def test_bare_numeric_field_change_is_reviewed_and_restored(self):
         old = article().replace("number = {3}", "number = 3")

@@ -114,7 +114,7 @@ OLD_OTHER_EDITION = """@book{LIBA,
 
 
 #: 稿件原条目：出版社与库不同、年份也不同 → `publication` 组内**两行**冲突
-#: （publisher + year），用来验证「组内必须整组一致、混裁被拒」。
+#: （publisher + year），用来验证「组内字段逐条独立裁决、自由混裁」。
 OLD_GROUP_TWO = """@book{LIBA,
   author = {Lee, Alice},
   title = {On Logic},
@@ -453,9 +453,7 @@ class FieldConflictDecisions(LibraryBase):
 # ── (e) 裁决变更 → 新 preview_id，旧 ID 的 apply / deliver 被拒 ───────────
 
 class GroupDecisionConsistency(LibraryBase):
-    """ACCEPTANCE:20 第 7 条：同一 group 的冲突行必须**整组一致**裁决。
-
-    `publisher+year+edition` 互相依赖：库的年份配回件的出版社就是书目事实自相矛盾。
+    """同一 group 的冲突行**逐字段独立裁决**：允许 year=库值、publisher=回件值等自由混裁。
     """
 
     def setUp(self):
@@ -474,27 +472,22 @@ class GroupDecisionConsistency(LibraryBase):
     def _by_field(self, name):
         return [row for row in self.group if row["field"] == name][0]
 
-    def test_mixed_decision_within_group_is_rejected(self):
-        """组内混裁（year=library、publisher=reply）必须被拒，且点名该组每条 ID。"""
+    def test_mixed_decision_within_group_is_accepted(self):
+        """组内混裁（year=library、publisher=reply）必须被接受且逐字段落地。"""
         year = self._by_field("year")
         publisher = self._by_field("publisher")
-        with self.assertRaises(w.WorkflowError) as caught:
-            self.preview(adopt={w.CAT_BIB_VERIFY}, decisions={
-                year["conflict_id"]: "library",
-                publisher["conflict_id"]: "reply",
-            })
-        message = str(caught.exception)
-        self.assertIn("同一组字段必须整组一致", message)
-        self.assertIn("publication", message)
-        # 该组每一条的 conflict_id 都要在错误里出现（用户才知道要改哪几行）。
-        for row in self.group:
-            self.assertIn(row["conflict_id"], message)
-        # 拒绝后不得留下半成品预览：磁盘上的活动预览与裁决都还是上一次的。
-        state = self.state()
-        self.assertEqual(state["preview"]["preview_id"], self.baseline.preview_id)
-        self.assertEqual(state.get("decisions") or {}, {})
-        self.assertEqual([row["conflict_id"] for row in state["conflicts"]],
-                         [row["conflict_id"] for row in self.rows])
+        pv = self.preview(adopt={w.CAT_BIB_VERIFY}, decisions={
+            year["conflict_id"]: "library",
+            publisher["conflict_id"]: "reply",
+        })
+        self.assertTrue(pv.ok, pv.blocked)
+        settled = self.state()["decisions"]
+        self.assertEqual(settled[year["conflict_id"]], "library")
+        self.assertEqual(settled[publisher["conflict_id"]], "reply")
+        candidate = _read(self.state()["preview"]["candidate_bib"])
+        fields = sv3._field_map(candidate)["LIBA"][1]
+        self.assertEqual(fields.get("year"), "2001")
+        self.assertEqual(fields.get("publisher"), "ReplyPub")
 
     def test_uniform_decision_within_group_is_accepted(self):
         """组内一致（全 library / 全 reply / 全 original）必须被接受，且整组落地。"""
@@ -517,14 +510,7 @@ class GroupDecisionConsistency(LibraryBase):
 
 
 class GroupScopeIsPerEntry(LibraryBase):
-    """组内一致的**作用域是条目**，且校验针对「生效后」的整组。
-
-    两个方向相反的缺陷，根因同一个（组字符串不含条目键）：
-      - 误放行：只校验用户显式传的项 → 「只改 year、publisher 走缺省 original」
-        静默产出库的年份配回件的出版社，正是 F1 要防的形态却绕过了闸门。
-      - 误拒：按裸 `group` 归组 → 两个不同条目的 year 被当成同一组，
-        「A 用库值、B 用回件值」无法表达。
-    """
+    """同一组内每个字段、每个条目都独立裁决：缺省项按 original 落地，条目间互不影响。"""
 
     def setUp(self):
         super().setUp()
@@ -542,46 +528,35 @@ class GroupScopeIsPerEntry(LibraryBase):
                 ["publisher", "year"],
                 f"{key} 的 publication 组应有两行，实际 {[r['field'] for r in self.rows]}")
 
-    def test_implicit_default_counts_as_mixed(self):
-        """只显式改 year、publisher 走缺省 original → 生效后仍是混裁，必须拒绝。
-
-        校验必须针对 `effective_decisions` 的结果，而不是只看显式传入的项。
-        **本条只判「有没有拒绝」**（缺陷 A）；文案里点名条目键另由
-        `test_mixed_message_names_the_entry` 判（缺陷 B），两条可分别失败。
-        """
-        a_year = self.ids[("LIBA", "year")]
-        with self.assertRaises(w.WorkflowError) as caught:
-            self.preview(adopt={w.CAT_BIB_VERIFY}, decisions={a_year: "library"})
-        message = str(caught.exception)
-        self.assertIn("同一组字段必须整组一致", message)
-        self.assertIn("publication", message)   # 点名组
-        # 错误里要给出**生效值**，用户才知道缺省项被当成了 original。
-        self.assertIn("=library", message)
-        self.assertIn("=original", message)
-        # 拒绝后不得留下半成品：活动预览与裁决仍是基线。
-        state = self.state()
-        self.assertEqual(state["preview"]["preview_id"], self.baseline.preview_id)
-        self.assertEqual(state.get("decisions") or {}, {})
-
-    def test_mixed_message_names_the_entry(self):
-        """混裁文案必须点名**条目键**与组内每条 conflict_id（缺陷 B 的判别点）。
-
-        本条**两条都显式裁决**，所以无论「缺省项是否参与校验」（缺陷 A）都会拒；
-        唯一会挂的是归组键退化成裸 `group`（缺陷 B）——那时两个条目的 year 被当成
-        同一组，报错里的条目键变成「（无键）」，用户看不出是哪一条书目的问题。
-        """
+    def test_implicit_default_is_per_field(self):
+        """只显式改 year=library、publisher 走缺省 original → 接受，两行落地值不同。"""
         a_year = self.ids[("LIBA", "year")]
         a_pub = self.ids[("LIBA", "publisher")]
-        with self.assertRaises(w.WorkflowError) as caught:
-            self.preview(adopt={w.CAT_BIB_VERIFY},
-                         decisions={a_year: "library", a_pub: "reply"})
-        message = str(caught.exception)
-        self.assertIn("LIBA", message)          # 点名字段所属条目
-        self.assertNotIn("（无键）", message)     # 归组必须带条目键
-        self.assertIn(a_year, message)
-        self.assertIn(a_pub, message)
-        # 另一条目不该被卷进这条报错（作用域隔离）。
-        self.assertNotIn("LIBB", message)
+        pv = self.preview(adopt={w.CAT_BIB_VERIFY}, decisions={a_year: "library"})
+        self.assertTrue(pv.ok, pv.blocked)
+        self.assertNotEqual(pv.preview_id, self.baseline.preview_id)
+        # state["decisions"] 只存显式选择（与既有测试一致）；落地通过候选字段验证。
+        settled = self.state()["decisions"]
+        self.assertEqual(settled, {a_year: "library"})
+        candidate = _read(self.state()["preview"]["candidate_bib"])
+        fields = sv3._field_map(candidate)["LIBA"][1]
+        self.assertEqual(fields.get("year"), "2001")
+        self.assertEqual(fields.get("publisher"), "OldPubA")
+
+    def test_entries_keep_independent_values(self):
+        """同一组内两行分别选不同来源 → 都接受、各自落地，无「整组一致」错误。"""
+        a_year = self.ids[("LIBA", "year")]
+        a_pub = self.ids[("LIBA", "publisher")]
+        pv = self.preview(adopt={w.CAT_BIB_VERIFY},
+                          decisions={a_year: "library", a_pub: "reply"})
+        self.assertTrue(pv.ok, pv.blocked)
+        settled = self.state()["decisions"]
+        self.assertEqual(settled[a_year], "library")
+        self.assertEqual(settled[a_pub], "reply")
+        candidate = _read(self.state()["preview"]["candidate_bib"])
+        fields = sv3._field_map(candidate)["LIBA"][1]
+        self.assertEqual(fields.get("year"), "2001")
+        self.assertEqual(fields.get("publisher"), "ReplyPubA")
 
     def test_two_entries_may_pick_different_sources(self):
         """两个条目各取不同来源 → 必须接受，且各自**字段级**落地正确。
@@ -862,8 +837,8 @@ class CliDecideErrors(LibraryBase):
         self.assertIn("library=checked=true", out)
         self.assertIn("conflicts=", out)
 
-    def test_group_mixed_decide_exits_2_with_group_and_ids(self):
-        """组内混裁 → 退出码 2，错误含 group 名与该组每条 conflict_id。"""
+    def test_group_mixed_decide_is_accepted(self):
+        """CLI `--decide` 组内混裁 → exit 0、成功产出预览、两值分别落地。"""
         self.build_library()
         res = self.prepare(old_text=OLD_GROUP_TWO)
         self.import_reply(res.task_id, OLD_GROUP_TWO)
@@ -871,15 +846,16 @@ class CliDecideErrors(LibraryBase):
         rows = self.state()["conflicts"]
         year = [row for row in rows if row["field"] == "year"][0]
         publisher = [row for row in rows if row["field"] == "publisher"][0]
-        code, _out, err = self._run(
-            ["--work-dir", self.work, "preview", "--adopt", "bib_verify",
+        code, out, err = self._run(
+            ["--json", "--work-dir", self.work, "preview", "--adopt", "bib_verify",
              "--decide", f"{year['conflict_id']}=library",
              "--decide", f"{publisher['conflict_id']}=reply"])
-        self.assertEqual(code, 2)
-        self.assertIn("同一组字段必须整组一致", err)
-        self.assertIn("publication", err)
-        self.assertIn(year["conflict_id"], err)
-        self.assertIn(publisher["conflict_id"], err)
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload.get("ok"), payload)
+        settled = self.state()["decisions"]
+        self.assertEqual(settled[year["conflict_id"]], "library")
+        self.assertEqual(settled[publisher["conflict_id"]], "reply")
 
     def test_decide_without_equals_exits_2(self):
         self.build_library()

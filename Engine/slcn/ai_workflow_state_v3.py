@@ -389,7 +389,7 @@ def _text_result(tex, context, suggestions, adopt, excluded):
 # 只有「同作品 + 同版本」才自动采纳库值，版本不同一律降级为冲突行或跳过；
 # 冲突行默认 `original`；库字段不可用时仅允许 original / reply。
 
-#: 互相依赖的事实字段同组：整组一致裁决（publisher+year+edition+address、serial 五字段）
+#: 冲突行归类元数据：组名仅作展示/归类，不限制逐字段独立裁决（publication / serial）。
 _FIELD_GROUPS = {
     "publisher": "publication",
     "year": "publication",
@@ -409,7 +409,7 @@ LIBRARY_STATES = ("ok", "unconfigured", "missing", "unreadable", "failed", "skip
 
 
 def field_group(name) -> str:
-    """字段所属裁决组：互相依赖的事实字段整组一致。"""
+    """字段所属组名：仅作冲突行归类/展示元数据，不作为裁决约束。"""
     key = str(name or "").strip().lower()
     return _FIELD_GROUPS.get(key, "field:" + key if key else "field")
 
@@ -803,13 +803,7 @@ def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=
 
 
 def check_decisions(rows, decisions):
-    """校验裁决：未知 conflict_id / 非法值 / 组内混裁 → 可定位错误（含 ID）。
-
-    组内一致是硬约束（ACCEPTANCE:20 第 7 条）：`publisher+year+edition` 互相依赖，
-    库的年份配回件的出版社就是书目事实自相矛盾。同一 group 的所有冲突行必须
-    取同一个值，否则拒绝并点名该组每一条的 conflict_id 与取值 —— 不静默传播
-    （用户会以为自己只改了一行却连带改了别的字段）。
-    """
+    """校验裁决：未知 conflict_id / 非法值 / 无库值 → 可定位错误（含 ID）；组内各字段独立裁决，不要求一致。"""
     known = {row["conflict_id"]: row for row in rows}
     out = {}
     for raw_id, raw_value in (decisions or {}).items():
@@ -829,27 +823,6 @@ def check_decisions(rows, decisions):
                 "conflict_id %s 的裁决值不合法：%s（本行只能是 %s 之一）"
                 % (cid, raw_value, " / ".join(choices)))
         out[cid] = value
-    # 组内一致：校验**生效后**的整组，而不是只看用户显式传的那些。
-    # 只看显式项会漏掉「只改 year、publisher 走缺省 original」这种静默混裁
-    # （用户没显式选过，但落地结果依然是库的年份配回件的出版社）。
-    # 作用域必须带条目键：两个不同条目的 year 不是同一组，各自选不同来源是合法的。
-    settled = effective_decisions(rows, out)
-    by_scope = {}
-    for row in rows:
-        cid = row["conflict_id"]
-        scope = (str(row.get("key") or ""), str(row.get("group") or "field"))
-        by_scope.setdefault(scope, []).append(
-            (cid, settled.get(cid, "original"), str(row.get("field") or "")))
-    for (key, group), items in sorted(by_scope.items()):
-        values = {value for _cid, value, _field in items}
-        if len(values) > 1:
-            detail = "、".join(
-                "%s=%s（%s）" % (cid, value, field)
-                for cid, value, field in sorted(items, key=lambda i: (i[2], i[0])))
-            raise workflow.WorkflowError(
-                "同一组字段必须整组一致，不能混裁：条目 %s 的 %s 组 —— %s；"
-                "请把这一组统一成同一个值（library / reply / original）。"
-                % (key or "（无键）", group, detail))
     return out
 
 
