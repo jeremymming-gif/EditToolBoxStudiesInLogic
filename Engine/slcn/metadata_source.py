@@ -326,7 +326,16 @@ def _rows(m: Merged) -> list:
 def preview(source: str, paths, *, form: dict | None = None, lang: str | None = None,
             channel: str | None = None) -> dict:
     """dry-run 预览：**只读**，返回可渲染行结构；生效值与产物同一套判据（只补空）。"""
-    ext, lang = os.path.splitext(source)[1].lower(), lang or "zh"
+    ext = os.path.splitext(source)[1].lower()
+    if not lang:
+        # 未指定语种时预览须与实际转换（convert.py）走同一 detect_lang 判据，
+        # 不能写死 "zh"（否则英文稿在 GUI 元数据预览里被误显示成中文稿）。
+        # 局部 import 避免与 convert_metadata 顶层循环；探测失败回退 "zh"。
+        from .convert_metadata import detect_lang
+        try:
+            lang, _why = detect_lang(source)
+        except Exception:  # noqa: BLE001 预览不因语种探测失败而中断
+            lang = "zh"
     channel = channel or ("word" if ext in _WORD_EXT else "latex")
     paths, warnings = [p for p in (paths or []) if p], []
     results = [extract(p, lang=lang) for p in paths]
