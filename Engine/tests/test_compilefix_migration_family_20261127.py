@@ -91,5 +91,161 @@ class PrivacyTests(unittest.TestCase):
             self.assertIn(key, shared)
 
 
+# ── Task 2: macro-migration-v1 (macro missing → source locate → reversible insert) ──
+import shutil
+import tempfile
+
+from slcn.compilefix.migration_rule_family import build_macro_context, select_macro_plan
+
+
+_MACRO_DECL = "\\newcommand{\\zzfoo}{macro-value}"
+_MACRO_NAME = "zzfoo"
+_CANDIDATE = (
+    "\\documentclass{article}\n"
+    "\\usepackage{hyperref}\n"
+    "\\begin{document}\n"
+    "\\zzfoo\n"
+    "\\end{document}\n"
+).encode()
+_MACRO_LOG = b"! Undefined control sequence.\nl.4 \\zzfoo\nThe control sequence at the end of the top line\n"
+
+
+
+def _macro_diagnosis(candidate=_CANDIDATE, log=_MACRO_LOG):
+    report = diagnose(candidate, captured(candidate, log))
+    assert report.subject == ("command", _MACRO_NAME), report.subject
+    return report
+
+
+class _MacroFixtureCase(unittest.TestCase):
+    """Real source-bound context: source preamble, local support, style, candidate."""
+
+    maxDiff = None
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="slcn-macro-migration-")
+        self.root = Path(self.tmp)
+        self.src = self.root / "in"
+        self.out = self.root / "out"
+        self.src.mkdir()
+        self.out.mkdir()
+        self.source = self.src / "main.tex"
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write_source(self, definition, pre="\\usepackage{helpers}\n", body="source body text\n"):
+        # The source supplies the definition; the macro USE lives only in the
+        # converted candidate body (the failure being healed), not in the
+        # source body — so retained_body_text must not reference the macro.
+        self.source.write_text(
+            "\\documentclass{article}\n" + pre + definition + "\\begin{document}\n"
+            + body + "\\end{document}\n"
+        )
+        (self.src / "helpers.sty").write_text(definition + "\n")
+
+    def _context(self):
+        return build_macro_context(self.out, "main", self.source, None)
+
+    def _plan(self, candidate=_CANDIDATE, definition=_MACRO_DECL + "\n"):
+        self._write_source(definition)
+        return select_macro_plan(
+            candidate, _macro_diagnosis(candidate), context=self._context()
+        )
+
+
+class MacroMigrationPositiveTests(_MacroFixtureCase):
+    def test_single_newcommand_yields_plan_with_one_declaration_and_byte_exact_reverse(self):
+        plan = self._plan()
+        self.assertIsNotNone(plan)
+        self.assertEqual(list(plan.lines), [_MACRO_DECL])
+        restored = plan.reverse(plan.patched)
+        self.assertEqual(restored, plan.original)
+        self.assertEqual(restored, _CANDIDATE)
+        self.assertEqual(plan.patched.replace((_MACRO_DECL + "\n").encode(), b"", 1),
+                         _CANDIDATE)
+
+    def test_providecommand_is_accepted(self):
+        plan = self._plan(definition="\\providecommand{\\zzfoo}{macro-value}\n")
+        self.assertIsNotNone(plan)
+        self.assertEqual(list(plan.lines), ["\\providecommand{\\zzfoo}{macro-value}"])
+        self.assertEqual(plan.reverse(plan.patched), _CANDIDATE)
+
+    def test_plan_offset_is_inside_the_candidate_preamble(self):
+        plan = self._plan()
+        self.assertIsNotNone(plan)
+        preamble_bytes = len(_CANDIDATE[:_CANDIDATE.index(b"\\begin{document}")])
+        self.assertLessEqual(plan.offset, preamble_bytes)
+        self.assertEqual(plan.reverse(plan.patched), _CANDIDATE)
+
+
+class MacroMigrationNegativeTests(_MacroFixtureCase):
+    def assert_no_plan(self, definition, *, candidate=_CANDIDATE, log=_MACRO_LOG):
+        self._write_source(definition)
+        plan = select_macro_plan(
+            candidate, _macro_diagnosis(candidate, log), context=self._context()
+        )
+        self.assertIsNone(plan)
+
+    def test_def_form_is_rejected(self):
+        self.assert_no_plan("\\def\\zzfoo{macro-value}\n")
+
+    def test_let_form_is_rejected(self):
+        self.assert_no_plan("\\let\\zzfoo\\relax\n")
+
+    def test_newif_form_is_rejected(self):
+        self.assert_no_plan("\\newif\\ifzzfoo\n")
+
+    def test_renewcommand_form_is_rejected(self):
+        self.assert_no_plan("\\renewcommand{\\zzfoo}{macro-value}\n")
+
+    def test_two_same_name_definitions_in_source_are_rejected(self):
+        self.assert_no_plan(_MACRO_DECL + "\n" + _MACRO_DECL + "\n")
+
+    def test_definition_inside_conditional_is_rejected(self):
+        self.assert_no_plan("\\iftrue\n" + _MACRO_DECL + "\n\\fi\n")
+
+    def test_template_already_provides_macro_is_rejected(self):
+        # Template-side provider = a bundled style in the output directory. Reuse
+        # `build_context` for the real binding, then inject the same declaration
+        # into that bound style text: the rebuilt selection must see it as an
+        # existing name and skip the macro.
+        self._write_source(_MACRO_DECL + "\n")
+        context = self._context()
+        object.__setattr__(context, "style_text", _MACRO_DECL + "\n")
+        self.assertIsNone(select_macro_plan(
+            _CANDIDATE, _macro_diagnosis(), context=context
+        ))
+
+    def test_candidate_already_defines_macro_is_rejected(self):
+        # Add the candidate's own definition at the end (after the use), so the
+        # bound subject still resolves against line 4 while the rebuild proof
+        # must reject the macro as already defined in the candidate.
+        candidate = _CANDIDATE.replace(
+            b"\\end{document}",
+            (_MACRO_DECL + "\n\\end{document}").encode(),
+        )
+        self.assert_no_plan(_MACRO_DECL + "\n", candidate=candidate)
+
+    def test_wrong_subject_kind_is_rejected(self):
+        self._write_source(_MACRO_DECL + "\n")
+        report = _macro_diagnosis()
+        object.__setattr__(report, "subject", ("environment", _MACRO_NAME))
+        self.assertIsNone(select_macro_plan(
+            _CANDIDATE, report, context=self._context()
+        ))
+
+    def test_body_not_using_macro_is_rejected(self):
+        # The candidate still uses \zzfoo (so the failure binds), but the
+        # retained source body ALSO uses it: the first fresh selector run must
+        # select the macro, proving "body_unused" is false and the plan must
+        # be rejected. This exercises the genuine rebuild proof, not a string
+        # check or a missing-subject shortcut.
+        self._write_source(_MACRO_DECL + "\n", body="\\zzfoo\n")
+        report = _macro_diagnosis()
+        plan = select_macro_plan(
+            _CANDIDATE, report, context=self._context()
+        )
+        self.assertIsNone(plan)
+
+
 if __name__ == "__main__":
     unittest.main()

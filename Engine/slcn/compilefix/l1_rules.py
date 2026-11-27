@@ -55,6 +55,27 @@ ENV_MIGRATION = Rule(
     "Engine/tests/test_compilefix_l15_environment_migration.py",
 )
 ENV_REGISTRY = (ENV_MIGRATION,)
+
+
+MACRO_MIGRATION = Rule(
+    "macro-migration-v1", 1, 1,
+    "One bound XeLaTeX failure round with a single primary Undefined control "
+    "sequence subject, a single top-level \\newcommand/\\providecommand definition "
+    "of that exact name in source support, no template/candidate definition, a "
+    "retained-body/covered-body rebuild proving the macro is needed, and "
+    "verifiable same-round inputs.",
+    "One continuous inserted byte slice in the candidate preamble; no original "
+    "byte is modified, removed or reordered.",
+    "Insert exactly one declaration plus separator; verify original hash and "
+    "position before apply, verify post hash and exact added bytes on reverse, "
+    "delete the slice and verify the original hash and bytes.",
+    "Journaled L1 transaction; isolated compile and full delivery checks; restore "
+    "original TeX/PDF/state on failure; recovery-required if rollback is unsafe.",
+    "tests/test_compilefix_migration_family_20261127.py:MacroMigrationPositiveTests",
+    "tests/test_compilefix_migration_family_20261127.py:MacroMigrationNegativeTests",
+    "Engine/tests/test_compilefix_migration_family_20261127.py",
+)
+MACRO_REGISTRY = (MACRO_MIGRATION,)
 _INTERNAL = {"@gobble", "@firstofone", "@firstoftwo", "@secondoftwo", "@empty"}
 _PURE = {"textbf", "textit", "emph", "relax", "space"}
 _RESERVED = _PURE | {"makeatletter", "makeatother", "begin", "end", "documentclass", "newcommand"}
