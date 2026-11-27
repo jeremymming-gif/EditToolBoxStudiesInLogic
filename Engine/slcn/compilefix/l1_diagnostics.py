@@ -27,6 +27,8 @@ class Diagnosis:
     bound: bool = False
     # Private, local parser evidence. Never included in shareable().
     error_lines: tuple[int, ...] = ()
+    # Private typed subject for rule dispatch / new-error judgment. Never emitted.
+    subject: tuple[str, str] | None = None
 
     def shareable(self):
         return {"identity": self.identity, "candidate_sha256": self.candidate_sha256,
@@ -138,7 +140,14 @@ def diagnose(candidate, capture, *, template_results=(), available_paths=None):
     if not items:
         add("unknown", "inspect-local-compiler-log")
     identity = digest(json_bytes([fingerprint, phase, code, [asdict(d) for d in items]]))
+    # Private subject: read from the raw bound error rows, never from a display
+    # string, capture narrative or taskbook. Only the primary error frame counts.
+    log_rows = log.splitlines()
+    first = next((i for i, row in enumerate(log_rows) if row.startswith("! ")), len(log_rows))
+    end = next((i for i in range(first + 1, len(log_rows)) if log_rows[i].startswith("! ")), len(log_rows))
+    subject = _primary_subject(log_rows[first:end], text.splitlines())
     return Diagnosis(identity, fingerprint, phase, code, tuple(items), bound=bound,
+                     subject=subject,
                      error_lines=(tuple(e[2] for e in errors[:1] if e[2] is not None)
                                   if any(d.category == "catcode" and d.confidence == "exact" for d in items)
                                   else tuple(e[2] for e in errors if e[2] is not None)))
@@ -242,6 +251,22 @@ def _primary_subject(error_rows, candidate_lines):
             word = _END_CONTROL.search(frame)
             name = word[1] if word else ""
     return "command", name
+
+
+def normalize_subject(kind, name):
+    """Canonical (kind, name) for 'new error' judgment and dead-loop guard.
+
+    Strips leading backslashes, the /tikz/ prefix for tikz_key, and collapses
+    TeX hard-wrap whitespace inside a name. Location/line numbers are never
+    an input here, so line drift cannot make a subject look new.
+    """
+    if not isinstance(name, str):
+        return kind, name
+    name = name.lstrip("\\")
+    if kind == "tikz_key" and name.startswith("/tikz/"):
+        name = name[len("/tikz/"):]
+    name = re.sub(r"\s+", "", name)
+    return kind, name
 
 
 def _migration_hint(evidence, subject):
