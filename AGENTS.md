@@ -1,5 +1,26 @@
 # AGENTS.md —— 工具箱开发者上手（公开仓/开发主场）
 
+## 当前状态快照（CURRENT STATE · 2026-11-27 23:00）
+
+> **新会话先读这里**：本块是冷启动入口，告诉你"现在在哪、下一步做什么、按序读哪几份"。下方是长期规则；状态细节只在下面列出的活文档里，本块**只做导航、不重复状态**。笔记仓 §1「维护模式：只接用户点名，无点名不开工」依然有效——本块给上下文，不替代用户派活。
+
+- **仓库状态**：公开仓 `main == origin/main == 14dfb80dd3ff9bdc072504a5e15a14c289848152`，工作区干净，最新 tag `v1.7.2`（**禁打 tag**）；笔记仓 `bcdae4e252de13f1b2444d596535c43783883d00`，干净。
+- **一句话现状**：2A/2B、L1.5 自愈环、A+C 泛化闭环、deferred 命名空间修复、GUI 一批 bug 修复均已收口并 push；自愈环已具备五门槛规则族 + ≤3 轮闭环，但 `run_staged_repair_loop` **尚未接进** `convert.py` CLI。
+- **下一步（待用户确认）**：按 CLI 接线执行文档派 T1→T5（重活派子代理、lead 只规划与复核）；真机 GUI 截图留用户；Codex 会话在独立 worktree 并行 R1–R3 目录排序。
+
+**按序必读（接管顺序）**：
+1. `/Users/zhangwenming/Documents/GitHub/new-session-lead-handoff-20261127.md` — 会话交接与首条提示词（总入口，先读）。
+2. `/Users/zhangwenming/Documents/GitHub/codex-2b-status-report-20261126.md` — 总状态报告，§1–§21 按时序，重点看末尾 §19–§21。
+3. `/Users/zhangwenming/Documents/GitHub/selfheal-cli-stitch-verification-plan-20261127.md` — 下一步执行文档（T1–T5，写域互斥、门禁、报告模板）。
+4. `/Users/zhangwenming/Documents/GitHub/selfheal-loop-task-card-20261127.md` + `/Users/zhangwenming/Documents/GitHub/selfheal-loop-acceptance-card-20261127.md` — 自愈环任务卡/验收卡（五门槛、不算通过清单）。
+5. `/Users/zhangwenming/Documents/GitHub/selfheal-independent-test-optimization-codex-handoff-20261127.md`、`/Users/zhangwenming/Documents/GitHub/directory-order-paging-codex-handoff-20261127.md` — 两条 Codex 支线交接。
+6. 笔记仓 `BRIEF.md`（规则正文）、`HOT-STATE.md`、`BACKLOG.md`、`drafts/NEXT-SESSION.md`（活状态源，按任务裁剪读）。
+
+**刷新协议（硬）**：每个会话收口时，lead 必须更新本块（快照日期 / HEAD / 一句话现状 / 下一步 / 必读清单）；**未更新视为本轮未收口**。状态只写判据与数字，不写真作者名 / 题名 / 稿件内容。
+**HEAD 口径（避免自指）**：本块的 HEAD 指**最近一次功能/代码提交**；纯治理文档提交（如 AGENTS.md 自身）不计入——否则每次刷新快照都会让快照里的 HEAD 立即过期、陷入无限自指。这类文档提交后快照 HEAD 保持不变，属正常。
+
+---
+
 > 2026-10-16 起，**软件开发主场在这个仓**（`EditToolBoxStudiesInLogic`）。
 > 作者来稿与人工成品在私有仓 `Studies_in_Logic_Database`（下称**稿件仓**），
 > 案例法/交接说明/冻结基线在私有仓 `EditToolBox-notes`（下称**笔记仓**）。
