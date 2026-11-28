@@ -309,7 +309,8 @@ def install_fake_delivery(*, font_fail: bool = False, compile_fail_stem: str = "
         return out
 
     # B-375 round2：fit_single_page 现在返回 (页数, 错误原因, 单页适配明细) 三元组。
-    def fake_fit(folder, stems, compile_func, log=lambda _s: None):
+    # B-395：deliver 新增 max_pages= 关键字；桩函数吞掉该 additive 参数，保持旧断言语义。
+    def fake_fit(folder, stems, compile_func, log=lambda _s: None, **kwargs):
         return dict(page_map), "", {}
 
     TD.check_windows_fonts, TD.compile_pdfs, TD.fit_single_page = fake_fonts, fake_compile, fake_fit
