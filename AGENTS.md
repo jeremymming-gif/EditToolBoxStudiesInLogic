@@ -1,12 +1,12 @@
 # AGENTS.md —— 工具箱开发者上手（公开仓/开发主场）
 
-## 当前状态快照（CURRENT STATE · 2026-11-28 14:30）
+## 当前状态快照（CURRENT STATE · 2026-11-28 19:56）
 
 > **新会话先读这里**：本块是冷启动入口，告诉你"现在在哪、下一步做什么、按序读哪几份"。下方是长期规则；状态细节只在下面列出的活文档里，本块**只做导航、不重复状态**。笔记仓 §1「维护模式：只接用户点名，无点名不开工」依然有效——本块给上下文，不替代用户派活。
 
-- **仓库状态**：公开仓 `main == origin/main`，工作区干净；HEAD / 最近一次**功能/代码提交** `f6092ada67638f38d9035ce9d3c86d8f4bf8fb71`（R1 编号目录精确同名 TeX 匹配剥离数字排序前缀；此前 `6768e9d` = B-396/R3 两页接线系列、`6c4e486` = B-397 方案 A 清理 publish.py、`92f5d0d` = B-396/R3 主体接线+模块移植、`71aa691` = Windows 规范化路径首修；纯治理快照提交按 HEAD 口径不计入功能 HEAD，本行不随其变动）；最新 tag `v1.7.2`（**禁打 tag**）。笔记仓 HEAD 以笔记仓自身 git 为准（治理仓，收口末条提交后为最新）。
+- **仓库状态**：公开仓 `main == origin/main`（本轮有未提交的治理快照更新）；HEAD / 最近一次**功能/代码提交** `f6092ada67638f38d9035ce9d3c86d8f4bf8fb71`（R1 编号目录精确同名 TeX 匹配剥离数字排序前缀；此前 `6768e9d` = B-396/R3 两页接线系列、`6c4e486` = B-397 方案 A 清理 publish.py、`92f5d0d` = B-396/R3 主体接线+模块移植、`71aa691` = Windows 规范化路径首修；纯治理快照提交按 HEAD 口径不计入功能 HEAD，本行不随其变动）；最新 tag `v1.7.2`（**禁打 tag**）。笔记仓 HEAD 以笔记仓自身 git 为准（治理仓，收口末条提交后为最新）。
 - **一句话现状**：2A/2B、L1.5 自愈环、A+C 泛化闭环、deferred 命名空间修复、GUI 一批 bug 修复均已收口并 push；**A+C 多轮暂存自愈环已接进 `convert.py` CLI 并 push（默认开启，`--no-compile-multiround` 关闭；五门槛仍为发布闸门，≤3 轮；已修 H1 潜伏 bug 与 capture 污染回归）**，见状态报告 §22 与验证计划 §9。**B-397 方案 A 已彻底清除 publish.py 出刊向导入口并 push；B-396/R3 两页目录开关已接进刷新页码入口并 push**——R3 模块（issuepaging_toc/issuepaging F2 动态宏等）移植到新 main，`singlePageToc=true` 默认单页、`false` 允许 ≤2 页、3+ 拒绝回滚；91 期 9 篇隔离副本实测默认 rc=1/2 页失败+000 回滚、false 中英各 2 页 rc=0；CI 终跑 `46111779471` 三 job 全绿。**R1 真机 GUI 发现编号目录（如 `01 San_Zhang`）精确同名 TeX 全判缺失的产品 bug 已修并 push**：`f6092ad` 在 `Engine/slcn/orderdraft.py:_scan` 剥「数字+空白」前缀后匹配裸名（旧式带前缀 tex 兜底、非数字前缀不剥离），91 期 9 篇隔离副本 dry-run 全 ok、DOCX 9 行生成成功；CI `46116580833` 三 job 全绿。
-- **下一步（待用户确认）**：R1/R2/R3 均已收口 push（R3 的 F2 动态页码宏已随 R3 修复、F3 已被 B-395 两页开关取代）；真机原生 GUI/截图留用户；CLI 接线 T1→T5 已全部收口，无待派任务。
+- **下一步（待用户确认）**：R1/R2/R3 均已收口 push（R3 的 F2 动态页码宏已随 R3 修复、F3 已被 B-395 两页开关取代）；真机原生 GUI/截图留用户；CLI 接线 T1→T5 已全部收口。整期装配 UI 重设计（含 B-398）已交诊断、执行和独立验收卡，待用户安排实施 Lead。
 
 **按序必读（接管顺序）**：
 1. `/Users/zhangwenming/Documents/GitHub/new-session-lead-handoff-20261127.md` — 会话交接与首条提示词（总入口，先读）。
@@ -15,6 +15,7 @@
 4. `/Users/zhangwenming/Documents/GitHub/selfheal-loop-task-card-20261127.md` + `/Users/zhangwenming/Documents/GitHub/selfheal-loop-acceptance-card-20261127.md` — 自愈环任务卡/验收卡（五门槛、不算通过清单）。
 5. `/Users/zhangwenming/Documents/GitHub/selfheal-independent-test-optimization-codex-handoff-20261127.md`、`/Users/zhangwenming/Documents/GitHub/directory-order-paging-codex-handoff-20261127.md` — 两条 Codex 支线交接。
 6. 笔记仓 `BRIEF.md`（规则正文）、`HOT-STATE.md`、`BACKLOG.md`、`drafts/NEXT-SESSION.md`（活状态源，按任务裁剪读）。
+7. 整期装配 UI 重设计接手者读笔记仓 `drafts/specs/issue-assembly-ui-design-20261128.md` 及其链接的执行卡、独立验收卡。
 
 **刷新协议（硬）**：每个会话收口时，lead 必须更新本块（快照日期 / HEAD / 一句话现状 / 下一步 / 必读清单）；**未更新视为本轮未收口**。状态只写判据与数字，不写真作者名 / 题名 / 稿件内容。
 **HEAD 口径（避免自指）**：本块的 HEAD 指**最近一次功能/代码提交**；纯治理文档提交（如 AGENTS.md 自身）不计入——否则每次刷新快照都会让快照里的 HEAD 立即过期、陷入无限自指。这类文档提交后快照 HEAD 保持不变，属正常。
