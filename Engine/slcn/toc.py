@@ -1107,14 +1107,17 @@ def template_source(report_path: str, settings: "TocSettings") -> tuple[str, str
 # ── 生成文件 ─────────────────────────────────────────────────────────────
 
 def generate_tex(report_path: str, flag: str, settings: TocSettings,
-                 log=lambda _s: None, stamp: str | None = None) -> str | None:
+                 log=lambda _s: None, stamp: str | None = None, *,
+                 output_dir: str | None = None,
+                 template: TemplateChoice | None = None,
+                 issue_dir: str | None = None) -> str | None:
     """生成一份目录 .tex。`flag` 取 `en` 或 `ch`。返回产物路径（失败返回 None）。"""
     is_chinese = flag == "ch"
     label = "中文" if is_chinese else "英文"
     base_name = "Chinese Content" if is_chinese else "contents"
     date_str = stamp or _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    report_dir = os.path.dirname(os.path.abspath(report_path))
+    report_dir = issue_dir or os.path.dirname(os.path.abspath(report_path))
     log(f"开始生成{label}目录")
 
     # B-375：栏目设置不完整（选了专栏/专辑但四项没填全）必须明确拒绝。
@@ -1157,7 +1160,7 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # ---- 模板（方案 A：继承成品）----
     # 优先级：本期 000 目录里已有的成品 → （显式 templateFolder）→ 上一期 → 内置模板。
     # 解析逻辑单点在 `resolve_template`：界面预览与真正生成必须是同一口径。
-    choice = resolve_template(report_dir, settings, f"{base_name}.tex")
+    choice = template or resolve_template(report_dir, settings, f"{base_name}.tex")
     parts = choice.parts
     log(f"模板来源：{choice.note}")
 
@@ -1264,7 +1267,7 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # B-121 B1：时间戳中间 tex 落在期目录隐藏工作目录，不再散乱到期目录根
     # B-375R D-P13-04：期目录/000 不可写时不再是 traceback + rc1，而是
     # TocWriteError → CLI rc2 + 中文原因（零写：失败前不落半成品）。
-    work_dir = toc_work_dir(report_dir)
+    work_dir = output_dir if output_dir is not None else toc_work_dir(report_dir)
     try:
         os.makedirs(work_dir, exist_ok=True)
     except OSError as exc:

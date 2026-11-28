@@ -33,10 +33,11 @@ def args_of(call: EB.EngineCall) -> list[str]:
 
 
 def test_entries_complete():
-    # B-397：旧出刊向导入口已从引擎删除，ENTRIES 从 13 项减为 12 项。
-    assert len(EB.ENTRIES) == 12
+    # B-397：旧出刊向导入口已从引擎删除；R3 末尾追加改名和刷新入口。
+    assert len(EB.ENTRIES) == 14
+    assert EB.ENTRIES[-2:] == ("renamefolders.py", "refreshpages.py")
     for name in ("convert.py", "checkbib.py", "proofcheck.py", "infocheck.py",
-                 "toc.py", "compileall.py", "mergepdf.py", "cleantemp.py", "dirpush.py"):
+                 "toc.py", "compileall.py", "mergepdf.py", "cleantemp.py"):
         assert name in EB.ENTRIES
 
 

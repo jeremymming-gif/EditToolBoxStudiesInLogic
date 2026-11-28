@@ -20,6 +20,8 @@ from services import toc_settings as TS
 from ui import checks as CK
 from ui import components as C
 from ui import dirpush as DIRPUSH
+from ui import issue_order as ISSUE_ORDER
+from ui import issue_paging as ISSUE_PAGING
 from ui import toc as TOC
 
 MODE_LABELS = {
@@ -162,6 +164,11 @@ def build_params(page, key: str) -> ft.Control:
                          on_change=lambda e: page.app.set_option("compileall_dry_run",
                                                                  e.control.value)),
         ]
+        panel = getattr(page, "_issue_paging_panel", None)
+        if panel is None:
+            panel = ISSUE_PAGING.PagingPanel(page)
+            page._issue_paging_panel = panel
+        rows.append(panel.controls())
     elif key == "merge":
         options = page.app.store.get("options", {}) or {}
         rows += [
@@ -189,6 +196,11 @@ def build_params(page, key: str) -> ft.Control:
         rows += page._cleanup.params()
     elif key == "dirpush":
         rows += dirpush_panel(page).params()
+        panel = getattr(page, "_issue_order_panel", None)
+        if panel is None:
+            panel = ISSUE_ORDER.IssueOrderPanel(page)
+            page._issue_order_panel = panel
+        rows.append(panel.controls())
     engine_note = C.text(f"引擎：{page.app.engine_status.describe()}", t, "caption",
                          t.palette.text_faint)
     engine_note.max_lines = 2
@@ -472,12 +484,14 @@ def _mark_pending(page, results: list[dict], keys: list[str], state: str) -> Non
     page._refresh_steps()
 
 
-async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> list[dict]:
+async def _run_sequence(page, keys: list[str], calls: dict | None = None,
+                        automatic_compile: ISSUE_PAGING.AutomaticCompile | None = None) -> list[dict]:
     """统一执行器：单步与整期共用（pages._run_calls 会 per-step 清日志，不能再用）。
 
     - 默认**不清空日志**，每步前后各写一条段头/段尾（序号 + key + 时间）；
     - 每步把状态与元数据写回 ``page._status[key]``，并保留 ``page._run_results``；
-    - rc >= 2（或启动异常）→ 立即停止，后续标 ``skipped``；rc == 1 → ``warn`` 继续；
+    - rc >= 2（或启动异常）→ 后续标 ``skipped``；普通步骤 rc == 1 → ``warn`` 继续；
+      自动页码刷新发生错误时停止后续步骤。
     - 取消只停当前子进程（kill 由 app.stop_run 负责），后续标 ``cancelled``。
     """
     calls = dict(calls or {})
@@ -495,11 +509,12 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         _step_started(page, key)
         _log_line(page, _section_start(page, key, started_at), "dim")
         started = time.monotonic()
+        automatic = automatic_compile if key == "compileall" else None
         try:
             call = calls.get(key)
             if call is None:
                 # 懒构建：前一步（infocheck）刚产出的报告要让 toc 在这里自动发现。
-                call = build_step_call(page, key)
+                call = automatic.call() if automatic else build_step_call(page, key)
         except (ValueError, RuntimeError) as exc:
             duration = round((time.monotonic() - started) * 1000, 1)
             status = StepStatus("error", exit_code=None, duration_ms=duration,
@@ -516,13 +531,22 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             break
         _result_reset(page)
         CK.before_issue_step(page, key)
-        page.app.begin_run(call)
+        if page.app.begin_run(call) is False:
+            _mark_pending(page, results, keys[position:], "cancelled")
+            break
+
+        def on_line(line: str) -> None:
+            lines.append(str(line))
+            _on_line(page, line)
+
         try:
-            code = await EB.run_call(
-                call, on_line=lambda line: (lines.append(str(line)),
-                                            _on_line(page, line)),
-                on_proc=page.app.track_proc, notes=page.app.notes_repo,
-            )
+            if automatic:
+                code, auto_message = await automatic.panel.compile_automatically(automatic, call, on_line)
+            else:
+                if key == "compileall" and (panel := getattr(page, "_issue_paging_panel", None)):
+                    panel.begin_regular_compile()
+                code = await EB.run_call(call, on_line=on_line, on_proc=page.app.track_proc,
+                                         notes=page.app.notes_repo)
         except Exception as exc:  # noqa: BLE001 — 引擎启动失败也要落状态
             duration = round((time.monotonic() - started) * 1000, 1)
             page.app.finish_run(call, -1)
@@ -560,7 +584,11 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             page.app.finish_run(followup, code)
         duration = round((time.monotonic() - started) * 1000, 1)
         cancelled = bool(getattr(page.app, "cancel_requested", False))
-        if key == "dirpush":
+        stop_sequence = code >= 2 or code < 0 or (automatic is not None and code != 0)
+        if automatic:
+            state = "cancelled" if cancelled else "done" if code == 0 else "error"
+            artifact = ""  # 本轮产物按刷新结果的 writes 列表展示。
+        elif key == "dirpush":
             # BUG-07：rc≠0 / JSON ok=false（含同名覆盖失败）都算失败；产物只认
             # 本次引擎 JSON outputs[] 里真实存在的文件，不再拿日志行末尾猜路径。
             state, artifact = DIRPUSH.absorb(page, lines, code, cancelled)
@@ -586,8 +614,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             # 「last」= 此后不会再有步骤真正运行：成功/告警且后面还有步骤时不算收尾，
             # 失败/取消会在本步后 break，同样按收尾处理（日志 dock 收回，参数区可见）。
             after_step(page, key, call, code, cancelled, artifact,
-                       cancelled or code >= 2 or code < 0
-                       or position == len(keys) - 1,
+                       cancelled or stop_sequence or position == len(keys) - 1,
                        lines=lines, started=wall_started)
         except Exception as exc:  # noqa: BLE001
             _log_line(page, f"步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
@@ -604,8 +631,11 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
                     if key == "merge" else "已取消当前步骤（后续步骤未启动）")
             _result_show(page, text, "warn", artifact)
         else:
-            text = EB.result_text(call.entry, code)
-            level = EB.result_level(call.entry, code)
+            if automatic:
+                text, level = auto_message, _STATE_LEVELS[state]
+            else:
+                text = EB.result_text(call.entry, code)
+                level = EB.result_level(call.entry, code)
             if key == "dirpush":
                 level = _STATE_LEVELS[state]
                 if state == "error" and code == 0:
@@ -619,7 +649,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         if cancelled:
             _mark_pending(page, results, keys[position + 1:], "cancelled")
             break
-        if code >= 2 or code < 0:
+        if stop_sequence:
             _mark_pending(page, results, keys[position + 1:], "skipped")
             break
     page._refresh_steps()
@@ -641,11 +671,17 @@ def _run_all_keys(page, keys) -> tuple[list[str], list[str]]:
     return selected, unknown
 
 
+def _automatic_compile(page) -> ISSUE_PAGING.AutomaticCompile | None:
+    panel = getattr(page, "_issue_paging_panel", None)
+    return panel.automatic_request() if panel is not None else None
+
+
 def run_step(page, key: str) -> None:
     if page.app.running:
         return
+    automatic = _automatic_compile(page) if key == "compileall" else None
     try:
-        call = build_step_call(page, key)
+        call = automatic.call() if automatic else build_step_call(page, key)
     except (ValueError, RuntimeError) as exc:
         page.app.toast(str(exc))
         page.mark("validation_error", step=key, reason=str(exc))
@@ -662,7 +698,7 @@ def run_step(page, key: str) -> None:
             return
         if warning and _dirpush_dry(page):
             page.page.run_task(_show_repo_note, page, warning)
-    _start(page, key, call)
+    _start(page, key, call, automatic)
 
 
 def _dirpush_dry(page) -> bool:
@@ -677,11 +713,12 @@ async def _show_repo_note(page, warning: str) -> None:
         pass
 
 
-def _start(page, key: str, call: EB.EngineCall) -> None:
+def _start(page, key: str, call: EB.EngineCall,
+           automatic: ISSUE_PAGING.AutomaticCompile | None = None) -> None:
     page._status[key] = "running"
     page._refresh_steps()
     # 单步也走统一执行器：日志不再被 pages._run_calls 的 log.clear() 抹掉。
-    page.page.run_task(_run_sequence, page, [key], {key: call})
+    page.page.run_task(_run_sequence, page, [key], {key: call}, automatic)
 
 
 def run_all(page, keys: list[str] | None = None) -> None:
@@ -723,7 +760,8 @@ def run_all(page, keys: list[str] | None = None) -> None:
     # 参数在轮到该步时才构建（infocheck 新产出的报告要让 toc 自动发现）。
     page.mark("run_all_submit", steps=list(selected))
     page._run_results = []
-    page.page.run_task(_run_sequence, page, selected, {})
+    automatic = _automatic_compile(page) if "compileall" in selected else None
+    page.page.run_task(_run_sequence, page, selected, {}, automatic)
 
 
 def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,

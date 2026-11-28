@@ -17,11 +17,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import platform as _plat  # noqa: E402
 from slcn import pdfmerge  # noqa: E402
+from slcn import issuewrite  # noqa: E402
 
 
 def _pdf_page_count(path: str) -> int:
@@ -84,13 +86,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        res = pdfmerge.merge_issue(
-            folder,
-            out=os.path.abspath(os.path.expanduser(args.out)) if args.out else None,
-            nest_outlines=args.nest_outlines,
-            editors_page=args.editors_page,
-            back_cover=args.back_cover,
-        )
+        from slcn.issuepaging_commit import merge_exclusions
+        state = issuewrite.default_state_dir()
+        issue = Path(folder).resolve()
+        with issuewrite.issue_write_lock(Path(folder), state):
+            pending = issuewrite.pending_issue_write(Path(folder), state)
+            if pending:
+                operation = pending.get("operation", "未知操作")
+                recovery_id = pending.get("recovery_id", "")
+                raise RuntimeError(
+                    f"本期存在待恢复写入（{operation}，恢复 ID {recovery_id}）；"
+                    "请先使用对应恢复命令完成恢复"
+                )
+            res = pdfmerge.merge_issue(
+                folder,
+                excluded=merge_exclusions(issue, state),
+                out=os.path.abspath(os.path.expanduser(args.out)) if args.out else None,
+                nest_outlines=args.nest_outlines,
+                editors_page=args.editors_page,
+                back_cover=args.back_cover,
+            )
     except Exception as e:  # noqa: BLE001  写不出去/PDF 坏到没法处理
         print(f"\n❌ 合并失败：{e}\n", file=sys.stderr)
         return 2

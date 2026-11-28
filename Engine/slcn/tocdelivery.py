@@ -39,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from . import paths as _paths
@@ -152,15 +153,18 @@ def newest_timestamped_tex(root: str, stem: str) -> str:
 
 
 def place_tex(root: str, toc_dir: str,
-              stems: tuple[tuple[str, str], ...] = TEX_STEMS) -> dict[str, str]:
+              stems: tuple[tuple[str, str], ...] = TEX_STEMS, *,
+              sources: Mapping[str, str] | None = None) -> dict[str, str]:
     """把期目录根最新两份目录 tex 落位成 `000*/<固定名>.tex`（覆盖旧成品）。
 
     **覆盖旧的、根下带时间戳的 .tex 保留**（下一期继承的是 000 里的成品）。
-    返回 `{语言键: 落位后的路径}`；缺任何一份源 tex 都抛 `DeliveryError`（不做半套交付）。
+    返回 `{语言键: 落位后的路径}`。显式 sources 必须包含全部指定语言。
     """
+    if sources is not None and any(not sources.get(key) for key, _stem in stems):
+        raise DeliveryError("缺少本轮生成的目录 TeX，无法落位")
     placed: dict[str, str] = {}
     for key, stem in stems:
-        src = newest_timestamped_tex(root, stem)
+        src = sources[key] if sources is not None else newest_timestamped_tex(root, stem)
         if not src:
             raise DeliveryError(
                 f"期目录下没有 `{stem}_<时间戳>.tex`（`.toolbox-tmp/` 与期目录根都没有）"

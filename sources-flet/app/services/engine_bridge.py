@@ -9,7 +9,7 @@ argv 语义与旧 Tk 壳 `sources-win/engine.py`（历史文件，2026-11-01 已
   命令 = `[python, Engine/<entry>, ...]`。
 - 打包模式（flet pack onefile）：命令 = `[SLCNEngine.exe, <entry>, ...]`（同目录 sidecar，
   可用 `P2_ENGINE_EXE` / `SLCN_ENGINE_EXE` 覆盖）。
-- 子进程一律 CREATE_NO_WINDOW；stdout/stderr 合并成一条流，逐行回调解码为 UTF-8。
+- Windows 子进程使用 CREATE_NO_WINDOW；流式输出逐行解码为 UTF-8，结构化调用单独解析 stdout。
 - 取消 = 终止整棵进程树（taskkill /T /F；POSIX killpg）。
 """
 from __future__ import annotations
@@ -87,6 +87,8 @@ ENTRIES = (
     "envcheck.py",
     "diagnose.py",
     "dirpush.py",
+    "renamefolders.py",
+    "refreshpages.py",
 )
 
 SUMMARY_MARKERS = (
@@ -1451,6 +1453,51 @@ def dirpush_call(
     return _call("dirpush.py", args, "目录摘要推送")
 
 
+def orderdraft_call(*, issue: str, out_root: str, dry_run: bool = False) -> EngineCall:
+    args = ["--order-draft", "--issue", issue, "--out", out_root]
+    _append_flag(args, "--dry-run", dry_run)
+    return _call("dirpush.py", [*args, "--json"], "读取排序候选" if dry_run else "生成排序决策稿")
+
+
+def renamefolders_call(*, issue: str, order: dict | None = None,
+                       plan_id: str = "", recovery_id: str = "") -> EngineCall:
+    args = ["--issue", issue]
+    if recovery_id:
+        return _call("renamefolders.py", [*args, "--recover", recovery_id, "--json"], "恢复本期改名")
+    if order is None:
+        raise ValueError("请先确认本期稿件清单")
+    args.extend(["--order", "-"])
+    if plan_id:
+        args.extend(["--apply", "--plan-id", plan_id])
+    call = _call("renamefolders.py", [*args, "--json"], "应用改名" if plan_id else "预览改名")
+    call.stdin_text = json.dumps(order, ensure_ascii=False)
+    return call
+
+
+def refreshpages_call(*, issue: str, plan_id: str = "", recovery_id: str = "",
+                      regenerate_toc: bool = False, order_result: str = "",
+                      order_json: str = "", on_change: bool = False,
+                      only: str = "") -> EngineCall:
+    args = ["--issue", issue, "--json"]
+    if recovery_id:
+        return _call("refreshpages.py", [*args, "--recover", recovery_id], "恢复本期页码")
+    if plan_id:
+        args.extend(["--apply", "--plan-id", plan_id])
+    _append_flag(args, "--on-change", on_change)
+    _append_opt(args, "--only", ",".join(part.strip() for part in only.strip().split(",")))
+    _append_flag(args, "--regenerate-toc", regenerate_toc)
+    if order_result or order_json:
+        args.extend(["--order-result", order_result or "-"])
+    if on_change:
+        label = "编译并按需刷新页码" if plan_id else "预览自动页码刷新"
+    else:
+        label = "编译并刷新页码" if plan_id else "预览刷新页码"
+    call = _call("refreshpages.py", args, label)
+    if not order_result and order_json:
+        call.stdin_text = order_json
+    return call
+
+
 # 年度「只含这些期号」的唯一分隔符判据：英文/中文逗号、顿号、任意空白（含全角）。
 # GUI 预览（ui/dirpush.issues_caption）与 argv 都从这里取，禁止各自再写一套。
 _ISSUE_SEPARATORS = re.compile(r"[,，、\s]+")
@@ -2170,10 +2217,24 @@ def kill_tree(proc) -> None:
             pass
 
 
+async def _stream_lines(stream, callback) -> None:
+    # 分块读避免超长 JSON 行触及 readline 上限。
+    buffer = b""
+    while chunk := await stream.read(64 * 1024):
+        buffer += chunk
+        while b"\n" in buffer:
+            raw, buffer = buffer.split(b"\n", 1)
+            if callback is not None:
+                callback(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+    if buffer and callback is not None:
+        callback(buffer.decode("utf-8", errors="replace").rstrip("\r\n"))
+
+
 async def run_call(
     call: EngineCall,
     *,
     on_line=None,
+    on_stderr=None,
     on_proc=None,
     cwd: str | None = None,
     api: dict | None = None,
@@ -2207,7 +2268,8 @@ async def run_call(
         stdin=(asyncio.subprocess.PIPE if stdin_text is not None
                else asyncio.subprocess.DEVNULL),
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+        stderr=(asyncio.subprocess.PIPE if on_stderr is not None
+                else asyncio.subprocess.STDOUT),
         limit=STREAM_LIMIT,
         **kwargs,
     )
@@ -2222,24 +2284,11 @@ async def run_call(
             pass
     try:
         assert proc.stdout is not None
-        # 不用 readline()：它受 StreamReader 的 limit 约束（默认 64KiB），
-        # 引擎 --json 的超长单行会直接抛 ValueError。按块读取后自行切行，
-        # 既没有单行上限，也保证 on_line 每次收到的是完整一行。
-        buffer = b""
-        while True:
-            chunk = await proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            buffer += chunk
-            while b"\n" in buffer:
-                raw, buffer = buffer.split(b"\n", 1)
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if on_line is not None:
-                    on_line(line)
-        if buffer:
-            line = buffer.decode("utf-8", errors="replace").rstrip("\r\n")
-            if on_line is not None:
-                on_line(line)
+        if getattr(proc, "stderr", None) is None:
+            await _stream_lines(proc.stdout, on_line)
+        else:
+            await asyncio.gather(_stream_lines(proc.stdout, on_line),
+                                 _stream_lines(proc.stderr, on_stderr))
         return await proc.wait()
     finally:
         if proc.returncode is None:
@@ -2248,6 +2297,19 @@ async def run_call(
                 await asyncio.wait_for(proc.wait(), timeout=10)
             except asyncio.TimeoutError:
                 pass
+
+
+async def run_json_call(call: EngineCall, *, on_line=None, on_proc=None,
+                        notes: str = "") -> tuple[int, dict | None]:
+    """可取消的结构化命令。单个 stdout JSON；进度及诊断来自 stderr。"""
+    output: list[str] = []
+    code = await run_call(call, on_line=output.append, on_stderr=on_line or (lambda line: None),
+                          on_proc=on_proc, notes=notes)
+    try:
+        result = json.loads("\n".join(output))
+    except ValueError:
+        result = None
+    return code, result if isinstance(result, dict) else None
 
 
 def toc_result(path: str) -> dict:

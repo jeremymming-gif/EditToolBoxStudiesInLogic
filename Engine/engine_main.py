@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把十三个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
+"""把多个 CLI 冻成一个程序的分发入口。
 
     SLCNEngine.exe convert.py   --source "<稿件.docx>" --out "<输出目录>" --compile
     SLCNEngine.exe checkbib.py  --returned "<交回.bib>" --merge-into "<产物 reference.bib>"
@@ -8,13 +8,15 @@
     SLCNEngine.exe envcheck.py  --json --profile exe
     SLCNEngine.exe diagnose.py  --entry convert.py --exit-code 2 --log "<日志>" --json
     SLCNEngine.exe dirpush.py   --issue "<期目录>" --out "<输出根>" --json
+    SLCNEngine.exe renamefolders.py --issue "<期目录>" --order "<顺序.json>" --json
+    SLCNEngine.exe refreshpages.py  --issue "<期目录>" --json
     SLCNEngine.exe --version
 
-**为什么要它**：Windows 上不该要求编辑先装 Python。把十三个入口冻成一个
+**为什么要它**：Windows 上不该要求编辑先装 Python。把各个入口冻成一个
 `SLCNEngine.exe`（PyInstaller `--onefile`），Flet 外壳直接调这个 exe
 （见 `sources-flet/app/services/engine_bridge.py`），用户机器上零依赖。
 
-**为什么不是十三个 exe**：冻结一次要几十 MB，十三个 exe 就是十三份运行时。
+各入口共用一份冻结运行时。
 
 ⚠️ **`ENTRIES` 必须与 Flet 桥的 `sources-flet/app/services/engine_bridge.py: ENTRIES` 逐项一致**，
 而且 `Engine/tools/build_win_sidecar.ps1` 的 `$Entries`、`--hidden-import` 与自检都要按它逐项走。
@@ -47,7 +49,7 @@ sys.path.insert(0, HERE)
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py", "bibdb.py",
-           "envcheck.py", "diagnose.py", "dirpush.py")
+           "envcheck.py", "diagnose.py", "dirpush.py", "renamefolders.py", "refreshpages.py")
 
 USAGE = f"""SLCN 引擎（打包版）
 
@@ -94,9 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         # convert.main() 读的是 sys.argv（不接参数），所以这里替它摆好
         sys.argv = ["convert.py", *rest]
         return convert.main()
-    # 其余入口的签名统一是 `main(argv=None)`（checkbib / mergepdf / cleantemp /
-    # compileall / proofcheck / infocheck / toc / publish / bibdb / envcheck / diagnose），
-    # 所以按名字动态 import 即可 ——
+    # 其余入口的签名统一是 `main(argv=None)`，所以按名字动态 import 即可。
     # 一个一个 if 下去，下次加入口就会漏掉一个（这正是本文件踩过的坑）。
     mod = importlib.import_module(entry[:-3])
     return mod.main(rest)

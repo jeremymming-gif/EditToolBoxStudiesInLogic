@@ -120,6 +120,7 @@ ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "com
                # B-289：`dirpush.py`（目录摘要推送）也是交付 CLI —— mac 包与 Windows
                # 分发器（SLCNEngine.exe）都带它，「目录摘要推送」页两个外壳共用一个入口。
                "dirpush.py",
+               "renamefolders.py", "refreshpages.py",
                "engine_main.py"]
 def _calls_utf8_stdio(tree: ast.AST) -> bool:
     """入口是否调了 `utf8_stdio()` —— 两种写法都认：

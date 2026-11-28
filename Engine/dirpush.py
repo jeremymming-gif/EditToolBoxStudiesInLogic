@@ -6,9 +6,11 @@ r"""目录摘要推送（B-225）：期目录 → 公众号推送文案 docx。
     python3 Engine/dirpush.py --issue <期目录> [--out <输出根>] [--with-en-toc] [--json] [--dry-run]
     python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] \
         [--include-issues 1,2,3] [--out <根>] [--json] [--dry-run]
+    python3 Engine/dirpush.py --order-draft --issue <期目录> --out <期目录外输出根> [--json] [--dry-run]
     python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
 
   · `--issue` 必填：当期模式 = 具体期目录；年度模式 = 该年**任一期**目录（扫其父目录）
+  · `--order-draft` 只读精确同名初排 TeX，输出只有题名和作者的普通 DOCX；必须显式给 `--out`
   · `--check-out-root` 只读预检（供 GUI 复用三仓判据）：不要求 `--issue`、不扫稿件、零写、rc=0；
     `--json` 时 stdout 给 `{"schema":1,"ok":true,"warnings":[...]}`，否则 warning 走 stderr
   · `--out` 省略（单期）= `<期目录>/000 Table of Contents`，docx/设置直接落该目录；
@@ -31,8 +33,10 @@ r"""目录摘要推送（B-225）：期目录 → 公众号推送文案 docx。
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
+from pathlib import Path
 import sys
 import traceback
 
@@ -376,6 +380,84 @@ def _run_annual(args, out_root: str, as_json: bool) -> int:
     return 0
 
 
+def _order_result() -> dict:
+    return {
+        "schema": JSON_SCHEMA,
+        "operation": "order_draft",
+        "status": "blocked",
+        "issue": "",
+        "warnings": [],
+        "rows": [],
+        "docx": None,
+    }
+
+
+def _emit_order_result(result: dict, as_json: bool) -> None:
+    for warning in result["warnings"]:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    if "error" in result:
+        print(f"错误：{result['error']}", file=sys.stderr)
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    elif result["docx"]:
+        label = "计划输出（预演）" if result["status"] == "preview" else "输出"
+        print(f"{label}：{result['docx']}")
+
+
+def _run_order_draft(args) -> int:
+    from slcn.orderdraft import collect_order_rows, order_docx_path
+
+    result = _order_result()
+    result["issue"] = args.issue or ""
+    try:
+        if not args.issue or not args.out:
+            raise _collect.CollectError("--order-draft 需要 --issue 和期目录外的 --out")
+        if (args.annual or args.with_en_toc or args.year is not None
+                or args.include_issues is not None or args.check_out_root is not None):
+            raise _collect.CollectError("--order-draft 不能与当期或年度推送设置、输出预检同用")
+        issue = Path(args.issue).expanduser().resolve(strict=True)
+        result["issue"] = str(issue)
+        docx = order_docx_path(issue, Path(args.out).expanduser())
+        rows = collect_order_rows(issue)
+        result["rows"] = [asdict(row) for row in rows]
+        readable = [row for row in rows if row.state in {"ok", "missing_field"}]
+        reasons = {"missing_tex": "缺少精确同名初排 TeX",
+                   "unreadable": "同名初排 TeX 或稿件目录无法读取",
+                   "unsafe_entry": "稿件目录或同名 TeX 包含链接或其他不安全的文件项"}
+        for row in rows:
+            if row.state == "missing_field":
+                missing = [label for label, value in (("题名", row.title), ("作者", row.authors))
+                           if not value]
+                result["warnings"].append(f"{row.folder}：缺少{'、'.join(missing)}")
+            elif row.state in reasons:
+                result["warnings"].append(f"{row.folder}：{reasons[row.state]}")
+        if not readable:
+            raise _collect.CollectError("本期找不到可读取的精确同名初排 TeX")
+    except (_collect.CollectError, OSError, ValueError) as exc:
+        result["error"] = str(exc)
+        _emit_order_result(result, args.json)
+        return 2
+
+    if not args.dry_run:
+        try:
+            from slcn.pushcopy.render_docx import render_order_draft_docx
+
+            # Recheck the output after reading the issue and before any writes.
+            docx = order_docx_path(issue, docx.parent)
+            render_order_draft_docx(readable, str(docx))
+        except _collect.CollectError as exc:
+            result["error"] = str(exc)
+            _emit_order_result(result, args.json)
+            return 2
+        except Exception as exc:
+            result["error"] = f"无法写出排序稿：{exc}"
+            _emit_order_result(result, args.json)
+            return 1
+    result.update(status="preview" if args.dry_run else "completed", docx=str(docx))
+    _emit_order_result(result, args.json)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in argv
@@ -389,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="输出根（单期缺省=<期目录>/000 Table of Contents；年度缺省=旧默认根）")
     parser.add_argument("--with-en-toc", action="store_true",
                         help="当期模式：显式覆盖语言判定，生成中英文对照目录")
+    parser.add_argument("--order-draft", action="store_true",
+                        help="生成排序决策稿（须给期目录外的 --out）")
     parser.add_argument("--annual", action="store_true", help="年度模式：逐期拼接目录")
     parser.add_argument("--year", type=int, default=None, help="年度模式：年份")
     parser.add_argument("--include-issues", default=None, help="年度模式：只纳入这些期号，逗号分隔")
@@ -398,8 +482,16 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         if as_json and exc.code != 0:
-            _emit(_empty_result("issue", "--dry-run" in argv, "参数错误（见 stderr）"), True)
+            if "--order-draft" in argv:
+                result = _order_result()
+                result["error"] = "参数错误（见 stderr）"
+                _emit_order_result(result, True)
+            else:
+                _emit(_empty_result("issue", "--dry-run" in argv, "参数错误（见 stderr）"), True)
         raise
+
+    if args.order_draft:
+        return _run_order_draft(args)
 
     mode = "annual" if args.annual else "issue"
     try:

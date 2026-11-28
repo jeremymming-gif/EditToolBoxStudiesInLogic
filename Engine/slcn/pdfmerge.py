@@ -109,6 +109,33 @@ def resolve_article_pdf(folder: str, name: str) -> tuple[str, str] | None:
     return None
 
 
+class AmbiguousArticlePdfError(ValueError):
+    """More than one path could represent the same article PDF."""
+
+
+def resolve_issue_article_pdf(folder: str, folder_name: str) -> tuple[str, str] | None:
+    """Resolve the legacy short name, with the full numbered label as a fallback."""
+    short = article_name(folder_name)
+    match = re.fullmatch(r"[0-9]{2} (.+)", folder_name)
+    if match is None:
+        return resolve_article_pdf(folder, short)
+    keys = {loose_key(short), loose_key(match[1].strip())}
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    candidates = sorted(
+        name for name in names
+        if name.lower().endswith(".pdf") and loose_key(os.path.splitext(name)[0]) in keys
+    )
+    if len(candidates) > 1:
+        raise AmbiguousArticlePdfError(f"{folder_name} 有多个正文 PDF：{'、'.join(candidates)}")
+    if candidates:
+        name = candidates[0]
+        return os.path.join(folder, name), name
+    return None
+
+
 def _tex_key(name: str) -> str:
     """比 `loose_key` 再宽一点：**只留字母数字**（撇号、点、括号、下划线全去掉）再小写。
 
@@ -461,6 +488,7 @@ def merge_issue(folder: str,
                 nest_outlines: bool = False,
                 editors_page: bool = False,
                 back_cover: bool = False,
+                excluded: tuple[str, ...] = (),
                 log=print) -> MergeResult:
     """合并一期的 PDF：扉页 → 目录（中文/英文）→ 各篇文章（按序号）→ 封底。
 
@@ -527,6 +555,8 @@ def merge_issue(folder: str,
 
     # ---------- 目录与正文 ----------
     for name in numbered_entries(folder):
+        if name in excluded:
+            continue
         sub = os.path.join(folder, name)
         if name.startswith("000"):
             for fname, title in (("Chinese Content.pdf", "Chinese Content"),
@@ -545,7 +575,7 @@ def merge_issue(folder: str,
             continue
 
         art = article_name(name)
-        found = resolve_article_pdf(sub, art)
+        found = resolve_issue_article_pdf(sub, name)
         log(f"找pdf路径：{os.path.join(sub, art + '.pdf')}\n")
         if not found:
             missing.append(f"{name}/{art}.pdf")

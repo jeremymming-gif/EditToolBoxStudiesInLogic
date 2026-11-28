@@ -715,7 +715,8 @@ def _has_cjk(value: str) -> bool:
 _AUTHORS = ("first", "second", "third", "fourth", "fifth")
 
 
-def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) -> dict:
+def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str],
+             *, identity_only: bool = False) -> dict:
     """按模板变体取中文元数据（三类模板，判据只在这里）。
 
     1. `cn`      —— 中文模板：`\\mytitleCN` / `\\myabstractCN` / `\\my*authorCN`（2026 年第 3 期、2025 年第 3/6 期）
@@ -769,7 +770,7 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
 
     authors: list[str] = []
     affiliations: list[str] = []
-    for i, word in enumerate(_AUTHORS, start=1):
+    for word in _AUTHORS:
         a_key = f"my{word}authorCN" if source == "cn" else f"my{word}author"
         ok, av = val(a_key)
         if not ok:
@@ -788,6 +789,8 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
         cleaned = _clean_author(av)
         if cleaned:
             authors.append(cleaned)
+        if identity_only:
+            continue
         f_key = f"my{word}affiliationCN" if source == "cn" else f"my{word}affiliation"
         f_ok, fv = val(f_key)
         if not f_ok or not fv:
@@ -802,6 +805,39 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
         else:
             affiliations.append("")
 
+    abstract = ""
+    if not identity_only:
+        abstract = _cn_abstract(clean_text, cn_abs_key, source, folder, val,
+                                warnings, missing, placeholder_hits)
+
+    if placeholder_hits:
+        uniq = sorted(set(placeholder_hits))
+        warnings.append(
+            f"{folder}: 成品 tex 里仍是模板占位符（{'、'.join(uniq)}），按缺失处理")
+    if source == "fallback":
+        warnings.append(f"{folder}: 模板无中文字段，中文信息回落英文/通用字段")
+
+    # 主标题 `\mytitle` 与展示用 `title_lines`（source=cn 时是 `\mytitleCN`）分开保存：
+    # 真实英文模板常有中文译名 mytitleCN + 英文主标题 mytitle，语言判定必须看后者。
+    main_title_lines: list[str] = []
+    for part in _split_title_breaks(base_title) if not identity_only else ():
+        cleaned = _clean_title(part)
+        if cleaned:
+            main_title_lines.append(cleaned)
+
+    return {
+        "title_lines": title_lines,
+        "main_title_lines": main_title_lines,
+        "authors": authors,
+        "affiliations": affiliations,
+        "abstract": abstract,
+        "source": source,
+    }
+
+
+
+def _cn_abstract(clean_text: str, cn_abs_key: str, source: str, folder: str, val,
+                 warnings: list[str], missing: list[str], placeholder_hits: list[str]) -> str:
     abstract = ""
     a_ok, a_val = val(cn_abs_key)
     abs_raw_defined, abs_raw_val = _macro_value(clean_text, cn_abs_key)
@@ -823,29 +859,13 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
     if a_val:
         abstract = _clean_abstract(a_val, folder, warnings, missing, _local_macros(clean_text))
 
-    if placeholder_hits:
-        uniq = sorted(set(placeholder_hits))
-        warnings.append(
-            f"{folder}: 成品 tex 里仍是模板占位符（{'、'.join(uniq)}），按缺失处理")
-    if source == "fallback":
-        warnings.append(f"{folder}: 模板无中文字段，中文信息回落英文/通用字段")
+    return abstract
 
-    # 主标题 `\mytitle` 与展示用 `title_lines`（source=cn 时是 `\mytitleCN`）分开保存：
-    # 真实英文模板常有中文译名 mytitleCN + 英文主标题 mytitle，语言判定必须看后者。
-    main_title_lines: list[str] = []
-    for part in _split_title_breaks(base_title):
-        cleaned = _clean_title(part)
-        if cleaned:
-            main_title_lines.append(cleaned)
 
-    return {
-        "title_lines": title_lines,
-        "main_title_lines": main_title_lines,
-        "authors": authors,
-        "affiliations": affiliations,
-        "abstract": abstract,
-        "source": source,
-    }
+def article_title_authors(text: str, folder: str) -> tuple[str, list[str]]:
+    """Read the article's display title and author slots using the push metadata rules."""
+    meta = _cn_meta(text, folder, [], [], identity_only=True)
+    return " ".join(meta["title_lines"]), meta["authors"]
 
 
 _CITE_RE = re.compile(

@@ -40,7 +40,7 @@ def collecting_results():
         _SINK.reset(token)
 
 
-def execute(cc, out_dir, stem, *, run_xelatex=None):
+def execute(cc, out_dir, stem, *, run_xelatex=None, run_biber=None):
     """Keep historical messages, cleanup and tolerated Biber statuses exactly."""
     run_id = uuid.uuid4().hex
     try:
@@ -66,9 +66,12 @@ def execute(cc, out_dir, stem, *, run_xelatex=None):
         if cc.shutil.which(cmd[0]) is None:
             return finish(False, f"找不到命令 {cmd[0]}，请确认已安装 TeX Live", "missing_" + cmd[0])
         from .. import platform as plat, sortlocale as sort
-        result = (run_xelatex(plat.run_no_window, cmd, out_dir, i)
-                  if i != 2 and run_xelatex is not None
-                  else plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False))
+        if i == 2 and run_biber is not None:
+            result = run_biber(plat.run_no_window, cmd, out_dir)
+        elif i != 2 and run_xelatex is not None:
+            result = run_xelatex(plat.run_no_window, cmd, out_dir, i)
+        else:
+            result = plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False)
         if i == 2 and (err := sort.guard_after_biber(out_dir, stem)):
             return finish(False, err, phase, result.returncode)
         if result.returncode == 0:

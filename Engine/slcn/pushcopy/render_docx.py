@@ -16,11 +16,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
+from typing import TYPE_CHECKING
 import zipfile
 
 from lxml import etree
 
 from ..pushcopy import collect as _collect
+
+if TYPE_CHECKING:
+    from ..orderdraft import OrderRow
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 q = lambda tag: "{%s}%s" % (W, tag)
@@ -298,9 +303,9 @@ def _write_docx(root: etree._Element, out_path: str) -> None:
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    tmp = out_path + ".tmp"
+    fd, tmp = tempfile.mkstemp(prefix=".pushcopy-", dir=out_dir or ".")
     try:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
             for name in order:
                 zi = zipfile.ZipInfo(name, date_time=_ZIP_DATE)
                 zi.compress_type = zipfile.ZIP_DEFLATED
@@ -328,6 +333,28 @@ def _insert(body: etree._Element, children: list) -> None:
     at = list(body).index(sect) if sect is not None else len(body)
     for i, ch in enumerate(children):
         body.insert(at + i, ch)
+
+
+def render_order_draft_docx(rows: list[OrderRow], out_path: str) -> None:
+    """Write a plain two-column table for the readable articles."""
+    root = _document_root()
+    body = _body(root)
+    table = etree.Element(q("tbl"))
+    grid = etree.SubElement(table, q("tblGrid"))
+    for width in ("6000", "3000"):
+        etree.SubElement(grid, q("gridCol"), {q("w"): width})
+    values = [("题名", "作者")]
+    values.extend((row.title, "，".join(row.authors)) for row in rows
+                  if row.state in {"ok", "missing_field"})
+    for title, authors in values:
+        table_row = etree.SubElement(table, q("tr"))
+        for value in (title, authors):
+            cell = etree.SubElement(table_row, q("tc"))
+            paragraph = etree.SubElement(cell, q("p"))
+            run = etree.SubElement(paragraph, q("r"))
+            etree.SubElement(run, q("t")).text = value
+    _insert(body, [table])
+    _write_docx(root, out_path)
 
 
 # ── 当期渲染 ───────────────────────────────────────────────────────────

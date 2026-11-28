@@ -166,7 +166,7 @@ New-VersionFile $VersionFileEngine "SLCNEngine" "SLCNEngine（编辑部工具箱
 $Entries = @("convert.py", "checkbib.py", "mergepdf.py",
              "cleantemp.py", "compileall.py", "proofcheck.py",
              "infocheck.py", "toc.py", "bibdb.py",
-             "envcheck.py", "diagnose.py", "dirpush.py")
+             "envcheck.py", "diagnose.py", "dirpush.py", "renamefolders.py", "refreshpages.py")
 
 Write-Host "▶ 冻结引擎 → SLCNEngine.exe…" -ForegroundColor Cyan
 Push-Location $EngineDir

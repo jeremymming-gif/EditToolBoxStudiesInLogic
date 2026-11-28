@@ -57,7 +57,7 @@ def _tail_log_lines(path: str, *, prefix: str = "!", contains: str = "") -> list
     return errors[:3]
 
 
-def compile_pdf_detailed(out_dir: str, stem: str, *, run_xelatex=None):
+def compile_pdf_detailed(out_dir: str, stem: str, *, run_xelatex=None, run_biber=None):
     """编译详细结果；与旧 tuple 入口共用唯一执行器。
 
     阶段与返回码直接来自命令执行，不解析人话错误摘要。
@@ -90,16 +90,16 @@ def compile_pdf_detailed(out_dir: str, stem: str, *, run_xelatex=None):
     """
     import sys
     from .compilefix.l1_detailed import execute
-    return execute(sys.modules[__name__], out_dir, stem, run_xelatex=run_xelatex)
+    return execute(sys.modules[__name__], out_dir, stem, run_xelatex=run_xelatex, run_biber=run_biber)
 
 
-def compile_pdf(out_dir: str, stem: str, *, run_xelatex=None) -> tuple[bool, str]:
+def compile_pdf(out_dir: str, stem: str, *, run_xelatex=None, run_biber=None) -> tuple[bool, str]:
     """保留旧签名、清理策略、消息及二元组返回值。
 
     普通 CLI 与 R3 的 L1 接线在各自的失败适配层。
     convert_stage 仍只调用这个兼容入口，不接 L1。
     """
-    return compile_pdf_detailed(out_dir, stem, run_xelatex=run_xelatex).legacy()
+    return compile_pdf_detailed(out_dir, stem, run_xelatex=run_xelatex, run_biber=run_biber).legacy()
 
 
 

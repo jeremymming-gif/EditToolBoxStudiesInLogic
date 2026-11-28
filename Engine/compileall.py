@@ -21,12 +21,14 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import pdfmerge as _pm  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
 from slcn import report_header as _rh  # noqa: E402
+from slcn import issuewrite  # noqa: E402
 
 
 def _compile_pdf(out_dir: str, stem: str):
@@ -132,6 +134,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n❌ 期目录不存在：{root}\n", file=sys.stderr)
         return 2
 
+    if args.dry_run:
+        return _run_issue(root, args)
+    try:
+        with issuewrite.issue_write_guard(Path(root)):
+            return _run_issue(root, args)
+    except (issuewrite.IssueBusyError, issuewrite.IssuePendingError, OSError) as exc:
+        print(f"\n❌ 编译全部失败：{exc}\n", file=sys.stderr)
+        return 2
+
+
+def _run_issue(root: str, args: argparse.Namespace) -> int:
     print("运行全编译的函数\n")
     print(f"文件夹路径：{root}\n")
 

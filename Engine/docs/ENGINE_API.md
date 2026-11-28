@@ -15,13 +15,13 @@
 ```text
 <仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py
                                                  + cleantemp.py + compileall.py + proofcheck.py + slcn/）
-<仓库>/Engine/engine_main.py   ← 打包用：把 **12 个** CLI 冻成**一个** exe 的分发入口（第 89 条）
+<仓库>/Engine/engine_main.py   ← 打包用：把多个 CLI 冻成一个程序的分发入口
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
 <仓库>/sources-flet/          ← 唯一外壳（Flet；旧 sources-mac/、sources-win/ 已删，历史）
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这 12 个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
+ 发布包通过同一个 `SLCNEngine` 程序调用各入口。外壳传入 `<入口> …`（见 §九·打包）。
 ⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-flet/app/services/engine_bridge.py: ENTRIES` **必须逐项一致**：
 漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页，历史）；
 配对守卫在 `Engine/tests/test_platform.py` (g) 与 `Engine/tests/test_b309_gate_speedup.py` (c)。
@@ -870,7 +870,7 @@ export PYTHONPATH="$PWD:$PWD/vendor"
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持 12 个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+   支持 `ENTRIES` 所列入口及 `--version`、`--help`。不认识的入口打印用法并退出 2。
   `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`Engine/tools/build_win_sidecar.ps1`），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；Flet 壳由 `sources-flet/packaging/` 另冻 exe（旧壳已删，历史：当年 `sources-win/engine.py: frozen_engine_exe()` 会先找它）。
@@ -1089,6 +1089,51 @@ python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
   单期留空沿用 000 默认不触发该确认。
 - **形态差异**：mac 可勾「同时生成年度汇总」→ 顺序跑两趟（当期 → 年度，`--with-en-toc` 只作用于当期）；
   Windows 一次只跑一个模式（模式单选），不照搬两趟。
+
+
+## 十六、整期排序、改名和页码刷新
+
+外壳把整期根目录传入引擎，通过 `--json` 读取预览、应用或恢复结果。运行进度走 stderr，业务结果走 stdout，后者为单个 JSON 对象。结果含 `schema`、`operation`、`status`、`issue` 和 `warnings`。只读预览成功、完成或无变化返回 0，输入或前置条件拒绝返回 2，执行失败或恢复异常返回 1。恢复信息由引擎提供，外壳展示操作结果和恢复入口。
+
+### 排序决策稿
+
+```bash
+python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --dry-run --json
+python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --json
+```
+
+`ISSUE` 指整期根目录，`OUT` 指期目录外的输出根。预览列出 `docx` 和 `rows`，并检查真实输出位置。每条 `rows` 含 `folder`、`title`、`authors`、`state`。引擎按实际拼写读取直属稿件目录下精确同名的常规 TeX。能读取的稿件在 Word 表格里各占一行，显示题名和作者。`state` 区分可用、字段缺失、主 TeX 缺失、无法读取和不安全的目录项。写稿只生成排序稿 DOCX。
+
+### 篇序和目录改名
+
+```bash
+python3 Engine/renamefolders.py --issue "$ISSUE" --order "$ORDER" --json
+python3 Engine/renamefolders.py --issue "$ISSUE" --order "$ORDER" --apply --plan-id "$PLAN_ID" --json
+python3 Engine/renamefolders.py --issue "$ISSUE" --recover "$RECOVERY_ID" --json
+```
+
+`ORDER` 是顺序清单路径，也可写 `-` 从标准输入读取 UTF-8 JSON。对象包含 `schema: 1`、`ordered`（按新篇序排列的现有直属目录名）和 `excluded`（显式排除的直属目录名）。预览列出改名和冲突，`PLAN_ID` 取对应预览的 `plan_id`。应用时在同一期写锁内复核位置、身份和目标占用，把目录改为 `NN 原主体`，序号为 01–99。只改同一父目录内的目录名。结果 `renames` 提供 `old`、`new` 和 `main_tex`。需恢复时，`RECOVERY_ID` 取该期执行结果的 `recovery_id`。
+
+### 编译并刷新页码
+
+```bash
+python3 Engine/refreshpages.py --issue "$ISSUE" --json
+python3 Engine/refreshpages.py --issue "$ISSUE" --apply --plan-id "$PLAN_ID" --json
+python3 Engine/refreshpages.py --issue "$ISSUE" --on-change --only 1,3 --json
+# 预览后将相同的 --on-change 与 --only 选项带入应用
+python3 Engine/refreshpages.py --issue "$ISSUE" --on-change --only 1,3 --apply --plan-id "$PLAN_ID" --json
+# 可选：把 renamefolders 的成功结果 JSON 经 stdin 传入
+python3 Engine/refreshpages.py --issue "$ISSUE" --order-result - --json < rename-result.json
+python3 Engine/refreshpages.py --issue "$ISSUE" --recover "$RECOVERY_ID" --json
+```
+
+预览列出已有页码、拟更新的主 TeX 与正文 PDF、编译范围和目录策略。`PLAN_ID` 取对应预览的 `plan_id`。`--regenerate-toc` 显式选择重生成目录；`--order-result` 接受改名操作的成功 JSON 文件，写 `-` 时从 stdin 读取。该结果须属于同一期并覆盖全部现有篇目；排除项会沿用到页码刷新。预览和应用须使用完全相同的选项与改名结果字节，否则计划 ID 不匹配。正文从第 1 页开始，按编译得到的物理页数累计。应用在隔离工作区编译，稳定后才更新原位页码 TeX、正文 PDF 和本期目录产物，结果提供旧页段、新页段、目录产物和复编状态。写锁和恢复记录默认放在用户目录 `.editorial-toolbox/issue-write`；可用 `SLCN_ISSUE_STATE_DIR` 指定期目录之外的状态根。存在未完成写入时须先按结果提供的 `recovery_id` 恢复，恢复模式不能与刷新参数并用。
+
+目录刷新与目录生成共用期目录的 `目录设置.json`：`singlePageToc` 缺失或为 `true` 时要求每份 1 页；为 `false` 时允许每份 1–2 页并跳过单页压缩。保留手调目录时仅校验页数；重生成时调用同一页数适配入口。超限在发布前拒绝，保留原有 000、正文 TeX 和 PDF。成功且本轮刷新目录的 JSON 附带 `maxPages`、`compressionSkipped`。
+
+页码声明只额外允许两个精确动态形式：`\mylastpage` 的 `\pageref*{LastPage}`、`\mypages` 的 `\getpagerefnumber{LastPage}`。引擎仅在暂存副本中将其整数化并强制整期刷新，其他非整数宏仍拒绝。
+
+CLI 受控编译通过 `--on-change` 启用；`--only <序号列表>` 仅能与它合用，不指定时检查全期。预览和应用须保持 `--on-change`、`--only`、改名结果及目录选项一致，计划 ID 会绑定这些输入。引擎比较所选篇新编 PDF 的物理页数与现有页码声明：两者均可信且未变时只发布所选 PDF，目录不变；页数变化、旧 PDF 不可信或页码声明不一致时转为整期刷新并更新目录。Flet 为本期明确启用「编译后自动刷新页码」后，编译步骤依次运行该模式的预览与应用，不先执行旧编译入口。自动刷新失败会停止后续装配步骤。发布中断时按结果提供的 `recovery_id` 恢复。
 
 ---
 

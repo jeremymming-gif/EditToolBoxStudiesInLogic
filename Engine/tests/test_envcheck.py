@@ -527,8 +527,9 @@ check("(h) engine_main.ENTRIES 前 9 项与既有顺序逐项一致（C8）",
           "convert.py", "checkbib.py", "mergepdf.py", "cleantemp.py", "compileall.py",
           "proofcheck.py", "infocheck.py", "toc.py", "bibdb.py"),
       repr(_dispatcher.ENTRIES))
-check("(h) 第 10 项 envcheck.py、第 11 项 diagnose.py、第 12 项 dirpush.py（都在末尾追加）",
-      _dispatcher.ENTRIES[9:] == ("envcheck.py", "diagnose.py", "dirpush.py"),
+check("(h) envcheck.py、diagnose.py、dirpush.py 保序，随后追加改名和刷新入口",
+      _dispatcher.ENTRIES[9:] == (
+          "envcheck.py", "diagnose.py", "dirpush.py", "renamefolders.py", "refreshpages.py"),
       repr(_dispatcher.ENTRIES))
 
 with tempfile.TemporaryDirectory() as td:

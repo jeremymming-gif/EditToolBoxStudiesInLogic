@@ -37,10 +37,12 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import platform as _plat        # noqa: E402
+from slcn import issuewrite              # noqa: E402
 from slcn import toc as _toc              # noqa: E402
 from slcn import tocdelivery as _td       # noqa: E402
 from slcn import toctemplate as _tt       # noqa: E402
@@ -167,6 +169,18 @@ def main(argv: list[str] | None = None) -> int:
     if not os.path.isfile(report):
         print(f"\n❌ 找不到检查报告：{report}\n", file=sys.stderr)
         return 2
+
+    if args.preview:
+        return _run_report(report, args)
+    try:
+        with issuewrite.issue_write_guard(Path(report).parent):
+            return _run_report(report, args)
+    except (issuewrite.IssueBusyError, issuewrite.IssuePendingError, OSError) as exc:
+        print(f"\n❌ 目录生成失败：{exc}\n", file=sys.stderr)
+        return 2
+
+
+def _run_report(report: str, args: argparse.Namespace) -> int:
     report_dir = os.path.dirname(report)
 
     # ⚠️ 先确认"这确实是一份《信息检查》报告"：从前喂错文件（例如把某篇 .tex 当报告）

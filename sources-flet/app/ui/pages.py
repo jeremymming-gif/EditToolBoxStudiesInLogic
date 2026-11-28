@@ -2649,7 +2649,15 @@ class IssuePage(BasePage):
             # 其它=失败）；结果卡刷新失败不影响步骤状态。
             self._merge_finish(int(code))
             return
-        if key != "compileall" or code != 0:
+        if key != "compileall":
+            return
+        panel = getattr(self, "_issue_paging_panel", None)
+        if panel is not None and panel.auto_run_result:
+            # 自动编译的文件与页段在刷新面板中。保留该区块供本轮核对。
+            if self.selected == "compileall":
+                self._rebuild_detail()
+            return
+        if code != 0:
             return
         self._set_expanded("merge")
         if self._view_of_step(self.selected) == "produce":
@@ -2668,6 +2676,10 @@ class IssuePage(BasePage):
         if key == "merge":
             self._merge_finish(-1, cancelled=True)
             return
+        if key == "compileall":
+            panel = getattr(self, "_issue_paging_panel", None)
+            if panel is not None and panel.auto_run_result and self.selected == "compileall":
+                self._rebuild_detail()
         if key != "toc":
             return
         # Lead round3 task-19：取消同样把结束态归属记到当时解析出的当前报告，
@@ -2879,6 +2891,10 @@ class IssuePage(BasePage):
         self._run_step("merge")
 
     def _confirm_stop(self, message: str = "已完成步骤保留，当前步标记已取消。") -> None:
+        call = getattr(self.app, "current_call", None)
+        if getattr(call, "entry", "") == "refreshpages.py":
+            message = "停止后请重新预览核对本期。若文件发布中断，预览会显示恢复入口。"
+
         def _go() -> None:
             self.app.stop_run()
         C.confirm(self.page, self.t, title="停止当前步骤？", message=message,
@@ -3013,7 +3029,9 @@ class IssuePage(BasePage):
         elif key == "toc":
             parts.append(self._toc_result_box())
         elif key == "compileall":
-            parts.append(self._compile_result())
+            panel = getattr(self, "_issue_paging_panel", None)
+            if panel is None or not panel.auto_run_result:
+                parts.append(self._compile_result())
         elif key == "merge":
             # P04 R05：结果卡原地刷新（on_step_started/_feed_merge/_merge_finish
             # 都通过 _merge_box 更新），不必等整页重建。
@@ -3850,6 +3868,8 @@ class IssuePage(BasePage):
         self._status = {step["key"]: "idle" for step in self.STEPS}
         # BUG-07：换期清掉上一期的推送结果，避免旧 JSON 串到新一期。
         self._dirpush_payload = None
+        self._issue_order_panel = None
+        self._issue_paging_panel = None
         # 目录面板缓存里有上一期的栏目表/预览；重建，避免带进新一期。
         self._toc_panel = None
         if clear_sections:
@@ -4297,7 +4317,8 @@ class IssuePage(BasePage):
         if len(self._log_buffer) > self.LOG_LIMIT:
             del self._log_buffer[:len(self._log_buffer) - self.LOG_LIMIT]
         self._log_lines += 1
-        if self.selected == "compileall":
+        call = getattr(self.app, "current_call", None)
+        if self.selected == "compileall" and getattr(call, "entry", "") != "refreshpages.py":
             self._feed_compile(text)
         # P04 R05-3：merge 结果按「这条日志属于哪一步」归属，而不是按用户此刻看的
         # 页面。运行中切到别的步骤时契约行/missing/warning 仍进本次合并结果；
@@ -4564,6 +4585,12 @@ class IssuePage(BasePage):
     def refresh_running(self) -> None:
         self._sync_issue_lock()
         self._sync_stop_action()
+        order_panel = getattr(self, "_issue_order_panel", None)
+        if order_panel is not None:
+            order_panel.refresh_running()
+        paging_panel = getattr(self, "_issue_paging_panel", None)
+        if paging_panel is not None:
+            paging_panel.refresh_running()
         disabled, reason = self._step_run_state()
         for btn in self._step_run_btns.values():
             try:

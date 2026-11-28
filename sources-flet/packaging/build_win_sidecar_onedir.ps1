@@ -99,7 +99,8 @@ try {
     foreach ($e in @("convert.py", "checkbib.py", "mergepdf.py",
                      "cleantemp.py", "compileall.py", "proofcheck.py",
                      "infocheck.py", "toc.py", "bibdb.py",
-                     "envcheck.py", "diagnose.py", "dirpush.py")) {
+                     "envcheck.py", "diagnose.py", "dirpush.py",
+                     "renamefolders.py", "refreshpages.py")) {
         $PyArgs += @("--hidden-import", [IO.Path]::GetFileNameWithoutExtension($e))
     }
     $PyArgs += @("--add-data", "$TplSrc;编辑笔记\模板文件", "engine_main.py")
