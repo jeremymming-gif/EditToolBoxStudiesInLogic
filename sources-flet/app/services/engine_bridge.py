@@ -83,7 +83,6 @@ ENTRIES = (
     "proofcheck.py",
     "infocheck.py",
     "toc.py",
-    "publish.py",
     "bibdb.py",
     "envcheck.py",
     "diagnose.py",

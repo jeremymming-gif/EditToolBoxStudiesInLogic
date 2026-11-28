@@ -73,7 +73,7 @@ def _write_compile_report(root: str, total: int, ok: int, fail: int,
 def compile_tex_xelatex(folder: str, stem: str, runs: int = 2) -> tuple[bool, str]:
     """只跑 `xelatex`（**不跑 biber**），给没有参考文献的 .tex 用。
 
-    谁用：`publish.py` 第 ④ 步把这一期的目录 .tex 编译成 `000*/…pdf`（目录没有参考文献，
+    谁用：`slcn/tocdelivery.py` 的 `deliver()`（由 `toc.py --compile` 唯一入口调用）把这一期的目录 .tex 编译成 `000*/…pdf`（目录没有参考文献，
     走 `convert.compile_pdf` 会白跑 biber）。口径与 `convert.compile_pdf` 一致：
     先清上一轮中间产物（复用它的 `clean_stale_compile_artifacts`，否则第一次 xelatex
     会读旧 `.aux/.out/.toc`）、`-interaction=nonstopmode`、失败回显 `.log` 里的 `!` 摘要。

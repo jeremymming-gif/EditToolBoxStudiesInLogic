@@ -108,7 +108,7 @@ check("(a) `engine_main.py --version` 在窄编码控制台下不崩、且版本
 
 # 静态守卫：**每一个**交付入口都要调 utf8_stdio()，别只修被抓到的那一个。
 ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "compileall.py",
-               "publish.py", "cleantemp.py", "infocheck.py", "toc.py",
+               "cleantemp.py", "infocheck.py", "toc.py",
                # 第 132 条：`bibdb.py` 两个平台**都**交付（mac 包 + Windows 分发器）。
                # 从前它被当成「mac 专属」，本测试还专门守卫「不进 Windows ENTRIES」——
                # Windows 版引用库做完后那条守卫必须反过来，否则一改 ENTRIES 就红。
@@ -371,13 +371,8 @@ print("\n── (g) 打包 dispatcher 的入口表（Windows 包只认表里的�
 import engine_main as _em  # noqa: E402  模块级只定义 ENTRIES/USAGE，没有副作用
 
 CLIS = [f for f in ENTRY_FILES if f != "engine_main.py"]
-# ── 打包白名单守卫（2026-10-17 macOS 实例测试；批108 迁到 Windows sidecar）──
-# 旧壳时期 `build.sh` 打包 Engine 用的是**白名单**：2026-10-17 新增 `publish.py` 时只改了
-# `engine_main.ENTRIES`、漏了 build.sh → v1.0.10 的 mac 包里「本期出刊」直接报
-# 「未找到出刊编排引擎 Engine/publish.py」（界面在、引擎不在）。
-# ⚠️ 这与案例 106 同型：`gen_docs` 的「App 包内一致性」只比对**已有文件**是否一致，
-#    **发现不了"少了一个文件"**。批108 删旧壳后，打包白名单的守卫迁到
-#    `Engine/tools/build_win_sidecar.ps1` 的 `$Entries`（Windows sidecar 的唯一入口表）。
+# ── 打包白名单守卫：唯一 dispatcher 与 sidecar 入口表保持一致 ──
+# `engine_main.ENTRIES` 是 CLI 的单一入口表；Windows sidecar 必须按相同顺序收录它们。
 _SIDECAR_PS = ENGINE / "tools" / "build_win_sidecar.ps1"
 check("(g) 引擎 sidecar 打包脚本在仓内（旧 build.sh 白名单守卫的接替者）",
       _SIDECAR_PS.is_file(), str(_SIDECAR_PS))
@@ -410,7 +405,7 @@ check("(g) `ENTRIES` 里每个名字都真的有对应文件（防写错名）",
 # utf8_stdio、open() 编码、sidecar 白名单），也必须在 Flet 桥与分发器 `ENTRIES` 里。
 # ⚠️ 从前本测试钉的是「bibdb.py 刻意**不进** Windows ENTRIES（引用库只做 mac）」；
 #    Windows 版做完后那条守卫必须删掉/反转 —— 留着的话，谁把 bibdb.py 加进分发器
-#    都会被测试判红，而漏加的后果是「引用库」5 页全废（与 publish.py 同型）。
+#    都会被测试判红，而漏加的后果是「引用库」5 页全废。
 _MAC_ONLY_CLI = "bibdb.py"          # 变量名保留历史：批108 起两壳都交付
 try:
     _gd = (ENGINE / "tools" / "gen_docs.py").read_text(encoding="utf-8")
@@ -1395,21 +1390,24 @@ if _IA_MAP_SRC.is_file():
           f"issue_views={_issue_view_keys}｜routes={len(_routes)}｜orphan={_orphan}")
 
 # ─────────────────────────────────────────────────────────────────────────
-# (o) 分发不泄漏：Flet 外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）
-#
-# 口径（根 `README.md`「一个引擎，两个外壳」+「Engine/ 引擎（Python，唯一一份逻辑）」；
-# `Engine/docs/ENGINE_API.md` 把 `publish.py` 标成 **CLI-only** —— 2026-10-21 第 71 批
-# B-116 起 GUI「本期出刊」页已删，逻辑只在引擎里）。批108 删旧壳后扫描集换成
-# `sources-flet/app/**/*.py`，**排除** `app/services/engine_bridge.py`：那是分发器，
-# 它的 `ENTRIES` **必须**含 publish.py（跨平台交付事实，由 (g) 组与 (c) 组守）。
-# 命中 = `\bpublish\.py\b` 或当年的 GUI 绑定符号 `PublishTab` / `PublishFeature` /
-# `publish_call`（任一出现 = 「本期出刊」页被接回外壳，B-227 删页后的回潮）。
+# (o) 单一发布入口：Engine/** 与 sources-flet/** 不留旧 CLI 名称（静态扫描）。
+# 扫描 Python、PowerShell 与 Markdown 文件，排除依赖、产物、虚拟环境和缓存目录。
 _NOLEAK_ROOT = ENGINE.parent
-_NOLEAK_APP_DIR = _NOLEAK_ROOT / "sources-flet" / "app"
-_NOLEAK_BRIDGE = _NOLEAK_APP_DIR / "services" / "engine_bridge.py"
-_NOLEAK_FILES = ([p for p in sorted(_NOLEAK_APP_DIR.rglob("*.py")) if p != _NOLEAK_BRIDGE]
-                 if _NOLEAK_APP_DIR.is_dir() else [])
-_NOLEAK_RE = re.compile(r"\bpublish\.py\b|PublishTab|PublishFeature|publish_call")
+_NOLEAK_RE = re.compile(r"\bpublish\.py\b")
+_NOLEAK_EXTS = {".py", ".ps1", ".md"}
+_NOLEAK_EXCLUDED = {"vendor", "out", ".venv", "__pycache__"}
+_NOLEAK_FILES: list[pathlib.Path] = []
+for _base in (ENGINE, _NOLEAK_ROOT / "sources-flet"):
+    if not _base.is_dir():
+        continue
+    for _p in sorted(_base.rglob("*")):
+        if not _p.is_file() or _p.suffix.lower() not in _NOLEAK_EXTS:
+            continue
+        _rel_parts = _p.relative_to(_base).parts
+        if any(_part in _NOLEAK_EXCLUDED for _part in _rel_parts):
+            continue
+        _NOLEAK_FILES.append(_p)
+
 _no_leaks: list[str] = []
 for _p in _NOLEAK_FILES:
     try:
@@ -1418,30 +1416,19 @@ for _p in _NOLEAK_FILES:
         _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}: <读失败 {_e}>")
         continue
     for _ln, _line in enumerate(_txt.splitlines(), 1):
-        _m = _NOLEAK_RE.search(_line)
-        if _m:
-            _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}:{_ln}:{_m.group(0)}")
+        if _NOLEAK_RE.search(_line):
+            _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}:{_ln}")
 
-check("(o1) Flet 外壳零 publish.py 绑定：`sources-flet/app/**/*.py`"
-      "（排除分发器 services/engine_bridge.py）里不许出现 publish.py / PublishTab / "
-      "PublishFeature / publish_call —— 外壳只许 CLI 起引擎，不许把删掉的「本期出刊」页接回来",
+check("(o1) Engine/** 与 sources-flet/** 的 .py/.ps1/.md 文件中零旧 CLI 名称字面残留",
       not _no_leaks,
-      f"扫 {len(_NOLEAK_FILES)} 个外壳源文件｜命中 {len(_no_leaks)} 处：{_no_leaks[:5]}")
+      f"扫描 {len(_NOLEAK_FILES)} 个文件｜命中 {len(_no_leaks)} 处：{_no_leaks[:5]}")
 
-# (o2) 反向防僵化：上面那条**必须真有文件可扫**，否则「零命中」是真空绿（缺目录 → 红，不 SKIP）。
-#     另钉住分发引擎目录仍在原地：Flet 壳（`sources-flet/app/services/engine_bridge.py`）
-#     与 sidecar 共用同一份 `Engine/slcn`；提示词写作 `Engine/native/slcn`，实测只有 `Engine/slcn`。
+# (o2) 防真空绿：扫描文件集非空，且 Engine/slcn 目录非空。
 _NOLEAK_DIST = ENGINE / "slcn"
-_O2_APP_N = len(_NOLEAK_FILES)
-_O2_DIST_N = len(sorted(_NOLEAK_DIST.glob("*.py"))) if _NOLEAK_DIST.is_dir() else 0
-_O2_BRIDGE_OK = (_NOLEAK_BRIDGE.is_file()
-                 and "publish.py" in _NOLEAK_BRIDGE.read_text(encoding="utf-8"))
-check("(o2) 扫描范围非空（防 (o1) 真空绿）：Flet app 目录在、>0 个 .py、分发器存在且含 "
-      "publish.py、分发引擎目录 Engine/slcn 存在且非空",
-      _NOLEAK_APP_DIR.is_dir() and _O2_APP_N > 0 and _O2_BRIDGE_OK and _O2_DIST_N > 0,
-      f"app={'有' if _NOLEAK_APP_DIR.is_dir() else '缺'}{_O2_APP_N} 文件｜"
-      f"bridge={'有' if _NOLEAK_BRIDGE.is_file() else '缺'} 含 publish.py={_O2_BRIDGE_OK}｜"
-      f"slcn={_O2_DIST_N} 个 .py｜合计扫 {len(_NOLEAK_FILES)}")
+_O2_DIST_N = len(list(_NOLEAK_DIST.iterdir())) if _NOLEAK_DIST.is_dir() else 0
+check("(o2) 扫描文件集非空且 Engine/slcn 非空（防 (o1) 真空绿）",
+      bool(_NOLEAK_FILES) and _O2_DIST_N > 0,
+      f"扫描 {len(_NOLEAK_FILES)} 个文件｜Engine/slcn={_O2_DIST_N} 项")
 
 # ── (p) B300-03：子进程「不弹控制台窗口」平台口径 + soffice 命令行入口 ──────
 _NW = P.no_window_kwargs()

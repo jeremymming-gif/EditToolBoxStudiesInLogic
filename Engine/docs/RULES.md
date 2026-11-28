@@ -1129,7 +1129,7 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
    91 期仍报单页适配失败；`false` = 允许 1–2 页，**跳过行距压缩**，只校验落位后的页数 ≤ 2
    （9 篇稿件 + 4 篇书评的隔离副本中英各 2 页即成功），任一份 ≥ 3 页按既有错误风格报错并走同一快照回滚 `000*`（不半交付）。
    `fit_single_page(..., max_pages=1)`：默认 1 保持旧行为；`max_pages=2` 才走两页分支。
-   两个已编译入口（`toc.py --compile` / `publish.py` ④）共用 `deliver()` 从同一 `TocSettings` 读字段，
+   唯一编译入口 `toc.py --compile` 调用 `deliver()` 从同一 `TocSettings` 读字段，
    结果 JSON 在编译时 additive 增 `maxPages` / `compressionSkipped`；未编译 / `--preview` 不出现。
    （R3 初排独立分页刷新候选未在基线冻结，不属本判据覆盖范围。）
 

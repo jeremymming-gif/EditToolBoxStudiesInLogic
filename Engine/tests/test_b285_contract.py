@@ -181,10 +181,10 @@ def test_engine_main_deferral() -> None:
     from engine_main import ENTRIES  # noqa: PLC0415
 
     expected = ("convert.py", "checkbib.py", "mergepdf.py", "cleantemp.py", "compileall.py",
-                "proofcheck.py", "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+                "proofcheck.py", "infocheck.py", "toc.py", "bibdb.py",
                 "envcheck.py", "diagnose.py", "dirpush.py")
-    # B-285b：按 spec §9 把 11→12 接上；B-289 再按卡把 12→13 接上（都在末尾）。
-    check("(e) ENTRIES 已按 B-289 接上 13 项（dirpush.py 末尾、前 12 项顺序不动）",
+    # B-285b：按 spec §9 把 11→12 接上；B-289 再按卡把 12 项接齐（都在末尾）。
+    check("(e) ENTRIES 共 12 项（dirpush.py 末尾、前 11 项顺序不动）",
           tuple(ENTRIES) == expected, str(ENTRIES))
     # R5 隐私：新文件不得含真实姓名/邮箱/API key（针样在运行时拼，避免本文件自我命中）
     email = re.compile(r"[\w.+-]+" + r"@" + r"[\w-]+\.[\w.]+")

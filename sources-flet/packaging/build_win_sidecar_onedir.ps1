@@ -98,7 +98,7 @@ try {
                 "--version-file", $VersionFile)
     foreach ($e in @("convert.py", "checkbib.py", "mergepdf.py",
                      "cleantemp.py", "compileall.py", "proofcheck.py",
-                     "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+                     "infocheck.py", "toc.py", "bibdb.py",
                      "envcheck.py", "diagnose.py", "dirpush.py")) {
         $PyArgs += @("--hidden-import", [IO.Path]::GetFileNameWithoutExtension($e))
     }

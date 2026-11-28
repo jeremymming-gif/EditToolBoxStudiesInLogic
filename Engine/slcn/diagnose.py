@@ -228,26 +228,26 @@ _RULES: tuple[_Rule, ...] = (
         r"未找到\s*xelatex", r"未找到\s*biber", r"xelatex[^\n]{0,40}not found",
         r"biber[^\n]{0,40}not found", r"请确认已安装", r"TeX Live 没有装",
         r"No such file or directory: '[^']*xelatex'",
-    ), ("compileall.py", "convert.py", "publish.py")),
+    ), ("compileall.py", "convert.py")),
     _Rule("compile_bib_error", 78, (
         r"\bbiber\b", r"\bbibtex\b", r"I couldn't open database file",
         r"Biber error", r"\.bbl", r"参考文献(?:编译|处理)失败", r"run biber failed",
         r"Found no \\(?:citation|bibdata|bibstyle)",
-    ), ("compileall.py", "convert.py", "publish.py")),
+    ), ("compileall.py", "convert.py")),
     _Rule("compile_tex_error", 74, (
         r"! LaTeX Error", r"! Undefined control sequence", r"! Package [^\n]*Error",
         r"! Missing [^\n]*", r"! Emergency stop", r"! Extra \}", r"! Argument of",
         r"xelatex 第", r"LaTeX 编译失败", r"l\.\d+", r"编译未通过",
-    ), ("compileall.py", "convert.py", "publish.py")),
+    ), ("compileall.py", "convert.py")),
     _Rule("compile_no_pdf", 72, (
         r"未生成\s*PDF", r"没有生成\s*PDF", r"找不到[^\n]*\.pdf", r"no pdf",
         r"PDF (?:不存在|缺失|missing)", r"没有产出",
-    ), ("compileall.py", "convert.py", "publish.py")),
+    ), ("compileall.py", "convert.py")),
     _Rule("template_unavailable", 68, (
         r"找不到模板", r"模板[^\n]{0,16}(?:不可用|缺失|不存在|损坏)",
         r"template[^\n]{0,20}(?:missing|not found)", r"\.sty[^\n]{0,20}(?:找不到|缺失|not found)",
         r"SLCN-MIX", r"样式文件[^\n]{0,16}(?:缺失|找不到)",
-    ), ("convert.py", "compileall.py", "toc.py", "publish.py")),
+    ), ("convert.py", "compileall.py", "toc.py")),
     _Rule("source_empty", 70, (
         r"源文件是空", r"空文件", r"文件是空的", r"没有内容", r"0 字节",
         r"empty file", r"file is empty", r"size\s*[:=]\s*0\b",
@@ -273,13 +273,13 @@ _RULES: tuple[_Rule, ...] = (
         r"非本工具[^\n]{0,12}文件", r"原子替换[^\n]{0,12}(?:失败|冲突)",
         r"输出[^\n]{0,12}冲突", r"同名文件[^\n]{0,16}(?:已存在|冲突)",
         r"目标文件已存在",
-    ), ("convert.py", "compileall.py", "mergepdf.py", "toc.py", "publish.py")),
+    ), ("convert.py", "compileall.py", "mergepdf.py", "toc.py")),
     _Rule("report_read_error", 58, (
         r"报告[^\n]{0,12}(?:读取|解析|损坏)失败", r"报告文件[^\n]{0,16}(?:不存在|损坏|解析)",
         r"report[^\n]{0,20}(?:corrupt|invalid|unreadable)", r"JSONDecodeError",
         r"无法解析[^\n]{0,8}报告", r"报告格式[^\n]{0,12}(?:不对|不支持)",
     ), ("proofcheck.py", "infocheck.py", "compileall.py", "mergepdf.py", "toc.py",
-        "publish.py", "checkbib.py")),
+        "checkbib.py")),
     _Rule("usage", 40, (
         r"usage:", r"用法[：:]", r"invalid choice", r"unrecognized arguments",
         r"the following arguments are required", r"参数[^\n]{0,12}(?:错误|不对|缺少|无效)",

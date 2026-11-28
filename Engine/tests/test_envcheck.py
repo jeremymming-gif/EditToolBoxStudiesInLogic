@@ -520,15 +520,15 @@ with tempfile.TemporaryDirectory() as td:
             os.chmod(ro, 0o700)
 
 # ─────────────────────────────────────────────────────────────────────────
-print("── (h) dispatcher：ENTRIES 追加末尾、原十项顺序不变、真能跑通 ──")
+print("── (h) dispatcher：ENTRIES 原九项顺序不变、末尾追加三项、真能跑通 ──")
 
-check("(h) engine_main.ENTRIES 前 10 项与既有顺序逐项一致（C8）",
-      _dispatcher.ENTRIES[:10] == (
+check("(h) engine_main.ENTRIES 前 9 项与既有顺序逐项一致（C8）",
+      _dispatcher.ENTRIES[:9] == (
           "convert.py", "checkbib.py", "mergepdf.py", "cleantemp.py", "compileall.py",
-          "proofcheck.py", "infocheck.py", "toc.py", "publish.py", "bibdb.py"),
+          "proofcheck.py", "infocheck.py", "toc.py", "bibdb.py"),
       repr(_dispatcher.ENTRIES))
-check("(h) 第 11 项 envcheck.py、第 12 项 diagnose.py、第 13 项 dirpush.py（都在末尾追加）",
-      _dispatcher.ENTRIES[10:] == ("envcheck.py", "diagnose.py", "dirpush.py"),
+check("(h) 第 10 项 envcheck.py、第 11 项 diagnose.py、第 12 项 dirpush.py（都在末尾追加）",
+      _dispatcher.ENTRIES[9:] == ("envcheck.py", "diagnose.py", "dirpush.py"),
       repr(_dispatcher.ENTRIES))
 
 with tempfile.TemporaryDirectory() as td:

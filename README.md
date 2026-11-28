@@ -79,7 +79,7 @@ python3.14 -m flet.cli run app/main.py
 
 ### 只用引擎（命令行）
 
-引擎入口都在 `Engine/` 下：`convert.py`（初排转换）、`checkbib.py`（文献核实）、`proofcheck.py`（一校核查）、`infocheck.py`、`toc.py`、`compileall.py`、`mergepdf.py`、`cleantemp.py`、`publish.py`、`bibdb.py`。参数、退出码与输出格式见 [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md)。
+引擎入口都在 `Engine/` 下：`convert.py`（初排转换）、`checkbib.py`（文献核实）、`proofcheck.py`（一校核查）、`infocheck.py`、`toc.py`、`compileall.py`、`mergepdf.py`、`cleantemp.py`、`bibdb.py`。参数、退出码与输出格式见 [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md)。
 
 ```powershell
 # Windows PowerShell（在 Engine\ 下）
@@ -110,7 +110,7 @@ python3.14 convert.py --source <来稿> --out <期目录> --compile
 
 ```text
 Engine/            引擎（Python）：convert / checkbib / proofcheck / infocheck / toc /
-                   compileall / mergepdf / cleantemp / publish / bibdb 等入口
+                   compileall / mergepdf / cleantemp / bibdb 等入口
   slcn/            引擎内部模块（初排、核查、引用库、元数据等）
   docs/            GUIDE、ENGINE_API、PROOF_RULES、RULES 等工程文档
   tests/           引擎测试套件

@@ -15,13 +15,13 @@
 ```text
 <仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py
                                                  + cleantemp.py + compileall.py + proofcheck.py + slcn/）
-<仓库>/Engine/engine_main.py   ← 打包用：把**十个** CLI 冻成**一个** exe 的分发入口（第 89 条）
+<仓库>/Engine/engine_main.py   ← 打包用：把 **12 个** CLI 冻成**一个** exe 的分发入口（第 89 条）
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
 <仓库>/sources-flet/          ← 唯一外壳（Flet；旧 sources-mac/、sources-win/ 已删，历史）
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这十三个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
+发布形态下这 12 个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
 ⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-flet/app/services/engine_bridge.py: ENTRIES` **必须逐项一致**：
 漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页，历史）；
 配对守卫在 `Engine/tests/test_platform.py` (g) 与 `Engine/tests/test_b309_gate_speedup.py` (c)。
@@ -543,7 +543,7 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
   `os.replace` 失败、残留清理、身份拒绝（中文/空格、相对、符号链接、损坏输入、
   检测候选）、顺序/页数/书签与 nest 语义、缺件与损坏反馈、旧版读取语义。
 
-## 五、入口 4–10：期目录级的动作、一校核查、检查tex信息、生成目录与引用库（第 91、92、94、132 条）
+## 五、入口 4–9：期目录级的动作、一校核查、检查tex信息、生成目录与引用库（第 91、92、94、132 条）
 
 ```bash
 python3 cleantemp.py   --folder "<期目录>" [--dry-run] [--trash]
@@ -561,22 +561,18 @@ python3 toc.py         --report "<信息检查.txt>" [--template <期目录>] [-
 python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用：篇目清单 + 模板来源（JSON）
 python3 toc.py         --report "<信息检查.txt>" [--place] [--compile] [--result-json <结果.json>]
                        # 一键最终交付：落位固定名 → 字体检查 → xelatex ×2 → 自动单页适配（逐份）
-python3 publish.py     --folder "<期目录>" [--only N] [--from N] [--template <期目录>] [--skip-toc-pdf] \
-                       [--no-nest-outlines] [--no-editors-page] [--no-back-cover]
-                       # 本期出刊向导（CLI-only；GUI 已删该页，合并走「合并文件」页；一步跑完一期，5 步）
 python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命令见下）
 ```
 
 | 入口 | 干什么 | 退出码 | 最后一行（外壳靠它拿结果） |
 |---|---|---|---|
-| `publish.py` | **本期出刊向导（CLI-only；GUI 已删「本期出刊」页、合并能力只保留 GUI「合并文件」页）**（一步跑完一期；2026-10-21 第 71 批 B-116 起 **5 步**）：按序跑 ① **检查tex信息**（`infocheck.py`）→ ② **生成目录**（`toc.py`，读①最新的报告；**不再硬传 `--template <本期>`** —— 模板解析与「生成目录」页同一套「本期成品→显式指定→上一期→内置」，需要时用 `--template <期目录>` 显式指定）→ ③ **编译全部**（`compileall.py`，只编论文、跳过 `000` 目录）→ ④ **目录 PDF 落位**（调 `slcn/tocdelivery.py`，与 `toc.py --place --compile` **同一份实现**：取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex` → 复制为 `000*/Chinese Content.tex` / `contents.tex`（覆盖旧的；根下带时间戳的 `.tex` 保留，供下一期继承）→ Windows 字体前置检查 → 在 `000*` 内 `xelatex ×2` 出同名 `.pdf` → 页数 > 1 的目录逐份有界搜索最小行距压缩量做单页适配（中文下限 −3pt / 英文 −6pt；压到下限仍 > 1 页 ⇒ rc2 并回滚 `000*`）；该期**缺 `000*` 目录时自动创建** `000 Table of Contents`，不再 rc2）→ ⑤ **合并整期 PDF**（`mergepdf.py`，输出 `<期目录>/合并.pdf`）。**编排只在引擎里**（外壳不许多写一份流程；项目红线「一个引擎，两个外壳」）。失败语义（用户 2026-10-17 拍板，INVARIANTS 三.2）：某步退出码 **2 ⇒ 中止**（前 N−1 步产物保留，末行写明卡在第几步）；某步退出码 **1 ⇒ 橙色警告、继续**（"有结果"）；`0` 继续。`--only N` / `--from N` 对 **1–5** 都生效（单步重跑/续跑）；①的报告缺失 ⇒ ② **退出码 2 中止**（不静默跳过）。**⑤ 显式传 `--nest-outlines --editors-page --back-cover`**（默认开，与 GUI「合并文件」页三开关默认一致；`mergepdf.py` 自身默认值**不变，仍是全关**），`--no-nest-outlines` / `--no-editors-page` / `--no-back-cover` 逐个关闭。④：目录 `.tex` 编译失败 / 字体检查失败 / 单页适配失败 ⇒ 退出码 2（**绝不拿旧 PDF 静默合并**）；该期没有 `000` 开头的目录 ⇒ **自动创建** `000 Table of Contents` 后照常落位（B-226；`--skip-toc-pdf` 时仍整步跳过、不创建）；`--skip-toc-pdf` 跳过④并对 `000` 里缺失的目录 PDF **明确告警**（计入 rc1 警告） | `0` 全部完成；`1` 完成但有警告项；`2` 中止/用法错误 | `完成。出刊：N 步都跑完[，警告 N 项]（目录：…）`／`--only` 时 `完成。出刊：只跑了第 N 步（<步骤名>）（目录：…）`／中止时 `完成。出刊：卡在第 N 步（<步骤名>）；前 N−1 步产物有效（目录：…）`。**契约行永远是 stdout 最后一行**（警告行在其前） |
 | `cleantemp.py` | 递归处理 LaTeX 编译中间文件（`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` + `.DS_Store`）；**不删** `.tex/.pdf/.sty/.bib/.log`；**且永不进入 `original/`**（作者来稿目录，红线只读）。aux 模式：**默认直接删**（老行为，mac 外壳走这条）；`--trash` 移入 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`；`--restore <回收目录>` 搬回（**原位置已有同名文件则跳过、不覆盖**；**旧 v1/v2 manifest 兼容；所有 `--restore` 入口（含旧清单）统一安全预检，坏清单/越界/链接 → rc2 零写入**）。**B-211 起**另有 `--mode delivery`（交付收尾：先预检 `\includegraphics/\input/\include/\addbibresource/\bibliography` 引用闭包，缺失 → **整体拒绝、零写入**；白名单 `*.tex/*.pdf/*.bib/*.sty/*.cls`、闭包文件与目录、`original/` 系、`*交付清单*.md`；清 aux 全套/`.ai前/.log/*.bak/*_AI*/_文献核实/_回读校验报告/_参考文献核对/_一校核查/_原稿.pdf/_待核/`；未识别保留 + warning）与 `--mode workspace`（每期顶层 `合并*.pdf` 只留最新、固定名 `合并.pdf` 不删、解析不出时间保守保留；递归清 `信息检查*/ *.bak/*.coop-bak-*/ *_待核/ .DS_Store`；`000*/contents.*/Chinese Content.*/扉页*/编委*/封底*` 永不删）；两模式默认移入回收站（manifest schema=3：文件条目带搬入前内容 sha256、目录条目无摘要），`--delete` 永久删；**CLEANUP-R07 起**所有新写批次 schema=3，`--restore` 先做**版本闸 + 内容摘要闸**（未知 `schema` 值整批拒绝、schema=3 文件摘要不符/缺 sha 整批拒绝、旧 v1/v2 允许恢复但告警 `RESTORE_UNVERIFIED`），失败一律 rc2 零搬运；`--empty-trash` 清空回收站（B-281 起：清空后若 `.toolbox-trash/` 已空，该目录本身也一并删除；目录非空/权限失败时静默保留；**CLEANUP-R07 起**含未知清单版本（`schema` 非 1/2/3）的回收目录保守保留并告警、不计入清空数，dry-run 同样识别。契约行**逐字不变**，删目录的提示行 `已删除空的回收站目录：.toolbox-trash` 只会出现在契约行之前的 stdout） | `0` 成功；`2` 目录/预检错误（错误在 stderr，预检失败零写入） | aux：`完成。已删除 N 个临时文件（目录：…）`／`完成。已移入回收目录 N 个临时文件（回收目录：…）`／`完成。已恢复 N 个文件（目录：…）`；delivery/workspace：`完成。已移入回收目录 N 项（回收目录：…）`（dry-run「将移入」）／`--delete`：`完成。已删除 N 项（目录：…）`；empty-trash：`完成。已清空回收站 N 个回收目录（目录：…）` |
 | `cleantemp.py --mode daily` | **清理页/日常清理的唯一入口**（B-3xx）：`scan_daily()` 统一候选（编译辅助 / 编译 log / 有来源 bbl / 有同名 tex 的 out / 工作区与 Bib 时间戳备份 / 根时间戳 tex / `目录结果.json` / 旧信息检查报告组），**引用闭包优先保护、无法证明可再生一律保留**；扫描只读；默认移入 `.toolbox-trash/<目录名>-<operationId>/`（manifest schema=3、`kind="daily"`、逐项 `planned/moving/moved`；`file` 条目在搬移前带上内容 `sha256`），`--restore` 撤销；拒绝 `--trash/--delete/--empty-trash/--all-reports`；`SIGTERM` 中断可恢复；所有 `--restore`（daily 与旧 v1/v2 批次）统一预检与恢复账本（版本闸 + 内容摘要闸），坏清单/越界/链接/摘要不符 → `preflight_failed` rc2 零写入，重试计 `alreadyRestored`。判据见 `docs/RULES.md` §十三，用法见 `docs/GUIDE.md` §3.12 | `0` = `status=success` 或 `empty`；`2` = `preflight_failed` / `partial` / `cancelled`（均 `ok=false`；预检失败零写入） | `--json` 时 stdout 最后一行 JSON（旧字段 + `operationId/status/kept`，见下节契约）；人读契约行：`完成。已回收 N 项（回收目录：…）` / `完成。没有可清理的临时文件（目录：…）` / 恢复 `完成。已恢复 N 个文件（目录：…）`（dry-run 用「将回收 / 将恢复」） |
 | `compileall.py` | 对每个 `NN 作者/` 子目录跑 `xelatex → biber -l=zh_pinyin → xelatex → xelatex`；跳过 `000 目录`；某篇失败**只停那一篇**并回显 `.log` 里的 `!` 摘要；**B-377 起排序 locale 未生效也按该篇失败**（共用 `convert_compile.compile_pdf` 的 `.blg` 四态守卫，判据在 `slcn/sortlocale.py`，见 §二「biber 排序 locale 守卫」） | `0` 全成功；`1` 有失败；`2` 用法/目录错误 | `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）` |
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（29 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改**：报告只列需人工判断的命中，可自动改项由初排通道默认处理（`--fix` 可补写新文件） | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `templatecheck.py` | **模板合规校验（report-only MVP，B-002）**：核查产品目录或初排稿的 8 条模板/初排规范（T1–T8，见 `docs/TEMPLATE_RULES.md`）；**只报不改，无 `--fix`**；不注册 App/GUI/打包入口（`--self-test` 走内建夹具） | `0` 无 FAIL；`1` ≥1 FAIL；`2` 用法/输入/写报告错误 | `完成。模板合规：PASS p / FAIL f / SKIP s（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
-| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → **自动单页适配**（B-375 round2：逐份目录只在页数 > 1 时适配，1 页不重编、不改宏；解析当前 `\vdistance` 基准值，先试下限允许的最大压缩量，仍 > 1 页立即失败，否则二分最小通过量（收敛 3pt、≤6 次二分、总编译 ≤8 次）；下限中文 −3pt / 英文 −6pt；成功写最小通过值并复核 1 页，失败恢复原文、rc=2 并回滚 `000*`；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`；**批 115 起 additive 增 `articles{total,inToc}`**（篇目计数，旧字段一个不动）；**B-375 起 `inToc` = 目录实际列出的篇数（恒等于 `total`：专栏勾选只改 ~~~~ 栏目标记、不删条目）**，`--compile` 成功时 additive 增 `singlePageFit`（每份真实编译落位的目录：`pagesBefore`/`pagesAfter`/`gaps`/`oldMacro`/`newMacro`/`applied`/`attempts`/`totalShrinkPt`/`perGapShrinkPt`；纯 tex 与 `--preview` 不出现）；`--preview` 另增 `columnValidationError`（人话缺项，空串 = 可生成）与 `templateSource`（模板来源口径，与正式生成一致；均 B-375）。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用同一份，禁止第二份实现）。**失败回滚（B-375）**：落位前把 `000*` 整棵快照到 `<期目录>/.toolbox-tmp/toc-backup-*`；本次落位/编译/EN 阶段任何失败（含未预期异常）都按快照恢复 —— rc2 后 `000*` 的文件集合与每个文件内容 SHA 与本轮开始前完全一致（不会出现「新 tex + 旧 pdf」的半成品），成功路径删除备份、不留残留。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `Engine/tests/fixtures/content_templates.json`（旧 Swift 源已删，历史），由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 JSON 夹具↔py 逐字节一致（要改模板只改夹具再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇、或解析出的篇目对不上期目录里的真实稿件子目录（如把某篇 \`.tex\` 复制成 \`.txt\` 当报告）就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、报告不可用、或**栏目设置不完整**（选了专栏/专辑但四项未填全；不写任何文件、不写结果 JSON；B-375） | `完成。生成目录 N 份（<目录>）` |
+| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → **自动单页适配**（B-375 round2：逐份目录只在页数 > 1 时适配，1 页不重编、不改宏；解析当前 `\vdistance` 基准值，先试下限允许的最大压缩量，仍 > 1 页立即失败，否则二分最小通过量（收敛 3pt、≤6 次二分、总编译 ≤8 次）；下限中文 −3pt / 英文 −6pt；成功写最小通过值并复核 1 页，失败恢复原文、rc=2 并回滚 `000*`；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`；**批 115 起 additive 增 `articles{total,inToc}`**（篇目计数，旧字段一个不动）；**B-375 起 `inToc` = 目录实际列出的篇数（恒等于 `total`：专栏勾选只改 ~~~~ 栏目标记、不删条目）**，`--compile` 成功时 additive 增 `singlePageFit`（每份真实编译落位的目录：`pagesBefore`/`pagesAfter`/`gaps`/`oldMacro`/`newMacro`/`applied`/`attempts`/`totalShrinkPt`/`perGapShrinkPt`；纯 tex 与 `--preview` 不出现）；`--preview` 另增 `columnValidationError`（人话缺项，空串 = 可生成）与 `templateSource`（模板来源口径，与正式生成一致；均 B-375）。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py` 的 `deliver()`（`toc.py --compile` 是唯一编译入口，禁止第二份实现）。**失败回滚（B-375）**：落位前把 `000*` 整棵快照到 `<期目录>/.toolbox-tmp/toc-backup-*`；本次落位/编译/EN 阶段任何失败（含未预期异常）都按快照恢复 —— rc2 后 `000*` 的文件集合与每个文件内容 SHA 与本轮开始前完全一致（不会出现「新 tex + 旧 pdf」的半成品），成功路径删除备份、不留残留。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `Engine/tests/fixtures/content_templates.json`（旧 Swift 源已删，历史），由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 JSON 夹具↔py 逐字节一致（要改模板只改夹具再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇、或解析出的篇目对不上期目录里的真实稿件子目录（如把某篇 \`.tex\` 复制成 \`.txt\` 当报告）就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、报告不可用、或**栏目设置不完整**（选了专栏/专辑但四项未填全；不写任何文件、不写结果 JSON；B-375） | `完成。生成目录 N 份（<目录>）` |
 > **批 117（additive）**：`toc.py --result-json` 增 `outputs{zhTex,enTex,zhPdf,enPdf}`——`--place` 时指 `000 Table of Contents` 下固定名，text-only 时指期目录根下实际生成的时间戳文件（PDF 未编译为空串）；卷/期解析不到时 `warnings` 增一条「卷/期无法确定…」（退出码不变）。
 | `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；**B-259 增补** `query-advanced` 高级检索（11 字段 × contains/prefix/exact/fuzzy、年份表达式、排序/分页/why-hit；**只读**，旧三模式零改动）；`stats` 概况；`lint` 体检；`rehash` 规范化规则升级后重算 `content_sha256`（B-126；默认 dry-run、`--apply` 才写）；`conflicts` 列冲突条目（B-127；只读，GUI 待裁决页数据源）；`resolve` 记录冲突裁决（keep / defer / adopt / **replace**；写前可选 `--expect-db-sha256` + `--backup DIR`；`--adopt-all-pending` 一键全部采用）；`restore --backup` 从备份整库恢复（不 reopen；**CLI 保留向后兼容，B-190 起 GUI 不再调用/不再有备份入口**）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup`）；**B-188 增补**：`edit`（通用条目编辑，可 `--new-key`，旧 key 自动进 aliases）、`merge-records`（合并 2+ 条重复记录）、`suggest-field-fixes`（只读：缺字段归位候选）；**B-190 起 `edit`/`merge-records` 的 `--backup` 改可选**（不传 = 不写备份文件；GUI 改用 git 版本层，最后写库仍是同一套 sha 闸 + 原子写 + 写后复核）；`lint --with-records` 给全量受影响 key。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定。**新子命令/新参数全部是加法：不传时老行为与老 `--json` 键不变** | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
@@ -655,20 +651,17 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   `articles.inToc` 恒等于 `articles.total`（都 = 目录列出的篇数；日志里的「（N 篇）」才是带标记篇数）。
   英文栏目标签只用 `columnNameEN`：专栏 `Column: <EN>`、专辑 `Special Issue: <EN>`，绝不回退中文名。
 - `toc` **自动单页适配（B-375 round2）**：只对编译后页数 > 1 的目录做；解析当前 `\vdistance` 基准（旧式 `\dimexpr 基准 - Npt \relax` 只取基准、不嵌套累计），先试允许下限内的最大压缩量，仍 > 1 页 ⇒ 明确失败（rc2 + 原因 + 回滚 `000*`），否则二分最小通过量（收敛 3pt、≤6 次二分、总编译 ≤8 次），按该值写每间距宏并复核 1 页；1 页的目录不重编、宏不变。结果 JSON 的 `singlePageFit` 只在真实编译成功时出现；纯 tex / `--preview` 不编译。
-- `publish`：按 ①→⑤ 顺序在期目录里落产物：①《信息检查<时间戳>.txt/.json》；② 两份带时间戳的目录 `.tex`；
-  ③ 各篇 `.pdf`（重编译）；④ **覆盖写入** `000*/Chinese Content.tex/.pdf`、`000*/contents.tex/.pdf`
-  （目录 `.tex` 由第②步产物复制而来，供下一期继承；**这是合并的输入**，所以④必须排在⑤之前）；
-  ⑤ `<期目录>/合并.pdf`。`--skip-toc-pdf` 时④完全不写（沿用 000 里现有 PDF）。
+- `toc --compile`：落位/编译目录 PDF 的唯一交付入口，产物顺序为：①《信息检查<时间戳>.txt/.json》由 `infocheck` 生成；② 两份带时间戳的目录 `.tex` 由 `toc` 生成；③ `deliver()` 落位并**覆盖写入** `000*/Chinese Content.tex/.pdf`、`000*/contents.tex/.pdf`（目录 `.tex` 由第②步产物复制而来，供下一期继承；**这是合并的输入**）；④ `<期目录>/合并.pdf` 由 GUI「合并文件」页单独完成。整期编译各篇论文走 `compileall.py`（跳过 `000` 目录）。
 
 **给外壳的注意**：`compileall` 是长任务（每篇几十秒），必须用第 82 条的实时日志；
-`publish` 全流程更长（③ 编译各篇 + ④ 编译目录）；外壳只拼 `--folder` / `--only` / `--from` /
-`--skip-toc-pdf` / `--no-*`，**不要在界面里补开关默认值**（第⑤步的三开关默认由引擎显式传）。
+`toc --compile` 目录交付也含编译，外壳只拼 `--report` / `--template` / `--settings` /
+`--result-json`，**不要在界面里补开关默认值**；合并文件走 GUI「合并文件」页。
 `proofcheck` 的 `1` 表示「有命中」而不是失败，外壳不要把它显示成错误；
 `toc` 的篇目预览必须调 `--preview`（**别在界面里自己解析报告**），否则会出现
 「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
 **B-375**：`--preview` 的 `columnValidationError` 非空（同时 `columnEnabled=false`）表示栏目设置不完整；
 外壳据此**禁用所有生成入口**（主按钮 / 重新生成 / 仅 TeX / 整期串行的 toc 步骤）并说明缺项，
-**不要在界面里自己拼这份判据**。正式生成（含 `publish.py` 的 toc 步骤）遇到不完整设置一律 rc2。
+**不要在界面里自己拼这份判据**。正式生成（`toc.py --compile` 的 toc 步骤）遇到不完整设置一律 rc2。
 `columnKindNote` 非空表示 `columnKind` 只有空白、已按无栏目处理：外壳原样显示即可，**不是禁用条件**。
 `--preview` 的 `templateSource` 取 `本期成品`/`显式指定`/`上一期`/`内置模板` 之一，与正式生成同一解析口径，供预览信息卡直接显示。
 
@@ -877,7 +870,7 @@ export PYTHONPATH="$PWD:$PWD/vendor"
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持十三个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  支持 12 个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
   `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`Engine/tools/build_win_sidecar.ps1`），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；Flet 壳由 `sources-flet/packaging/` 另冻 exe（旧壳已删，历史：当年 `sources-win/engine.py: frozen_engine_exe()` 会先找它）。

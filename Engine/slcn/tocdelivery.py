@@ -2,10 +2,9 @@ r"""目录交付：**落位 + 编译 + 单页适配 + 字体前置检查**的唯
 
 谁用：
 
-  · `toc.py --place/--compile`（「生成目录」一键最终交付）；
-  · `publish.py` 第 ④ 步（「本期出刊」向导的目录 PDF 落位）。
+  · `toc.py --place/--compile`（「生成目录」一键最终交付；`--compile` 是唯一编译入口）。
 
-为什么抽到 `slcn/`：这两处从前各自实现「找 000 目录 / 复制最新 tex / xelatex ×2」，
+为什么抽到 `slcn/`：早先目录落位逻辑散落在多处，各自实现「找 000 目录 / 复制最新 tex / xelatex ×2」，
 一旦口径分叉就会出现「合并读 A 目录、落位写 B 目录」（案例 98/106 都栽在"两份实现"）。
 本模块只做**搬运与编排**，不复制任何判据：页数解析、xelatex 调用都复用既有实现。
 
@@ -91,7 +90,7 @@ class DeliveryError(Exception):
 
 @dataclass
 class DeliveryResult:
-    """一次目录交付的结果（`toc.py` 拿去拼结果 JSON，`publish.py` 只看 error）。"""
+    """一次目录交付的结果（`toc.py --compile` 唯一入口拿去拼结果 JSON）。"""
 
     toc_dir: str = ""
     placed: dict[str, str] = field(default_factory=dict)      # 语言键 → 000 里固定名 .tex
@@ -656,7 +655,7 @@ def _discard_backup(info: _TocDirBackup) -> None:
             pass
 
 
-# ── 交付编排（toc.py 与 publish.py 第 ④ 步共用的唯一入口）────────────────
+# ── 交付编排（toc.py --compile 是唯一入口，deliver() 是唯一实现）──────────
 
 def deliver(root: str, *, do_compile: bool = True,
             compile_func=None, log=lambda _s: None) -> DeliveryResult:
@@ -670,7 +669,7 @@ def deliver(root: str, *, do_compile: bool = True,
     res = DeliveryResult()
     backup = _TocDirBackup()
     toc_dir = ""
-    # B-395：三个入口（toc.py --compile / publish.py ④ / R3 刷新候选）共用本函数，
+    # B-395：唯一入口 toc.py --compile（R3 刷新候选不属基线）调用本函数，
     # 页数上限从同一份 TocSettings 读取；字段缺失或 true → 单页（默认路径零变化），
     # false → 允许 1–2 页。外壳只保存 JSON，不在这里复制任何排版逻辑。
     from .toc import TocSettings

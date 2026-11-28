@@ -46,7 +46,7 @@ sys.path.insert(0, HERE)
 #: 「目录摘要推送」页走同一条引擎 CLI（判据全在 `Engine/dirpush.py`）。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+           "infocheck.py", "toc.py", "bibdb.py",
            "envcheck.py", "diagnose.py", "dirpush.py")
 
 USAGE = f"""SLCN 引擎（打包版）

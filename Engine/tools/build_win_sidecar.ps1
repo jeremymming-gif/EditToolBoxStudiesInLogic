@@ -1,4 +1,4 @@
-﻿# build_win_sidecar.ps1 —— 在 Windows 上打出**引擎 sidecar**：SLCNEngine.exe
+# build_win_sidecar.ps1 —— 在 Windows 上打出**引擎 sidecar**：SLCNEngine.exe
 #
 #   pwsh -ExecutionPolicy Bypass -File Engine\tools\build_win_sidecar.ps1
 #
@@ -165,7 +165,7 @@ New-VersionFile $VersionFileEngine "SLCNEngine" "SLCNEngine（编辑部工具箱
 #    （下面 hidden-import 与 ④ 自检都按它走）。
 $Entries = @("convert.py", "checkbib.py", "mergepdf.py",
              "cleantemp.py", "compileall.py", "proofcheck.py",
-             "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+             "infocheck.py", "toc.py", "bibdb.py",
              "envcheck.py", "diagnose.py", "dirpush.py")
 
 Write-Host "▶ 冻结引擎 → SLCNEngine.exe…" -ForegroundColor Cyan
