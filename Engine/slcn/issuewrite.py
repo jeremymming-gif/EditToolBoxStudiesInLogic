@@ -54,7 +54,11 @@ def _canonical_path(path: Path) -> Path:
         elif len(matches) == 1:
             current = current / matches[0]
         else:
-            raise OSError(f"无法唯一确认期目录的实际路径：{target}")
+            # 'resolved' came from expanduser().resolve(strict=True), so every
+            # component is already symlink-resolved and names a real on-disk
+            # path; using it verbatim cannot introduce a symlink. Safety is
+            # still checked by issue_identity()'s final lstat/is_link guard.
+            current = target
     return current
 
 
