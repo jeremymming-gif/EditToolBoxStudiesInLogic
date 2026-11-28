@@ -391,6 +391,11 @@ class TocPanel:
                        C.secondary_button("预览模板/篇目", lambda e: self._request_preview(),
                                           self.t, height=self.t.px(28)),
                    ]),
+            C.option_row("生成单页目录",
+                         "勾选=强制压缩到 1 页（默认）；不勾选=允许 1–2 页，超 2 页报错回滚",
+                         self.t, icon="CHECK_CIRCLE_OUTLINE",
+                         checked=bool(self.values.get("singlePageToc", True)),
+                         on_change=lambda e: self._on_single_page_toc_change(e)),
             C.option_row("仅生成 tex（不写入、不编译）", TEXT_ONLY_HINT, self.t,
                          icon="DESCRIPTION_OUTLINED",
                          checked=self._text_only(),
@@ -400,6 +405,11 @@ class TocPanel:
             self.editor_box,
             self.feedback,
         ]
+
+    def _on_single_page_toc_change(self, e) -> None:
+        """B-395：勾选框只改设置值并标脏；页数判据在引擎，不在此复制排版逻辑。"""
+        self.values["singlePageToc"] = bool(e.control.value)
+        self._mark_dirty()
 
     def _text_only(self) -> bool:
         """与运行入口同一口径（批 117）：读 assembly 的开关，不另存一份。"""

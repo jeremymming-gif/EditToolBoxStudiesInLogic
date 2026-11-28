@@ -24,6 +24,7 @@ def defaults() -> dict:
         "templateFolder": "",
         "titleWrapLimit": 20.0,
         "titleWrapLimitEN": 30.0,
+        "singlePageToc": True,
     }
 
 
@@ -35,7 +36,7 @@ def _float(value, fallback: float) -> float:
 
 
 def normalize(raw) -> dict:
-    """把任意读入值整理成可写回引擎的八个字段。"""
+    """把任意读入值整理成可写回引擎的字段（含 singlePageToc）。"""
     data = defaults()
     if not isinstance(raw, dict):
         return data
@@ -47,6 +48,7 @@ def normalize(raw) -> dict:
         data["columnArticles"] = [str(x).strip() for x in articles if str(x).strip()]
     data["titleWrapLimit"] = _float(raw.get("titleWrapLimit"), 20.0)
     data["titleWrapLimitEN"] = _float(raw.get("titleWrapLimitEN"), 30.0)
+    data["singlePageToc"] = bool(raw.get("singlePageToc", True))
     return data
 
 

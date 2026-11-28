@@ -109,6 +109,11 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
     # --place/--preview 不编译，不出现该字段（旧 schema 不变）。
     if delivery is not None and delivery.compiled:
         payload["singlePageFit"] = dict(delivery.single_page_fit or {})
+        # B-395：additive 报告本轮页数上限与是否跳过行距压缩；--place/--preview
+        # 不编译，仍不出现这些字段（旧 schema 不变）。
+        # 兼容 B-375 冻结夹具里的旧 SimpleNamespace delivery（无新字段）。
+        payload["maxPages"] = getattr(delivery, "max_pages", 1)
+        payload["compressionSkipped"] = getattr(delivery, "compression_skipped", False)
     return payload
 
 

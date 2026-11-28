@@ -899,6 +899,8 @@ class TocSettings:
     # 证据：成品英文目录的断点实际落在 24–30；用默认 35 时整表比成品宽 21.86pt（7.7mm），
     # 且 7 处断行同一处都对不上；调成 30 后 4/7 与成品一致（详见案例第 110 条）。
     titleWrapLimitEN: float = 30
+    # B-395：勾选生成单页目录（默认 true，旧行为）；不勾选允许 1–2 页。
+    singlePageToc: bool = True
 
     fileName = "目录设置.json"
 
@@ -1028,6 +1030,7 @@ class TocSettings:
             templateFolder=str(data.get("templateFolder", "")),
             titleWrapLimit=float(data.get("titleWrapLimit", 20)),
             titleWrapLimitEN=float(data.get("titleWrapLimitEN", 30)),
+            singlePageToc=bool(data.get("singlePageToc", True)),
         )
 
     def save(self, folder: str) -> str:
@@ -1042,6 +1045,7 @@ class TocSettings:
                 "templateFolder": self.templateFolder,
                 "titleWrapLimit": self.titleWrapLimit,
                 "titleWrapLimitEN": self.titleWrapLimitEN,
+                "singlePageToc": self.singlePageToc,
             }, fh, ensure_ascii=False, indent=2)
         return path
 

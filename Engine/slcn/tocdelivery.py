@@ -101,6 +101,9 @@ class DeliveryResult:
     warnings: list[str] = field(default_factory=list)
     #: B-375 round2：单页适配明细（仅 compiled 时由 deliver 填入；见 fit_single_page）
     single_page_fit: dict = field(default_factory=dict)
+    # B-395：本轮页数上限（1=单页 / 2=允许两页）与是否跳过行距压缩；由 deliver 填入。
+    max_pages: int = 1
+    compression_skipped: bool = False
     error: str = ""                                           # 非空 = 失败原因（rc=2）
 
 
@@ -376,16 +379,30 @@ def _rewrite_vdistance_text(text: str, base: str, per_gap_pt: float) -> str | No
 
 
 def fit_single_page(toc_dir: str, stems: list[tuple[str, str]] | tuple[tuple[str, str], ...],
-                    compile_func, log=lambda _s: None
+                    compile_func, log=lambda _s: None, max_pages: int = 1
                     ) -> tuple[dict[str, int | None], str, dict[str, dict]]:
-    """把页数 > 1 的目录自动压到 1 页（B-375 round2：逐份有界搜索最小压缩量）。
+    """把页数超限的目录压到每份 ≤ max_pages 页（B-375 round2：逐份有界搜索最小压缩量）。
 
     返回 (各份最终页数, 失败原因, 单页适配明细)；失败原因为空串表示成功。
     compile_func(toc_dir, stem) -> (成功, PDF/错误) 可被测试替换成假实现。
-    页数已是 1 的份不重编、不改宏；页数 > 1 的份先试「压到每处下限」判可行性，
-    可行后用二分法找最小通过量（≤ _FIT_MAX_BISECT 次二分、总编译 ≤ _FIT_MAX_ATTEMPTS）。
+    max_pages=1（缺省，B-375 旧行为）：页数已是 1 的份不重编、不改宏；页数 > 1 的
+    份先试「压到每处下限」判可行性，可行后用二分法找最小通过量（≤ _FIT_MAX_BISECT
+    次二分、总编译 ≤ _FIT_MAX_ATTEMPTS）。
+    max_pages=2（B-395）：跳过行距压缩，只校验每份是否 ≤2 页；超限时给出与旧风格一致
+    的可操作错误（「请人工调整该份目录的行距/断行」），由 deliver 的 000 快照回滚。
     """
     counts = read_page_counts(toc_dir, tuple(stems))
+    if max_pages >= 2:
+        # B-395：不勾「生成单页目录」——只判页数，绝不碰 tex 行距宏、不重编译。
+        over = [(key, stem) for key, stem in stems
+                if (counts.get(key) or 0) > max_pages]
+        if not over:
+            log(f"目录均为 {max_pages} 页以内，无需单页适配（不重编、不改行距）")
+            return counts, "", {}
+        detail = "、".join(f"{stem}.pdf {counts.get(key)} 页" for key, stem in over)
+        return counts, (
+            f"目录页数超过 {max_pages} 页：{detail}；"
+            f"请人工调整该份目录的行距/断行"), {}
     over = [(key, stem) for key, stem in stems if (counts.get(key) or 0) > 1]
     if not over:
         log("目录均为 1 页，无需单页适配（不重编、不改行距）")
@@ -653,6 +670,15 @@ def deliver(root: str, *, do_compile: bool = True,
     res = DeliveryResult()
     backup = _TocDirBackup()
     toc_dir = ""
+    # B-395：三个入口（toc.py --compile / publish.py ④ / R3 刷新候选）共用本函数，
+    # 页数上限从同一份 TocSettings 读取；字段缺失或 true → 单页（默认路径零变化），
+    # false → 允许 1–2 页。外壳只保存 JSON，不在这里复制任何排版逻辑。
+    from .toc import TocSettings
+
+    settings = TocSettings.load(root)
+    max_pages = 1 if settings.singlePageToc else 2
+    res.max_pages = max_pages
+    res.compression_skipped = max_pages >= 2
     try:
         toc_dir = find_toc_dir(root)
         backup = _backup_toc_dir(root, toc_dir)
@@ -691,7 +717,7 @@ def deliver(root: str, *, do_compile: bool = True,
                 return compile_all(folder, ((key, stem),))[key]
 
             counts, err, single_page_fit = fit_single_page(
-                toc_dir, TEX_STEMS, compile_one, log=log)
+                toc_dir, TEX_STEMS, compile_one, log=log, max_pages=max_pages)
             res.pages = {key: (counts.get(key) or 0) for key, _stem in TEX_STEMS}
             res.single_page_fit = single_page_fit
             if err:
