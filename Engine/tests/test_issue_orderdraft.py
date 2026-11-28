@@ -265,6 +265,44 @@ class TestIssueOrderDraft(unittest.TestCase):
         self.assertEqual([row["state"] for row in result["rows"]], ["missing_tex"])
         self.assertTrue(any("Beta" in warning for warning in result["warnings"]), result)
 
+    def test_numbered_folder_matches_tex_without_numeric_prefix(self):
+        """R1 编号目录的精确同名 TeX = 去掉「数字+空白」前缀后的名字。"""
+        cases = [
+            ("01 San_Zhang", "San_Zhang.tex", "ok"),
+            ("1 Er_Li", "Er_Li.tex", "ok"),
+            ("002 San_Wang", "San_Wang.tex", "ok"),
+            # 无编号旧行为保持：文件夹名原样拼 .tex
+            ("Plain", "Plain.tex", "ok"),
+            # 旧式带前缀 tex 名仍作兜底（不回归）
+            ("02 Legacy", "02 Legacy.tex", "ok"),
+            # 剥离后的裸名优先于旧式带前缀 tex（用户口径：精确同名=裸名）
+            ("04 Prefer", "Prefer.tex", "ok", "04 Prefer.tex"),
+            # 非「数字+空白」前缀不得剥离
+            ("W1 Chen", "W1 Chen.tex", "ok"),
+            ("01-Xu", "01-Xu.tex", "ok"),
+            # 数字前缀后面不是空白 → 不剥离，缺同名 tex
+            ("03Wu", "Wu.tex", "missing_tex"),
+        ]
+        expected = []
+        for item in cases:
+            folder, tex, state = item[:3]
+            d = self.issue / folder
+            d.mkdir()
+            _write_tex(d / tex,
+                       r"\newcommand{\mytitle}{T}\newcommand{\myfirstauthor}{A}"
+                       + folder.replace(" ", "_") + "\n")
+            if len(item) == 4:  # 同时放旧式带前缀 tex，验证裸名优先
+                _write_tex(d / item[3], r"\newcommand{\mytitle}{WRONG}"
+                           r"\newcommand{\myfirstauthor}{WRONG}\n")
+            expected.append((folder, state))
+        rc, result, _ = _run("--issue", self.issue, "--out", self.out, "--dry-run")
+        self.assertEqual(rc, 0, result)
+        got = sorted((row["folder"], row["state"]) for row in result["rows"])
+        self.assertEqual(got, sorted(expected))
+        # 裸名优先：不能读到旧式带前缀 tex 的占位题名 WRONG
+        names = {row["folder"]: row["title"] for row in result["rows"]}
+        self.assertNotIn("WRONG", names["04 Prefer"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+import re
 from pathlib import Path
 import stat
 from typing import Iterator
@@ -58,15 +59,22 @@ def _scan(issue_dir: Path) -> Iterator[tuple[OrderCandidate, _Source | None]]:
                 continue
             if boundary(directory, path, root.st_dev):
                 raise _UnsafeEntry()
-            tex_name = f"{name}.tex"
+            # 精确同名 = 去掉「数字+空白」排序前缀后的名字（01 San_Zhang → San_Zhang）。
+            # 剥离后的裸名优先命中；旧式带前缀 tex 名（01 San_Zhang.tex）作兜底，兼容历史稿件。
+            stripped = re.sub(r"^\d+\s+", "", name, count=1)
+            tex_names = [f"{stripped}.tex"]
+            if stripped != name:
+                tex_names.append(f"{name}.tex")
             # Iteration checks the filesystem spelling even on case-insensitive volumes.
             with os.scandir(path) as entries:
-                tex = next((entry for entry in entries if entry.name == tex_name), None)
-                if tex is not None:
-                    info = (path / tex_name).lstat()
-                    if not _regular(info) or info.st_dev != directory.st_dev:
-                        raise _UnsafeEntry()
-                    source = _Source(path / tex_name, directory, info)
+                present = {entry.name for entry in entries}
+                for tex_name in tex_names:
+                    if tex_name in present:
+                        info = (path / tex_name).lstat()
+                        if not _regular(info) or info.st_dev != directory.st_dev:
+                            raise _UnsafeEntry()
+                        source = _Source(path / tex_name, directory, info)
+                        break
             state = "ok" if source is not None else "missing_tex"
         except _UnsafeEntry:
             state = "unsafe_entry"

@@ -1102,7 +1102,7 @@ python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --dry-run 
 python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --json
 ```
 
-`ISSUE` 指整期根目录，`OUT` 指期目录外的输出根。预览列出 `docx` 和 `rows`，并检查真实输出位置。每条 `rows` 含 `folder`、`title`、`authors`、`state`。引擎按实际拼写读取直属稿件目录下精确同名的常规 TeX。能读取的稿件在 Word 表格里各占一行，显示题名和作者。`state` 区分可用、字段缺失、主 TeX 缺失、无法读取和不安全的目录项。写稿只生成排序稿 DOCX。
+`ISSUE` 指整期根目录，`OUT` 指期目录外的输出根。预览列出 `docx` 和 `rows`，并检查真实输出位置。每条 `rows` 含 `folder`、`title`、`authors`、`state`。引擎读取直属稿件目录下精确同名的常规 TeX：「精确同名」指去掉文件夹名开头的「数字+空白」排序前缀后的名字（如 `01 San_Zhang` 对应 `San_Zhang.tex`），兼容旧式带前缀的 `01 San_Zhang.tex`；非数字前缀（如 `W1_`）不剥离，按实际拼写匹配。能读取的稿件在 Word 表格里各占一行，显示题名和作者。`state` 区分可用、字段缺失、主 TeX 缺失、无法读取和不安全的目录项。写稿只生成排序稿 DOCX。
 
 ### 篇序和目录改名
 
