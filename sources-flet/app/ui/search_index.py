@@ -6,7 +6,7 @@
 数据源（有就索引；没有的绝不假装）：
 - 页面：`ui.ia_map.NAV_TREE`（6 个一级页面 + 二级视图；父项 + 子项都进索引）；
 - 命令：主题切换、引擎刷新、运行 / 停止当前页、缩放、引用库 10 个视图、
-  整期装配 6 个步骤；
+  整期装配 7 个步骤；
 - 最近记录：`SettingsStore.recent.*` 的非空路径 + `paths.notes_repo`；
 - **不索引**：稿件正文、运行日志正文、`startup_log`（该模块按设计只记生命周期
   事件，不记标题，所以不拿它冒充「最近文稿」）；`form.*` 的填写值不单独成条，
@@ -122,7 +122,7 @@ def nav_entries(nav_tree=()) -> list[SearchEntry]:
 
 
 def command_entries(bib_views=(), issue_steps=()) -> list[SearchEntry]:
-    """常用命令 + 引用库 10 视图 + 整期装配 4 功能页 / 6 个底层操作。"""
+    """常用命令 + 引用库 10 视图 + 整期装配 7 个步骤。"""
     entries = [
         SearchEntry(kind="command", key=cmd_id, label=label, detail=detail,
                     keywords=keywords, action=cmd_id)

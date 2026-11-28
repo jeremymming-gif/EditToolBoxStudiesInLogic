@@ -1,13 +1,13 @@
-"""批 116 ISSUE4：整期装配 E′ 四步工作台（用户拍板 I-2）。
+"""批 118 D7：整期装配页内 6 页签工作台（承接批 116 E′ 的四区块设计）。
 
 锁住的不变量（壳层，不建窗口、不跑引擎）：
-1. rail 4 视图（宽窗 216 栏 / 内容 <880 时 54 高横条），标签、caption、选中态；
+1. rail 6 视图（宽窗 216 栏 / 内容 <880 时 54 高横条），标签、caption、选中态；
 2. 视图状态聚合：任一步 error→红 / 有警告→琥珀 / running→动 / 全完成→绿 / 否则灰；
-3. 6 条 `issue:<step>` 深链 alias 全保留；设置新增九路由后共 31 条；深链落到所属视图的两个区块；
-4. 01/02、03/04 同屏但**各自有运行入口**（不合并引擎调用、不合并确认）；
-5. 04 只读「前置页」卡：空态说明 + detect 结果（文件名/页数/缺失），不提供编辑；
-6. 03 编译成功 → 滚到 04 区块，但**不自动运行 04**（04 保留独立确认点）；
-7. 页头「运行整期…」默认 1–4、日志 dock、⌘1–6 行为不变。
+3. 7 条 `issue:<step>` 深链 alias 全保留；设置新增九路由后共 32 条；深链落到所属视图的区块；
+4. 同一视图内的区块同屏但**各自有运行入口**（不合并引擎调用、不合并确认）；
+5. 合并页（05）只读「前置页」卡：空态说明 + detect 结果（文件名/页数/缺失），不提供编辑；
+6. D3 起没有「编译成功自动展开/自动运行」：任一步成功后都不切视图、不跑下一步；
+7. 没有「运行整期…」入口（run_all 已下线）；日志 dock 与 ⌘/Ctrl+1–6 切六页签不变。
 """
 from __future__ import annotations
 
@@ -33,17 +33,21 @@ def _issue_page(issue: str = "/tmp/期目录"):
     return page
 
 
-# ── 1. 4 个视图：标签 / caption / 步骤归属 ────────────────────────────
-def test_issue_views_are_four_with_labels_and_captions():
+# ── 1. 6 个视图：标签 / caption / 步骤归属 ────────────────────────────
+def test_issue_views_are_six_with_labels_and_captions():
     views = IA.issue_views()
-    assert [view["key"] for view in views] == ["catalog", "produce", "clean", "push"]
+    assert [view["key"] for view in views] == [
+        "catalog", "order", "refresh", "merge", "clean", "push"]
     assert [view["title"] for view in views] == [
-        "生成目录", "编译并合并", "清理临时文件", "生成推送文案"]
+        "生成目录", "排序与改名", "刷新页码", "合并",
+        "清理临时文件", "生成推送文案"]
     assert [view["caption"] for view in views] == [
         "检查 tex 信息 · 生成目录",
-        "编译全部 · 合并 PDF",
+        "读取候选 · 预览改名",
+        "预览后确认刷新",
+        "合并 PDF",
         "删除临时文件（移入回收站）",
-        "目录摘要推送（生成 docx）",
+        "生成目录摘要 docx",
     ]
     # 批 116 ISSUE4-D：rail 不再画序号，`range` 字段已删；caption 仍不复述标题。
     for view in views:
@@ -53,25 +57,24 @@ def test_issue_views_are_four_with_labels_and_captions():
         assert "range" not in view, f"{view['key']} 不再携带序号数据"
         assert view.get("short"), "窄窗 54 横条需要短标题"
     steps = [key for view in views for key in IA.issue_view_steps(view["key"])]
-    assert steps == IA.issue_step_keys(), "4 视图按序覆盖 6 步：不重不漏"
+    assert steps == IA.issue_step_keys(), "6 视图按序覆盖 7 步：不重不漏"
     assert P.IssuePage.VIEWS is IA.ISSUE_VIEWS
     assert P.IssuePage.STEPS[0]["key"] == "infocheck"  # 步骤表本身未动
 
 
-def test_issue_routes_still_22_and_six_deep_links():
+def test_issue_routes_still_32_and_seven_deep_links():
     routes = IA.all_routes()
-    assert len(routes) == 31, "仅设置增加九个详情路由，其余深链保持不变"
-    assert len(IA.ISSUE_ROUTE_STEPS) == 6
+    assert len(routes) == 32, "仅设置增加九个详情路由，其余深链保持不变"
+    assert len(IA.ISSUE_ROUTE_STEPS) == 7
     for step in IA.issue_step_keys():
         assert f"issue:{step}" in routes, f"深链 alias 必须保留：issue:{step}"
         assert IA.normalize_route(f"issue:{step}") == ("issue", step)
     assert "issue:overview" in routes, "旧 landing 别名仍可持久化/深链"
 
 
-# ── 2. rail：4 行 + 分组标题；窄窗 54 横条 4 段 ────────────────────────
-def test_nav_chips_draw_four_views_without_group_headers():
-    # 批 117：216 rail 与「正文流水线/收尾（可选）」分组标题整体删除，
-    # 换成与「引用库」同款的页内 4 chip。
+# ── 2. 页内 chips：6 个功能页、无分组标题 ─────────────────────────────
+def test_nav_chips_draw_six_views_without_group_headers():
+    # 批 117 起用与「引用库」同款的页内 chip；D7 扩到 6 个功能页。
     page, _root = _build_issue()
     texts = _texts(page._nav_bar())
     assert "正文流水线" not in texts and "收尾（可选）" not in texts
@@ -82,7 +85,7 @@ def test_nav_chips_draw_four_views_without_group_headers():
         "导航不再显示 01–02/03–04/05/06"
     chips = [ctl for ctl in _walk(page._nav_bar())
              if isinstance(ctl, ft.Container) and ctl.on_click is not None]
-    assert len(chips) == 4, "导航只画 4 个可点功能页（不是 6 个 step）"
+    assert len(chips) == 6, "导航只画 6 个可点功能页（不是 7 个 step）"
 
 
 def test_narrow_nav_wraps_two_rows_and_click_switches_view():
@@ -94,18 +97,18 @@ def test_narrow_nav_wraps_two_rows_and_click_switches_view():
     rows = page._nav_box.content.content.controls
     assert len(rows) == 2 and all(isinstance(row, ft.Container) for row in rows)
     chips = page._nav_chips
-    assert set(chips) == {"catalog", "produce", "clean", "push"}
-    # 点第 2 个 chip → 进入「编译并合并」的展开区块（默认 03）。
-    chips["produce"].on_click(SimpleNamespace())
-    assert page.selected == "compileall"
+    assert set(chips) == {"catalog", "order", "refresh", "merge", "clean", "push"}
+    # 点「刷新页码」chip → 进入该功能页（单区块视图，默认展开自身）。
+    chips["refresh"].on_click(SimpleNamespace())
+    assert page.selected == "refresh"
 
 
 def test_rail_active_view_follows_selected_step():
     page = _issue_page()
     page.activate("toc")            # 02 属于「生成目录」
     assert page._view_of_step(page.selected) == "catalog"
-    page.activate("merge")          # 04 属于「编译并合并」
-    assert page._view_of_step(page.selected) == "produce"
+    page.activate("merge")          # 05 属于「合并」
+    assert page._view_of_step(page.selected) == "merge"
     page.activate("dirpush")
     assert page._view_of_step(page.selected) == "push"
 
@@ -133,13 +136,14 @@ def test_view_state_aggregation_precedence():
     assert page._view_tone("cancelled") == "idle", "取消/跳过按灰显示"
 
 
-# ── 4. 6 条深链分别落到所属视图的两个区块 ─────────────────────────────
-def test_six_deep_links_mount_the_owning_view_sections():
+# ── 4. 7 条深链分别落到所属视图的区块 ─────────────────────────────────
+def test_seven_deep_links_mount_the_owning_view_sections():
     expected = {
         "infocheck": ("catalog", ["infocheck", "toc"]),
         "toc": ("catalog", ["infocheck", "toc"]),
-        "compileall": ("produce", ["compileall", "merge"]),
-        "merge": ("produce", ["compileall", "merge"]),
+        "order": ("order", ["order"]),
+        "refresh": ("refresh", ["refresh"]),
+        "merge": ("merge", ["merge"]),
         "cleantemp": ("clean", ["cleantemp"]),
         "dirpush": ("push", ["dirpush"]),
     }
@@ -154,10 +158,9 @@ def test_six_deep_links_mount_the_owning_view_sections():
 
 
 def test_deep_link_expands_target_and_collapses_sibling():
-    """4 条视图内深链：目标区块展开、同视图另一块收起（替代 scroll_to）。"""
+    """多区块视图内的深链：目标区块展开、同视图另一块收起（替代 scroll_to）。"""
     page = _issue_page()
-    cases = {"infocheck": ("catalog", "toc"), "toc": ("catalog", "infocheck"),
-             "compileall": ("produce", "merge"), "merge": ("produce", "compileall")}
+    cases = {"infocheck": ("catalog", "toc"), "toc": ("catalog", "infocheck")}
     for step, (view_key, sibling) in cases.items():
         page.activate(step)
         assert page.expanded_step(view_key) == step
@@ -167,24 +170,22 @@ def test_deep_link_expands_target_and_collapses_sibling():
         assert page._chevrons[sibling].value == "▸"
 
 
-def test_compile_done_expands_merge_but_never_runs_it():
+def test_step_finish_never_auto_switches_or_runs():
+    """D3：刷新页码不再「成功后自动展开合并」——页签各管一个动作，不自动跳。"""
     page = _issue_page()
-    page.activate("compileall")
+    page.activate("refresh")
     ran: list = []
     page._run_step = lambda key: ran.append(key)  # on_step_finished 不许触发运行
-    page.on_step_finished("compileall", 0)
-    assert page.expanded_step("produce") == "merge", "03 成功 → 04 展开"
-    assert page._expanded["produce"] == "merge"
-    assert page._section_bodies["merge"].visible is True
-    assert page._section_bodies["compileall"].visible is False
-    assert page.selected == "merge", "切到 04，首屏即见（不依赖滚动）"
-    assert ran == [], "04 保留独立确认点：不自动运行"
+    page.on_step_finished("refresh", 0)
+    assert page.expanded_step("refresh") == "refresh"
+    assert page.selected == "refresh", "成功后停在原页签"
+    assert ran == [], "任何页签都不自动运行下一步"
     assert page._state_of("merge") == "idle"
 
-    page._expanded["produce"] = "compileall"
-    page.on_step_finished("compileall", 2)  # 失败不切
-    page.on_step_finished("toc", 0)         # 别的步骤不自动切（01→02 由用户点）
-    assert page._expanded["produce"] == "compileall"
+    page.on_step_finished("refresh", 2)  # 失败同样不切
+    page.on_step_finished("merge", 0)    # 别的步骤也不自动切
+    assert page.expanded_step("refresh") == "refresh"
+    assert page.selected == "refresh"
 
 
 # ── 5. 01/02/03/04/05/06 各有运行入口，且落在所属视图 ──────────────────
@@ -209,21 +210,21 @@ def test_view_switch_keeps_current_step_when_already_inside():
     page.activate("toc")
     page._select_view("catalog")   # 已在该视图 → 不动，保留用户展开状态
     assert page.selected == "toc"
-    page._select_view("produce")   # 换视图 → 落到首区块 03（默认展开）
-    assert page.selected == "compileall"
-    assert page.expanded_step("produce") == "compileall"
+    page._select_view("refresh")   # 换视图 → 落到该视图默认区块
+    assert page.selected == "refresh"
+    assert page.expanded_step("refresh") == "refresh"
     page._select_view("clean")
     assert page.selected == "cleantemp"
 
 
 def test_view_switch_remembers_last_expanded_section():
     page = _issue_page()
-    page.activate("merge")          # produce 最近展开 04
-    page._select_view("catalog")    # 切走
-    page._select_view("produce")    # 回来 → 仍展开 04，不是首块 03
-    assert page.selected == "merge"
-    assert page.expanded_step("produce") == "merge"
-    assert page._section_bodies["compileall"].visible is False
+    page.activate("toc")            # catalog 最近展开 02
+    page._select_view("merge")      # 切走
+    page._select_view("catalog")    # 回来 → 仍展开 02，不是首块 01
+    assert page.selected == "toc"
+    assert page.expanded_step("catalog") == "toc"
+    assert page._section_bodies["infocheck"].visible is False
 
 
 # ── 6. 04 只读「前置页」卡 ────────────────────────────────────────────
@@ -259,49 +260,52 @@ def test_prep_card_renders_detect_payload_and_missing_rows():
     assert not [ctl for ctl in _walk(card) if isinstance(ctl, ft.TextField)]
 
 
-def test_prep_card_absent_from_compile_section_but_present_in_merge():
+def test_prep_card_absent_from_refresh_section_but_present_in_merge():
     page = _issue_page()
-    page.activate("compileall")
-    assert "前置页" not in _texts(page._section_refs["compileall"])
-    assert page._section_bodies["merge"].visible is False, "收起区块隐藏（前置页卡不可见）"
+    page.activate("refresh")
+    assert "前置页" not in _texts(page._section_refs["refresh"])
     page.activate("merge")
     assert "前置页" in _texts(page._section_refs["merge"])
-    assert "前置页" not in _texts(page._section_refs["compileall"])
+    assert "前置页" in _texts(page._section_refs["merge"]), "前置页卡只在合并页出现"
 
 
-def test_detect_task_feeds_prep_card(monkeypatch):
+def test_detect_entry_restored_and_prep_card_stays_readonly():
+    """D3 未下线检测前置页；入口在合并页的前置页卡内，只读不编辑。
+
+    D3 的删除清单只有 run_all / 自动编译 / demo / 三个只预演开关，
+    「检测前置页」是前置页卡的探测动作，必须留在合并页；
+    其结果只落只读卡（`set_prep_pages`），不触发合并、不提供编辑。
+    """
     page = _issue_page()
     page.activate("merge")
-    page.app.notes_repo = None  # 假壳没有笔记仓；_detect_task 会传给引擎桥
-    payload = {"editorsPage": {"fileName": "编委页.pdf", "pageCount": 3},
-               "backCover": {"fileName": "封底.pdf", "pageCount": 1},
-               "coverPages": 2}
-
-    async def _fake(*args, **kwargs):
-        return {"ok": True, "json": payload}
-
-    monkeypatch.setattr(ASM.asyncio, "to_thread", _fake)
-    ASM.asyncio.run(ASM._detect_task(page, object()))
-    assert page._prep_pages == payload
+    assert hasattr(ASM, "_detect_task"), "检测任务必须存在（D3 不含此项）"
+    assert hasattr(ASM, "run_detect"), "检测入口必须存在（D3 不含此项）"
+    page.set_prep_pages({"editorsPage": {"fileName": "编委页.pdf", "pageCount": 3},
+                         "backCover": {"fileName": "封底.pdf", "pageCount": 1},
+                         "coverPages": 2})
     labels = _texts(page._prep_box)
     assert "封底.pdf · 1 页" in labels
 
+    # 合并页有且只有一个检测入口，且整张卡只读（无输入控件）。
+    section = page._section_refs["merge"]
+    detect_buttons = [
+        ctl for ctl in _walk(section)
+        if isinstance(ctl, ft.OutlinedButton)
+        and "检测前置页" in str(getattr(ctl, "content", "") or getattr(ctl, "label", ""))
+    ]
+    assert len(detect_buttons) == 1, f"合并页应只有一个检测入口：{detect_buttons}"
+    # 只读性只针对「前置页」卡本身（合并页参数区仍有输出路径等输入框）。
+    card = page._prep_card()
+    assert not [ctl for ctl in _walk(card) if isinstance(ctl, ft.TextField)], \
+        "前置页卡不放编辑表单"
 
-# ── 7. 页头 / 运行整期 / 日志 dock / 键盘不变 ──────────────────────────
-def test_run_all_dialog_still_defaults_to_steps_one_to_four():
+
+# ── 7. 页头 / 日志 dock / 键盘不变；D3 无整期串跑入口 ──────────────────
+def test_run_all_dialog_is_gone_after_d3():
     page = _issue_page()
-    shown: list = []
-    page.app.page.show_dialog = lambda dialog: shown.append(dialog)
-    page._open_runall()
-    assert len(shown) == 1
-    boxes = [ctl for ctl in _walk(shown[0].content) if isinstance(ctl, ft.Checkbox)]
-    assert len(boxes) == 7, "01–06 + 跳过已完成（本次未改任何步骤）"
-    assert [box.value for box in boxes[:4]] == [True] * 4
-    assert boxes[4].value is False and boxes[5].value is False
-    assert page._runall_danger.visible is False
-    boxes[4].value = True
-    boxes[4].on_change(SimpleNamespace(control=boxes[4]))
-    assert page._runall_danger.visible is True
+    assert not hasattr(page, "_open_runall"), "D3：界面不再有「运行整期」对话框"
+    assert not hasattr(page, "_run_all")
+    assert not hasattr(P.IssuePage, "_run_all")
 
 
 def test_header_run_all_log_dock_and_keyboard_unchanged():
@@ -311,7 +315,7 @@ def test_header_run_all_log_dock_and_keyboard_unchanged():
     assert not hasattr(page, ("_header_" + "actions"))
     assert page._log.dock is True and page.LOG_LIMIT == 2000
     page.activate("infocheck")
-    # 批 117：⌘1–4 切四个功能页（不再对应 6 个 step），⌘5/6 仍落到清理/推送页。
+    # D7：⌘1–6 切六个功能页（不再对应 7 个 step）。
     for index, view in enumerate(page.VIEWS, start=1):
         page._on_key(SimpleNamespace(key=str(index), ctrl=True, meta=False))
         assert page._view_of_step(page.selected) == view["key"], \
@@ -324,40 +328,29 @@ def test_header_run_all_log_dock_and_keyboard_unchanged():
     assert page.expanded_step("push") == "dirpush"
 
 
-def test_help_text_describes_four_views_not_six_steps():
+def test_help_text_entry_matches_six_tabs():
+    """帮助页「整期装配」条目必须与 D7 的 6 页签一致（写域内，锁新文案）。
+
+    D7 落地后页内是 6 个页签，「刷新页码」是唯一的正文编译动作
+    （生成目录页取消「仅生成 tex」时会另编译目录 PDF）；帮助文案
+    不能再写旧口径「4 个功能页 … 编译并合并」。
+    """
     entry = next(item for item in HC.ENTRIES if item[0] == "整期装配")
     text = entry[2]
+    assert "六个页签" in text, text
+    assert "刷新页码" in text, text
+    assert "4 个功能页" not in text, text
     assert "六步按序跑" not in text
-    for title in ("生成目录", "编译并合并", "清理临时文件", "生成推送文案"):
-        assert title in text
 
 
-# ── 8. C14：运行整期「开始运行」提交同步入口，不把同步函数交给 run_task ──
-def test_runall_start_click_calls_sync_entry_not_run_task():
-    """真机 C14：旧代码 `page.run_task(ASM.run_all, ...)` 抛 TypeError:
-    handler must be a coroutine function，步骤不启动。此处用严格 run_task 桩
-    复现 Flet 校验：同步 handler 立即失败；只有 async _run_sequence 可调度。"""
+# ── 8. C14：单步执行器仍是 async（run_task 只接受 coroutine function）───────
+def test_step_sequence_entry_is_async():
+    """真机 C14：`page.run_task(ASM.run_all, ...)` 对同步函数抛 TypeError。
+
+    D3 删掉整期入口后，页面只剩 `_run_step` → `_run_calls` → `ASM._run_sequence`
+    这条链；这里锁住链条末端仍是 coroutine function。
+    """
     import inspect
 
-    page = _issue_page()
-    shown: list = []
-    page.app.page.show_dialog = lambda dialog: shown.append(dialog)
-    scheduled: list = []
-
-    def _strict_run_task(handler, *args, **kwargs):
-        assert inspect.iscoroutinefunction(handler), (
-            "run_task 只接受 coroutine function，收到 %r" % (handler,))
-        scheduled.append((handler, args, kwargs))
-
-    page.app.page.run_task = _strict_run_task
-    page._open_runall()
-    start = shown[0].actions[1]
-    assert "开始运行" in _texts(start) or getattr(start, "content", "") == "开始运行"
-    start.on_click(SimpleNamespace())  # 修复前：TypeError，后续断言都到不了
-    assert len(scheduled) == 1, "ASM.run_all 内部应调度一次整期异步序列"
-    handler, args, _kwargs = scheduled[0]
-    assert getattr(handler, "__name__", "") == "_run_sequence"
-    assert args[0] is page
-    assert list(args[1]) == ["infocheck", "toc", "compileall", "merge"]
-    subjects = [fields for event, fields in page.app.marked if event == "run_all_submit"]
-    assert subjects and subjects[-1]["steps"] == ["infocheck", "toc", "compileall", "merge"]
+    assert inspect.iscoroutinefunction(ASM._run_sequence)
+    assert not hasattr(ASM, "run_all"), "D3：整期串跑入口已下线"

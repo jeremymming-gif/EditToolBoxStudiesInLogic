@@ -32,6 +32,11 @@ def test_defaults_when_missing(store):
     # S1/S2 关闭的入口不再保留设置键。
     assert "checkbib_merge" not in data["options"]
     assert "cleantemp_trash" not in data["options"]
+    # T4 / D1：旧 dry-run 开关不再是设置默认项（保留 dirpush_with_en_toc）。
+    assert "compileall_dry_run" not in data["options"]
+    assert "dirpush_dry_run" not in data["options"]
+    assert "convert_dry_run" not in data["options"]
+    assert "dirpush_with_en_toc" in data["options"]
     assert data["recent"]["single_source"] == ""
     assert path.exists() is False
 

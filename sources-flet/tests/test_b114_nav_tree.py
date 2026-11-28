@@ -20,6 +20,7 @@ import main as M
 from services import settings_store as SS
 from ui import components as C
 from ui import ia_map as IA
+from ui import issue_view as IV
 from ui import pages as P
 from ui import search_index as SI
 from ui.tokens import Tokens
@@ -99,8 +100,7 @@ def test_nav_tree_views_and_bib_groups_are_three_level() -> None:
     assert [view["key"] for view in IA.nav_views("single")] == ["convert", "proofcheck"]
     # 批 115 D1-115-26：整期装配侧栏叶子化，6 步只在页内步骤栏（不再是子项）。
     assert IA.nav_views("issue") == []
-    assert IA.issue_step_keys() == [
-        "infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
+    assert IA.issue_step_keys() == ["infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush"]
     # 批 115 D1-115-31/32：3 个不可点击组标签、9 叶常驻；健康并入治理，
     # 设置降为仅路由（页头齿轮/⌘K），不再占第 4 组。
     bib_groups = IA.group_views("bib")
@@ -123,7 +123,7 @@ def test_nav_tree_views_and_bib_groups_are_three_level() -> None:
 
 def test_all_routes_cover_parent_defaults_and_children() -> None:
     routes = IA.all_routes()
-    assert len(routes) == 31
+    assert len(routes) == 32
     assert set(routes) >= {"home", "settings", "help", "single:convert", "single:proofcheck",
                            "issue:overview", "issue:toc", "bib:overview", "bib:edit",
                            "bib:settings"}   # 设置仅从侧栏移除，深链路由不减少
@@ -384,8 +384,14 @@ def test_issue_page_builds_empty_state_or_step_subpage() -> None:
     assert "_content_box" in build_src
     step_src = inspect.getsource(P.IssuePage._build_step_page)
     body_src = inspect.getsource(P.IssuePage._step_body)
-    assert "_build_empty_detail()" in body_src
-    assert "_build_issue_row()" in step_src
+    # 结构补丁：IssuePage 的实现外提到 ui/issue_view.py，_step_body 只剩一行委托，
+    # 空态分支要看真正实现处。
+    assert "IV._step_body(self, key)" in body_src
+    iv_body_src = inspect.getsource(IV._step_body)
+    assert "_build_empty_detail()" in iv_body_src
+    iv_step_src = inspect.getsource(IV._build_step_page)
+    assert "_build_issue_row()" in iv_step_src
+    assert "_run_step" not in iv_step_src and "_run_step" not in iv_body_src
     assert "_run_step" not in step_src and "_run_step" not in body_src
     # 批 117：54 高横条/216 左栏删除，导航改为页内 4 chip。
     assert "_progress_band" not in step_src

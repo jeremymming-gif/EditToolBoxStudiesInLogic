@@ -450,5 +450,167 @@ class TwoPageRefreshIntegration(unittest.TestCase):
                                                   for p in issue.rglob("*") if p.is_file()}, before)
                                 self.assertFalse(list((root / "state").rglob("pending.json")))
 
+class SelectionSummary(unittest.TestCase):
+    """只读选择摘要：可见计数来自当前期与排序解析，不编译、不读正文、不写事务。"""
+
+    def setUp(self):
+        import refreshpages as refresh
+        self.refresh = refresh
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.issue = self.root / "issue"
+        self.state = self.root / "state"
+        self.issue.mkdir()
+        for name in ("01 甲", "02 乙", "000 目录", "说明"):
+            folder = self.issue / name
+            folder.mkdir()
+            if name.startswith(("01", "02")):
+                (folder / (name[3:] + ".tex")).write_text("\\newcommand{\\mypages}{1}")
+        env = patch.dict(os.environ, {"SLCN_ISSUE_STATE_DIR": str(self.state)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def cli(self, *args, stdin=None):
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream), \
+             patch("sys.stdin", io.StringIO(stdin) if stdin is not None else io.StringIO("")):
+            rc = self.refresh.main(["--issue", str(self.issue), "--json", *args])
+        return rc, json.loads(stream.getvalue())
+
+    def summary(self, *args, stdin=None):
+        rc, body = self.cli("--selection-summary", *args, stdin=stdin)
+        self.assertEqual(rc, 0, body)
+        self.assertEqual(body["schema"], 1)
+        self.assertEqual(body["operation"], "refreshpages")
+        self.assertEqual(body["status"], "selection_summary")
+        self.assertEqual(body["issue"], commit.issuewrite.issue_identity(self.issue))
+        self.assertEqual(body["article_count"],
+                         body["numbered_count"] - body["excluded_numbered_count"])
+        return body
+
+    def _order(self, *, excluded=()):
+        dirs = {name: [d.st_dev, d.st_ino]
+                for name in ("01 甲", "02 乙")
+                for d in [os.stat(self.issue / name)]}
+        if "说明" in excluded:
+            d = os.stat(self.issue / "说明")
+            dirs["说明"] = [d.st_dev, d.st_ino]
+        return dict(
+            schema=1, operation="renamefolders", status="completed",
+            issue=commit.issuewrite.issue_identity(self.issue),
+            renames=[dict(old=name[3:] if name.startswith(("01", "02")) else name,
+                          new=name, main_tex=name[3:] + ".tex" if name.startswith(("01", "02")) else "说明.tex")
+                     for name in ("01 甲", "02 乙", "说明") if name not in excluded],
+            excluded=[name for name in excluded],
+            directories=dirs,
+        )
+
+    def test_implicit_summary_counts_numbered_directories_without_pdfs_and_excludes_nonnumbered(self):
+        body = self.summary()
+        self.assertEqual(body["order_source"], "implicit_all")
+        self.assertEqual((body["numbered_count"], body["excluded_numbered_count"]), (2, 0))
+        self.assertEqual(body["article_count"], 2)
+        self.assertFalse(list(self.issue.rglob("*.pdf")))
+        self.assertFalse(self.state.exists())
+
+    def test_summary_does_not_read_tex_or_pdf_content(self):
+        with patch("pathlib.Path.read_text", side_effect=AssertionError("不该读取正文")):
+            body = self.summary()
+        self.assertEqual(body["article_count"], 2)
+
+    def test_saved_exclusions_are_matched_and_identity_switched_counts_are_recomputed(self):
+        saved = dict(issue=commit.issuewrite.issue_identity(self.issue),
+                     directories=commit.numbered_directories(self.issue),
+                     excluded=["02 乙"])
+        state_file = commit.issuewrite.record_path(
+            commit.issuewrite.issue_identity(self.issue), self.state).with_name("refresh-selection.json")
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text(json.dumps(saved, ensure_ascii=False))
+        body = self.summary()
+        self.assertEqual(body["order_source"], "saved")
+        self.assertEqual((body["numbered_count"], body["excluded_numbered_count"]), (2, 1))
+        self.assertEqual(body["article_count"], 1)
+        # 切换到另一期（新 inode、独立状态）：旧期的 saved 排除不得套用到新期
+        second = self.root / "second"
+        second.mkdir()
+        for name in ("01 甲", "02 乙", "03 丙"):
+            folder = second / name
+            folder.mkdir()
+            (folder / (name[3:] + ".tex")).write_text("x")
+        second_state = self.root / "second-state"
+        with patch.dict(os.environ, {"SLCN_ISSUE_STATE_DIR": str(second_state)}):
+            rc, body = self.cli("--selection-summary", "--issue", str(second))
+        self.assertEqual(rc, 0, body)
+        self.assertEqual(body["issue"], commit.issuewrite.issue_identity(second))
+        self.assertEqual(body["order_source"], "implicit_all")
+        self.assertEqual((body["numbered_count"], body["excluded_numbered_count"]), (3, 0))
+        self.assertEqual(body["article_count"], 3)
+
+    def test_provided_result_summary_excludes_only_numbered_directories(self):
+        # 排序回执覆盖全部候选（含非编号"说明"）；000 与非编号排除不得进入编号计数。
+        (self.issue / "说明" / "说明.tex").write_text("x")
+        excluded = ["02 乙", "说明"]
+        order = self._order(excluded=excluded)
+        body = self.summary("--order-result", "-", stdin=json.dumps(order, ensure_ascii=False))
+        self.assertEqual(body["order_source"], "provided")
+        self.assertEqual((body["numbered_count"], body["excluded_numbered_count"]), (2, 1))
+        self.assertEqual(body["article_count"], 1)
+        path = self.root / "order.json"
+        path.write_text(json.dumps(order, ensure_ascii=False))
+        self.assertEqual(self.summary("--order-result", str(path))["article_count"], 1)
+        self.assertEqual(self.summary()["numbered_count"], 2)  # 000/说明 从不计数
+
+    def test_provided_result_with_stale_identity_is_blocked(self):
+        (self.issue / "说明" / "说明.tex").write_text("x")
+        order = self._order(excluded=["02 乙", "说明"])
+        order["directories"]["01 甲"] = [123, 456]  # 目录身份已变
+        rc, body = self.cli("--selection-summary", "--order-result", "-",
+                            stdin=json.dumps(order, ensure_ascii=False))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("目录身份", str(body.get("error", "")))
+
+    def test_summary_is_exclusive_with_mutating_options(self):
+        for extra in (("--apply",), ("--plan-id", "x"), ("--recover", "x"),
+                      ("--on-change",), ("--only", "1"), ("--regenerate-toc",)):
+            rc, body = self.cli("--selection-summary", *extra)
+            self.assertNotEqual(rc, 0)
+            self.assertNotIn("numbered_count", body)
+
+    def test_empty_directory_reports_zero_without_guess(self):
+        for folder in self.issue.iterdir():
+            folder.rmdir() if not any(folder.iterdir()) else None
+        for tex in self.issue.rglob("*.tex"):
+            tex.unlink()
+            tex.parent.rmdir()
+        body = self.summary()
+        self.assertEqual((body["numbered_count"], body["excluded_numbered_count"]), (0, 0))
+        self.assertEqual(body["article_count"], 0)
+
+    def test_pending_transaction_and_unsafe_state_directory_block_summary(self):
+        identity = commit.issuewrite.issue_identity(self.issue)
+        record = commit.issuewrite.record_path(identity, self.state)
+        record.parent.mkdir(parents=True)
+        commit.issuewrite.write_record(record, {
+            "schema": 1, "operation": "refreshpages", "recovery_id": "recover-a",
+            "issue": identity,
+        })
+        rc, body = self.cli("--selection-summary")
+        self.assertEqual(rc, 1)
+        self.assertEqual(body["status"], "recovery_required")
+        self.assertEqual(body["recovery_id"], "recover-a")
+        self.assertNotIn("numbered_count", body)
+        record.unlink()
+        rc, body = self.cli("--selection-summary")
+        self.assertEqual(rc, 0, body)
+
+        inside = self.issue / "state"
+        inside.mkdir()
+        with patch.dict(os.environ, {"SLCN_ISSUE_STATE_DIR": str(inside)}):
+            rc, body = self.cli("--selection-summary")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("状态目录", str(body.get("error", "")))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1276,7 +1276,8 @@ class App:
         step = ""
         state = self.store.get("issue_state", {})
         if isinstance(state, dict):
-            step = str(state.get("last_step") or "")
+            # D7：重启恢复的旧步（如 compileall）只映射导航，不迁移旧运行结果。
+            step = IA.normalize_issue_step(str(state.get("last_step") or ""))
             if step not in keys:
                 step = ""
                 path = str(self.store.get("recent.issue_dir", "") or "")
@@ -1294,7 +1295,7 @@ class App:
                     per_path = nested
                 record = per_path.get(path) if path and isinstance(per_path, dict) else None
                 if isinstance(record, dict):
-                    step = str(record.get("last_step") or "")
+                    step = IA.normalize_issue_step(str(record.get("last_step") or ""))
         if step not in keys:
             # 页面契约（IM-ISSUE 重写后）：同目录上次步 > 首个未完成 > 第 1 步。
             # 新页面叫 _default_view；保留 landing_step/_landing_step 兼容早期草稿。
@@ -1456,7 +1457,7 @@ class App:
                     continue
                 # 批 116 NAV-B（方案 B）：侧栏只放目的地，工作区/系统一律叶子，
                 # 无 chevron、无子行。单篇的 convert/proofcheck 改页内 chip，
-                # 整期的 4 个功能页在页内 chip；点击单篇沿用上次视图。
+                # 整期的 6 个页签在页内 chip；点击单篇沿用上次视图。
                 leaf = C.nav_parent(
                     str(entry["icon"]), str(entry["label"]), t, active=active,
                     expanded=False, has_children=False,
@@ -3078,7 +3079,7 @@ class App:
                          bib=_env_str("P2_DEMO_BIB"),
                          proof_tex=_env_str("P2_DEMO_PROOF_TEX"))
             page.run_demo()
-        elif target in ("infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"):
+        elif target in ("infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush"):
             page = self.pages.get("issue")
             if page is None:
                 self.mark("autorun_error", error="no issue page")
@@ -3087,13 +3088,6 @@ class App:
             page.prefill(issue_dir=_env_str("P2_DEMO_ISSUE"), toc_report=_env_str("P2_DEMO_TOC"))
             page.select_step(target)
             page.run_step_demo(target)
-        elif target == "all":
-            page = self.pages.get("issue")
-            if page is None:
-                return
-            page.ensure_built()
-            page.prefill(issue_dir=_env_str("P2_DEMO_ISSUE"), toc_report=_env_str("P2_DEMO_TOC"))
-            page.run_all_demo()
         if not normalize_redirect or self.run_seen or self.running:
             await self._wait_run_finished()
         cancel_after = _env_float("P2_CANCEL_MS", None)

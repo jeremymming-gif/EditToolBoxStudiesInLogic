@@ -143,8 +143,8 @@ def _dependencies(articles, toc_inputs, targets):
     return tuple(_info(path) for path in sorted(files) if path not in targets)
 
 
-def build_refresh_plan(issue: Path, *, state_dir: Path, regenerate_toc=False, order_result=None,
-                       on_change=False, only=()):
+def _current_selection(issue, state_dir, order_result):
+    """当前期与选择解析：摘要与预览共用，不在此处读正文或建写事务。"""
     issue = _root(issue)
     if Path(state_dir).resolve().is_relative_to(issue):
         raise ValueError("期状态目录必须位于期目录之外")
@@ -152,7 +152,28 @@ def build_refresh_plan(issue: Path, *, state_dir: Path, regenerate_toc=False, or
     if pending:
         raise Pending(pending)
     directories = commit.numbered_directories(issue)
-    excluded, selection, order_stamp, reported_exclusions = _order(issue, state_dir, order_result, directories)
+    excluded, selection, order_stamp, reported_exclusions = _order(
+        issue, state_dir, order_result, directories)
+    return issue, directories, excluded, selection, order_stamp, reported_exclusions
+
+
+def selection_summary(issue, *, state_dir, order_result=None):
+    """只读选择计数；编号目录与排除解析与预览同源，不读正文 PDF/TeX、不编译、不写盘。"""
+    issue, directories, excluded, selection, order_stamp, _reported = _current_selection(
+        issue, state_dir, order_result)
+    excluded_numbered = len(set(excluded) & set(directories))
+    return dict(schema=1, operation="refreshpages", status="selection_summary",
+                issue=issuewrite.issue_identity(issue),
+                order_source="provided" if order_stamp else "saved" if selection else "implicit_all",
+                numbered_count=len(directories),
+                excluded_numbered_count=excluded_numbered,
+                article_count=len(directories) - excluded_numbered)
+
+
+def build_refresh_plan(issue: Path, *, state_dir: Path, regenerate_toc=False, order_result=None,
+                       on_change=False, only=()):
+    issue, directories, excluded, selection, order_stamp, reported_exclusions = _current_selection(
+        issue, state_dir, order_result)
     articles = issuepaging.inspect_articles(issue, excluded=excluded)
     if set(directories) - set(excluded) != {a.folder for a in articles}:
         raise PagePlanError("合刊读入的编号目录与可刷新篇目不一致，请核对排序和排除清单")
@@ -290,6 +311,8 @@ def main(argv=None):
     platform.utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--issue", required=True)
+    parser.add_argument("--selection-summary", action="store_true",
+                        help="只读输出当前期编号目录的选择计数，不编译也不写盘")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--plan-id")
     parser.add_argument("--recover")
@@ -307,16 +330,27 @@ def main(argv=None):
         with redirect_stdout(sys.stderr):
             issue = _root(args.issue)
             body["issue"] = issuewrite.issue_identity(issue)
-            if args.recover:
-                if args.apply or args.plan_id or args.regenerate_toc or args.order_result or args.on_change or args.only:
-                    raise ValueError("恢复模式与刷新选项互斥")
-                with issuewrite.issue_write_lock(issue, state):
-                    pending = issuewrite.pending_issue_write(issue, state)
-                    if (not pending or pending.get("operation") != "refreshpages"
-                            or pending.get("recovery_id") != args.recover):
-                        raise ValueError("没有匹配的页码恢复记录")
-                    commit.recover(issue, state, args.recover)
-                body.update(status="rolled_back", recovery_id=args.recover, warnings=[])
+            if args.recover or args.selection_summary:
+                if args.recover and args.selection_summary:
+                    raise ValueError("只读摘要与恢复模式互斥")
+                if args.selection_summary:
+                    if (args.apply or args.plan_id or args.recover or args.regenerate_toc
+                            or args.on_change or args.only is not None):
+                        raise ValueError("只读摘要与刷新选项互斥")
+                    order = args.order_result
+                    if order == Path("-"):
+                        order = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read().encode()
+                    body = selection_summary(issue, state_dir=state, order_result=order)
+                else:
+                    if args.apply or args.plan_id or args.regenerate_toc or args.order_result or args.on_change or args.only:
+                        raise ValueError("恢复模式与刷新选项互斥")
+                    with issuewrite.issue_write_lock(issue, state):
+                        pending = issuewrite.pending_issue_write(issue, state)
+                        if (not pending or pending.get("operation") != "refreshpages"
+                                or pending.get("recovery_id") != args.recover):
+                            raise ValueError("没有匹配的页码恢复记录")
+                        commit.recover(issue, state, args.recover)
+                    body.update(status="rolled_back", recovery_id=args.recover, warnings=[])
             else:
                 if args.apply != bool(args.plan_id):
                     raise ValueError("应用时必须同时提供 --apply 和 --plan-id")

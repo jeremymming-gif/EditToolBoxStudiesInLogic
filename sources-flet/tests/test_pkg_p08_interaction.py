@@ -644,10 +644,10 @@ def test_gb_log_resize_handle_has_tooltip():
 
 
 def test_gb_issue_page_keyboard_installer_keeps_existing_handler():
-    # [GB] R03：`IssuePage._install_keyboard`（pages.py:3556）现状是「只填空白、不覆盖」
-    # ——这就是它被 settings_shell.install_hotkeys 先占 page.on_keyboard_event 后永不
-    # 生效的机制（app/main.py:646-649 顺序：rebuild_shell 后 install_hotkeys）。锁行为，
-    # 防止有人改成强行覆盖（那会在输入框里抢方向键/Esc）。
+    # [GB] R03 + D7：`IssuePage._install_keyboard` 仍然「只填空白、不覆盖」——
+    # 全局热键由 settings_shell.install_hotkeys 先装到 page.on_keyboard_event，
+    # 页面若强行覆盖会抢走输入框里的方向键/Esc。⌘1–6 的页签切换改由全局热键
+    # 处理器转交（见 test_gb_issue_hotkey_chain_*）。
     page_obj = SimpleNamespace(on_keyboard_event=None)
     sp = object.__new__(P.IssuePage)           # 不跑 __init__（依赖真外壳）
     sp.app = SimpleNamespace(page=page_obj)
@@ -663,6 +663,49 @@ def test_gb_issue_page_keyboard_installer_keeps_existing_handler():
     sp2._keyboard_installed = False
     sp2._install_keyboard()
     assert page_obj.on_keyboard_event is existing
+
+
+def _hotkey_app(*, current: str = "issue"):
+    """最小 app 桩：只喂 settings_shell.on_key 需要的那几个入口。"""
+    calls: list[tuple] = []
+    issue = SimpleNamespace(view_hotkey=lambda slot: calls.append(("view", slot)) or True)
+    pages = {key: SimpleNamespace(key=key) for key in SHELL.PAGE_KEYS}
+    pages["issue"] = issue
+    app = SimpleNamespace(
+        current_page_key=current,
+        pages=pages,
+        page=None,
+        goto=lambda key: calls.append(("goto", key)),
+        mark=lambda event, **fields: calls.append(("mark", event, fields)),
+        open_search_palette=lambda: calls.append(("search",)),
+        redetect_engine=lambda: calls.append(("refresh",)),
+        stop_run=lambda: calls.append(("stop",)),
+        set_theme=lambda value: calls.append(("theme", value)),
+        toast=lambda message: calls.append(("toast", message)),
+        theme="light",
+        search_key_handle=None,
+    )
+    return app, calls
+
+
+def test_gb_issue_hotkey_chain_routes_ctrl_digit_to_view_tabs(monkeypatch):
+    # [D7] issue 页上 Ctrl/⌘+1–6 = 六页签切换，不能再走一级页跳转。
+    monkeypatch.setattr(SHELL.platform, "system", lambda: "Linux")
+    app, calls = _hotkey_app(current="issue")
+    SHELL.on_key(app, SimpleNamespace(key="3", ctrl=True, meta=False,
+                                      shift=False, alt=False))
+    assert ("view", 3) in calls
+    assert not [call for call in calls if call[0] == "goto"]
+
+
+def test_gb_issue_hotkey_chain_keeps_global_page_nav_outside_issue(monkeypatch):
+    # 非 issue 页保持原样：Ctrl+2 仍是「跳第 2 个一级页」。
+    monkeypatch.setattr(SHELL.platform, "system", lambda: "Linux")
+    app, calls = _hotkey_app(current="home")
+    SHELL.on_key(app, SimpleNamespace(key="2", ctrl=True, meta=False,
+                                      shift=False, alt=False))
+    assert ("goto", "single") in calls
+    assert ("view", 2) not in calls
 
 
 # ── R05：最小窗口尺寸（1000×700 设计像素，随 k 缩放） ─────────────────────

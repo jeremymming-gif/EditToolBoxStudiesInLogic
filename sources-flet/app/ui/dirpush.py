@@ -403,7 +403,7 @@ class DirPushPanel:
                         else "留空 = 选择期目录后写入该期 000 Table of Contents")
         level, message = validate_out_root(out_root, issue)
         rows: list = [
-            C.notice_bar("先预演（只预演开关）不写文件；输出根落在代码仓内会二次确认。",
+            C.notice_bar("输出根落在代码仓内会二次确认；推送将实际写入文件。",
                          t, "info"),
             self.page.add_picker("输出根", "dirpush_out",
                                  f"目录摘要 docx 输出根；{default_hint}",
@@ -418,8 +418,7 @@ class DirPushPanel:
                     C.text("将写入", t, "caption", t.palette.text_muted),
                     C.text(target, t, "mono", t.palette.text, max_lines=1,
                            overflow=ft.TextOverflow.ELLIPSIS),
-                    C.text("预演：只校验、不写文件" if self._dry_run() else
-                           "同根下同名 docx 会被覆盖（不保留 .bak）· 先预演一次",
+                    C.text("同根下同名 docx 会被覆盖（不保留 .bak）",
                            t, "caption", t.palette.text_faint, max_lines=2),
                 ]),
             ),
@@ -438,19 +437,11 @@ class DirPushPanel:
                                                            e.control.value),
                              disabled=annual,
                              reason="年度体例按各期《目录摘要设置.json》还原，此开关只作用于当期"),
-            self._switch_row("只预演",
-                             "采集并校验，不写文件",
-                             bool(options.get("dirpush_dry_run", False)),
-                             lambda e: self.app.set_option("dirpush_dry_run",
-                                                           e.control.value)),
             C.text(issues_caption(self.app.store.get("form.dirpush_issues", ""))
                    if annual else "", t, "caption", t.palette.text_faint),
             self.feedback,
         ]
         return rows
-
-    def _dry_run(self) -> bool:
-        return bool((self.app.store.get("options", {}) or {}).get("dirpush_dry_run", False))
 
     def values(self) -> dict:
         return {
@@ -460,8 +451,6 @@ class DirPushPanel:
             "include_issues": (self.issues.value or "").strip(),
             "with_en_toc": bool((self.app.store.get("options", {}) or {})
                                 .get("dirpush_with_en_toc", False)),
-            "dry_run": bool((self.app.store.get("options", {}) or {})
-                            .get("dirpush_dry_run", False)),
         }
 
     def start(self, dry_run: bool = False) -> None:
@@ -475,11 +464,12 @@ class DirPushPanel:
             self.page.mark("validation_error", step="dirpush", reason="missing issue dir")
             return
         values = self.values()
+        # 旧 dirpush_dry_run 设置值不再参与 argv；仅显式内部参数可开启预演。
         call = build_call(issue=issue, out_root=values["out_root"],
                           annual=values["annual"], year=values["year"],
                           include_issues=values["include_issues"],
                           with_en_toc=values["with_en_toc"],
-                          dry_run=bool(dry_run or values["dry_run"]))
+                          dry_run=bool(dry_run))
         warn = repo_warning(values["out_root"])
         if warn:
             self.feedback.content = C.notice_bar(warn, self.t, "warn")
@@ -496,7 +486,7 @@ class DirPushPanel:
             self.page._refresh_steps()
             self.page.page.run_task(self.page._run_calls, [("dirpush", call)])
 
-        if warn and not (dry_run or values["dry_run"]) and not getattr(self.app, "auto_confirm", False):
+        if warn and not dry_run and not getattr(self.app, "auto_confirm", False):
             def _confirmed() -> None:
                 self.page.mark("confirm_repo_out", path=values["out_root"])
                 _go()

@@ -181,7 +181,7 @@ def test_cancel_banner_has_no_artifact_but_other_steps_keep_theirs(tmp_path, mon
 def test_cross_step_run_is_captured_into_merge_page(tmp_path, monkeypatch) -> None:
     out = _pdf(tmp_path / "合并_新.pdf")
     page = _prepare(tmp_path, with_merge_page=False)
-    page.activate("compileall", source="test")  # 用户停在别的步骤
+    page.activate("order", source="test")  # 用户停在别的步骤（D3：旧 compileall 步已下线）
     _install_engine(monkeypatch, page.app, [{
         "lines": ["完成。合并文件：%s（共 3 页）" % out],
         "code": 0,

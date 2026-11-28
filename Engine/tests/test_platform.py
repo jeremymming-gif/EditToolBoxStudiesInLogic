@@ -1338,7 +1338,8 @@ if _IA_MAP_SRC.is_file():
         if _target is not None and _target.id == "ISSUE_ROUTE_STEPS":
             _issue_steps = [s["key"] for s in _ast.literal_eval(_node.value)]
     _expected_single = {"convert", "proofcheck"}
-    _expected_issue_steps = ["infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
+    _expected_issue_steps = ["infocheck", "toc", "order", "refresh", "merge",
+                             "cleantemp", "dirpush"]
     _orphan = sorted(set(_new_pages) - set(_parent_labels))
     _routes = [f"{e['key']}:{v}" for e in _entries for v in _views(e)]
 
@@ -1363,9 +1364,11 @@ if _IA_MAP_SRC.is_file():
     _issue_view_keys = [v["key"] for v in _issue_views]
     _issue_view_steps = [step for v in _issue_views for step in v["steps"]]
 
-    check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期叶子（6 步走 ISSUE_ROUTE_STEPS）、"
+    # 批 116 ISSUE4 → D7：整期（6 步 4 视图）扩为 7 步 6 页签，
+    # 新增 order（排序与改名）与 refresh（刷新页码），compileall/produce 只作旧别名。
+    check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期叶子（7 步走 ISSUE_ROUTE_STEPS）、"
           "引用库叶子化（10 条 route views；设置 route_only）+ 页内 3 组 9 叶、"
-          "整期 4 个页内视图覆盖 6 步、route 唯一、且 `IA_MAP.new_page` 都能落到某个父项"
+          "整期 6 个页内视图覆盖 7 步、route 唯一、且 `IA_MAP.new_page` 都能落到某个父项"
           "（导航改结构必须同步这张表；批 116 NAV-B/BIB-NAV2/ISSUE4 改结构时同步改本断言）",
           _parent_keys == ["home", "single", "issue", "bib", "settings", "help"]
           and set(_single) == _expected_single
@@ -1377,8 +1380,8 @@ if _IA_MAP_SRC.is_file():
           and _bib_inpage_groups == ["read", "intake", "treat"]
           and _bib_inpage_views == ["overview", "query", "import", "normalize", "review",
                                     "edit", "dupes", "fieldfix", "health"]
-          and _issue_view_keys == ["catalog", "produce", "clean", "push"]
-          and _issue_view_steps == ["infocheck", "toc", "compileall", "merge",
+          and _issue_view_keys == ["catalog", "order", "refresh", "merge", "clean", "push"]
+          and _issue_view_steps == ["infocheck", "toc", "order", "refresh", "merge",
                                     "cleantemp", "dirpush"]
           and _by_key.get("bib", {}).get("default") == "overview"
           and _issue_entry.get("default") == "infocheck"

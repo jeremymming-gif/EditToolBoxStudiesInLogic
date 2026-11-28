@@ -41,7 +41,7 @@ SHORTCUTS = [
     {"keys": "F9", "action": "run", "label": "运行当前步骤"},
     {"keys": "Esc", "action": "stop", "label": "停止运行"},
     {"keys": "Ctrl+Shift+D", "action": "theme", "label": "切换深浅色"},
-    {"keys": "Ctrl+1…5", "action": "page", "label": "切换页面（第 1–5 页）"},
+    {"keys": "Ctrl+1…6", "action": "page", "label": "切换页面（第 1–6 页；issue 页为页签）"},
 ]
 PAGE_KEYS = ("home", "single", "issue", "bib", "settings", "help")
 SETTINGS_CATEGORIES = ("通用", "AI", "引用库")
@@ -139,6 +139,26 @@ def _suppress_auto_page_update(app, event, reason: str) -> None:
         pass
 
 
+def _issue_view_hotkey(app, index: int) -> bool:
+    """issue 页上把 Ctrl/⌘+N 转交 IssuePage 的六页签切换。
+
+    为什么必须在这里转交：全局热键由 ``install_hotkeys`` 装到
+    ``page.on_keyboard_event``，而 ``IssuePage._install_keyboard`` 只在没有处理器
+    时才挂自己 —— 也就是说 issue 页的 ⌘1–6 只能从这里进。返回 True = 已处理。
+    """
+    if getattr(app, "current_page_key", "") != "issue":
+        return False
+    pages = getattr(app, "pages", None) or {}
+    page = pages.get("issue")
+    handler = getattr(page, "view_hotkey", None)
+    if not callable(handler):
+        return False
+    try:
+        return bool(handler(index + 1))
+    except Exception:  # noqa: BLE001 页签切换失败不能吞掉按键链
+        return False
+
+
 def on_key(app, event) -> None:
     # 批 114：搜索框聚焦时 ↑↓/Escape 先交给搜索（Enter 走 TextField on_submit）。
     search_hook = getattr(app, "search_key_handle", None)
@@ -165,6 +185,10 @@ def on_key(app, event) -> None:
     app.mark("hotkey", action=action, key=str(getattr(event, "key", "")))
     if action.startswith("page:"):
         index = int(action.split(":", 1)[1]) - 1
+        # D7：issue 页上 ⌘/Ctrl+1–6 是「六页签」切换，不是一级页跳转。
+        # 复用 IssuePage.view_hotkey，避免外壳与页面各存一份 1–6 映射。
+        if _issue_view_hotkey(app, index):
+            return
         if 0 <= index < len(PAGE_KEYS) and PAGE_KEYS[index] in app.pages:
             app.goto(PAGE_KEYS[index])
     elif action in ("settings", "help"):

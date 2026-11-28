@@ -26,6 +26,7 @@ import pytest
 
 from app.ui import components as C
 from app.ui import ia_map as IA
+from app.ui import issue_view as IV
 from app.ui import pages as P
 from app.ui import settings_detail as SD
 from app.ui import settings_hub as HUB
@@ -137,8 +138,9 @@ def test_issue_page_methods_have_no_cards_titles_or_chips():
         assert "status_chip" not in calls, f"{func.__name__} 仍在用 C.status_chip"
     empty_calls = _calls(P.IssuePage._build_empty_detail)
     assert "primary_button" in empty_calls and "text" in empty_calls
-    # MC-01：区块头内容拆到 `_detail_head_content`，状态点仍由它渲染。
-    assert "status_dot" in _calls(P.IssuePage._detail_head_content)
+    # MC-01：区块头内容拆到 `_detail_head_content`（批 118 结构补丁外提到
+    # ui/issue_view.py），状态点仍由它渲染。
+    assert "status_dot" in _calls(IV._detail_head_content)
 
 
 def test_issue_empty_state_is_centered_card_with_picker_cta():
@@ -177,7 +179,7 @@ def test_issue_empty_state_same_across_widths_and_views():
                      if isinstance(ctl, ft.Container)
                      and ctl.height == page.t.px(54)]
             assert not bands, f"{width} 不应再出现 54 高横条"
-            assert len(page._nav_chips) == 4
+            assert len(page._nav_chips) == 6, "D7：页内 6 页签"
 
 
 def test_issue_on_resize_keeps_current_view_empty_state():
@@ -227,8 +229,8 @@ def test_issue_step_page_has_no_back_button_or_duplicate_title():
         "收起区块保留唯一的 Outlined 主按钮"
     toc_btn = next(ctl for ctl in detail_runs if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
-    src = inspect.getsource(P.IssuePage._build_step_page)
-    body_src = inspect.getsource(P.IssuePage._step_body)
+    src = inspect.getsource(IV._build_step_page)
+    body_src = inspect.getsource(IV._step_body)
     assert "_build_empty_detail()" in body_src
     assert "_build_issue_row()" in src and "_run_step" not in src
     assert "_progress_band" not in src
@@ -245,7 +247,7 @@ def test_issue_nav_bar_uses_chips_not_progress_band():
     chips = [ctl for ctl in _walk(nav)
              if isinstance(ctl, ft.Container) and ctl.key
              and str(ctl.key).startswith("issue-nav-")]
-    assert len(chips) == len(page.VIEWS) == 4
+    assert len(chips) == len(page.VIEWS) == 6
     assert {chip.height for chip in chips} == {t.px(28)}
     assert "status_chip" not in _calls(P.IssuePage._nav_bar)
 

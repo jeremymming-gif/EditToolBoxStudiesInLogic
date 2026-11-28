@@ -10,7 +10,6 @@ import asyncio
 import os
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import flet as ft
@@ -144,26 +143,8 @@ def build_params(page, key: str) -> ft.Control:
         rows += CK.info_params(page)
     elif key == "toc":
         rows += toc_panel(page).params()
-    elif key == "compileall":
-        options = page.app.store.get("options", {}) or {}
-        plan = compile_plan(page.field("issue_dir"), page.field("compile_only"))
-        all_plan = compile_plan(page.field("issue_dir"), "")
-        only = page.field("compile_only")
-        rows += [
-            page._meta_field("compile_only", "只编这几篇", 260),
-            ft.Row(spacing=t.sp("1"), controls=[
-                C.text(f"共 {len(all_plan)} 篇 · 将编译 {len(plan)} 篇", t, "caption",
-                       t.palette.text_muted),
-                ft.Container(expand=True),
-                C.text("留空 = 全部；逗号分隔，如 01,03", t, "caption",
-                       t.palette.text_faint),
-            ]),
-            C.option_row("只预演（不写入）", "列出将要编译的篇目，不真跑 xelatex", t,
-                         icon="SCIENCE_OUTLINED",
-                         checked=bool(options.get("compileall_dry_run", False)),
-                         on_change=lambda e: page.app.set_option("compileall_dry_run",
-                                                                 e.control.value)),
-        ]
+    elif key == "refresh":
+        # D3：刷新页唯一主动作由 PagingPanel 提供；T1 负责摘要/预览/确认/应用。
         panel = getattr(page, "_issue_paging_panel", None)
         if panel is None:
             panel = ISSUE_PAGING.PagingPanel(page)
@@ -185,12 +166,6 @@ def build_params(page, key: str) -> ft.Control:
                          checked=bool(options.get("merge_back_cover", False)),
                          on_change=lambda e: page.app.set_option("merge_back_cover",
                                                                  e.control.value)),
-            ft.Row(spacing=t.sp("1"), controls=[
-                C.text_button("先检查", lambda e: run_detect(page), t,
-                              icon="SEARCH"),
-                C.text("只探测编委页/封底页/扉页，不合并", t, "caption",
-                       t.palette.text_faint),
-            ]),
         ]
     elif key == "cleantemp":
         rows += page._cleanup.params()
@@ -284,9 +259,6 @@ def build_step_call(page, key: str) -> EB.EngineCall:
                            settings=settings,
                            text_only=bool(_toc_text_only(page)),
                            result_json=result_json)
-    if key == "compileall":
-        return EB.compileall_call(folder=issue, only=page.field("compile_only"),
-                                  dry_run=bool(options.get("compileall_dry_run", False)))
     if key == "merge":
         return EB.merge_call(
             folder=issue, out=page.field("merge_out"),
@@ -305,14 +277,11 @@ def build_step_call(page, key: str) -> EB.EngineCall:
             year=_form(page, "dirpush_year"),
             include_issues=_form(page, "dirpush_issues"),
             with_en_toc=bool(options.get("dirpush_with_en_toc", False)),
-            dry_run=bool(options.get("dirpush_dry_run", False)),
         )
     raise ValueError(f"未知步骤：{key}")
 
 
 # ── 运行 ─────────────────────────────────────────────────────────────────
-# 批 115（D1-115-26）：整期默认只跑 1–4 步；清理/推送默认不跑，由确认框显式勾选。
-DEFAULT_RUN_ALL_KEYS = ("infocheck", "toc", "compileall", "merge")
 _STATE_LABELS = {
     "done": "完成",
     "warn": "警告",
@@ -484,14 +453,12 @@ def _mark_pending(page, results: list[dict], keys: list[str], state: str) -> Non
     page._refresh_steps()
 
 
-async def _run_sequence(page, keys: list[str], calls: dict | None = None,
-                        automatic_compile: ISSUE_PAGING.AutomaticCompile | None = None) -> list[dict]:
+async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> list[dict]:
     """统一执行器：单步与整期共用（pages._run_calls 会 per-step 清日志，不能再用）。
 
     - 默认**不清空日志**，每步前后各写一条段头/段尾（序号 + key + 时间）；
     - 每步把状态与元数据写回 ``page._status[key]``，并保留 ``page._run_results``；
-    - rc >= 2（或启动异常）→ 后续标 ``skipped``；普通步骤 rc == 1 → ``warn`` 继续；
-      自动页码刷新发生错误时停止后续步骤。
+    - rc >= 2（或启动异常）→ 后续标 ``skipped``；普通步骤 rc == 1 → ``warn`` 继续。
     - 取消只停当前子进程（kill 由 app.stop_run 负责），后续标 ``cancelled``。
     """
     calls = dict(calls or {})
@@ -509,12 +476,11 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None,
         _step_started(page, key)
         _log_line(page, _section_start(page, key, started_at), "dim")
         started = time.monotonic()
-        automatic = automatic_compile if key == "compileall" else None
         try:
             call = calls.get(key)
             if call is None:
                 # 懒构建：前一步（infocheck）刚产出的报告要让 toc 在这里自动发现。
-                call = automatic.call() if automatic else build_step_call(page, key)
+                call = build_step_call(page, key)
         except (ValueError, RuntimeError) as exc:
             duration = round((time.monotonic() - started) * 1000, 1)
             status = StepStatus("error", exit_code=None, duration_ms=duration,
@@ -540,13 +506,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None,
             _on_line(page, line)
 
         try:
-            if automatic:
-                code, auto_message = await automatic.panel.compile_automatically(automatic, call, on_line)
-            else:
-                if key == "compileall" and (panel := getattr(page, "_issue_paging_panel", None)):
-                    panel.begin_regular_compile()
-                code = await EB.run_call(call, on_line=on_line, on_proc=page.app.track_proc,
-                                         notes=page.app.notes_repo)
+            code = await EB.run_call(call, on_line=on_line, on_proc=page.app.track_proc,
+                                     notes=page.app.notes_repo)
         except Exception as exc:  # noqa: BLE001 — 引擎启动失败也要落状态
             duration = round((time.monotonic() - started) * 1000, 1)
             page.app.finish_run(call, -1)
@@ -584,11 +545,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None,
             page.app.finish_run(followup, code)
         duration = round((time.monotonic() - started) * 1000, 1)
         cancelled = bool(getattr(page.app, "cancel_requested", False))
-        stop_sequence = code >= 2 or code < 0 or (automatic is not None and code != 0)
-        if automatic:
-            state = "cancelled" if cancelled else "done" if code == 0 else "error"
-            artifact = ""  # 本轮产物按刷新结果的 writes 列表展示。
-        elif key == "dirpush":
+        stop_sequence = code >= 2 or code < 0
+        if key == "dirpush":
             # BUG-07：rc≠0 / JSON ok=false（含同名覆盖失败）都算失败；产物只认
             # 本次引擎 JSON outputs[] 里真实存在的文件，不再拿日志行末尾猜路径。
             state, artifact = DIRPUSH.absorb(page, lines, code, cancelled)
@@ -631,11 +589,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None,
                     if key == "merge" else "已取消当前步骤（后续步骤未启动）")
             _result_show(page, text, "warn", artifact)
         else:
-            if automatic:
-                text, level = auto_message, _STATE_LEVELS[state]
-            else:
-                text = EB.result_text(call.entry, code)
-                level = EB.result_level(call.entry, code)
+            text = EB.result_text(call.entry, code)
+            level = EB.result_level(call.entry, code)
             if key == "dirpush":
                 level = _STATE_LEVELS[state]
                 if state == "error" and code == 0:
@@ -656,39 +611,18 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None,
     return results
 
 
-def _run_all_keys(page, keys) -> tuple[list[str], list[str]]:
-    known = [str(step.get("key")) for step in _steps(page)]
-    if keys is None:
-        return [key for key in DEFAULT_RUN_ALL_KEYS if key in known], []
-    raw = [keys] if isinstance(keys, str) else [str(key) for key in keys]
-    selected: list[str] = []
-    unknown: list[str] = []
-    for key in raw:
-        if key not in known:
-            unknown.append(key)
-        elif key not in selected:
-            selected.append(key)
-    return selected, unknown
-
-
-def _automatic_compile(page) -> ISSUE_PAGING.AutomaticCompile | None:
-    panel = getattr(page, "_issue_paging_panel", None)
-    return panel.automatic_request() if panel is not None else None
-
-
 def run_step(page, key: str) -> None:
     if page.app.running:
         return
-    automatic = _automatic_compile(page) if key == "compileall" else None
     try:
-        call = automatic.call() if automatic else build_step_call(page, key)
+        call = build_step_call(page, key)
     except (ValueError, RuntimeError) as exc:
         page.app.toast(str(exc))
         page.mark("validation_error", step=key, reason=str(exc))
         return
     if key == "dirpush":
         warning = DIRPUSH.repo_warning(page.field("dirpush_out"))
-        if warning and not _dirpush_dry(page) and not page.app.auto_confirm:
+        if warning and not page.app.auto_confirm:
             def _confirmed() -> None:
                 page.mark("confirm_repo_out", path=page.field("dirpush_out"))
                 _start(page, key, call)
@@ -696,72 +630,13 @@ def run_step(page, key: str) -> None:
             C.confirm(page.page, page.t, title="输出根在代码仓内", message=warning,
                       confirm_label="继续生成", on_confirm=_confirmed)
             return
-        if warning and _dirpush_dry(page):
-            page.page.run_task(_show_repo_note, page, warning)
-    _start(page, key, call, automatic)
+    _start(page, key, call)
 
 
-def _dirpush_dry(page) -> bool:
-    return bool((page.app.store.get("options", {}) or {}).get("dirpush_dry_run", False))
-
-
-async def _show_repo_note(page, warning: str) -> None:
-    _result_show(page, warning, "warn")
-    try:
-        page.page.update()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _start(page, key: str, call: EB.EngineCall,
-           automatic: ISSUE_PAGING.AutomaticCompile | None = None) -> None:
+def _start(page, key: str, call: EB.EngineCall) -> None:
     page._status[key] = "running"
     page._refresh_steps()
-    # 单步也走统一执行器：日志不再被 pages._run_calls 的 log.clear() 抹掉。
-    page.page.run_task(_run_sequence, page, [key], {key: call}, automatic)
-
-
-def run_all(page, keys: list[str] | None = None) -> None:
-    """整期装配一键运行。
-
-    默认只跑 1–4 步（DEFAULT_RUN_ALL_KEYS，不含清理/推送）。调用方（确认框）
-    可显式勾选 cleantemp/dirpush：清理此时也走 --mode daily 单入口，
-    **一次勾选即视为明确选择**（C14：串行默认不清理，显式选择才 daily）。
-    """
-    if page.app.running:
-        return
-    selected, unknown = _run_all_keys(page, keys)
-    if unknown:
-        message = f"未知步骤：{unknown[0]}"
-        page.app.toast(message)
-        page.mark("validation_error", step="all", reason=message)
-        return
-    if not selected:
-        page.app.toast("请至少选择一个步骤")
-        page.mark("validation_error", step="all", reason="no step selected")
-        return
-    if not page.field("issue_dir"):
-        page.app.toast("请先选择期目录")
-        page.mark("validation_error", step="all", reason="missing issue dir")
-        return
-    if "dirpush" in selected and not _dirpush_dry(page):
-        warning = DIRPUSH.repo_warning(page.field("dirpush_out"))
-        if warning:
-            page.app.toast("输出根在代码仓内，整期运行已停止；请改输出根或勾选只预演")
-            page.mark("validation_error", step="all", reason="repo out root")
-            return
-    # B-375：含 toc 时在派发前就用共享门拦住无效栏目，避免跑到一半才失败。
-    if "toc" in selected:
-        blocked, hint = toc_column_gate(page)
-        if blocked:
-            page.app.toast(hint)
-            page.mark("validation_error", step="all", reason=hint)
-            return
-    # 参数在轮到该步时才构建（infocheck 新产出的报告要让 toc 自动发现）。
-    page.mark("run_all_submit", steps=list(selected))
-    page._run_results = []
-    automatic = _automatic_compile(page) if "compileall" in selected else None
-    page.page.run_task(_run_sequence, page, selected, {}, automatic)
+    page.page.run_task(_run_sequence, page, [key], {key: call})
 
 
 def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
@@ -851,101 +726,6 @@ def preview_summary(lines: list[str], mode: str) -> str:
             break
     head = f"预演（{MODE_LABELS.get(mode, mode)}）：{count} 个文件待清理"
     return f"{head}\n{last}" if last else head
-
-
-# ── 编译预扫描 / 事件解析（批 115）─────────────────────────────────────
-_NUMBERED = re.compile(r"^\d{2,3}\s")
-
-
-@dataclass
-class CompileTarget:
-    prefix: str
-    dir_name: str
-    stem: str
-    tex: str
-    pdf: str
-
-
-def _tex_key(name: str) -> str:
-    return "".join(ch for ch in name if ch.isalnum()).lower()
-
-
-def _find_tex(folder: str, art: str) -> str:
-    try:
-        files = sorted(os.listdir(folder))
-    except OSError:
-        return ""
-    for name in files:
-        if name.lower().endswith(".tex") and os.path.splitext(name)[0] == art:
-            return os.path.join(folder, name)
-    target = _tex_key(art)
-    for name in files:
-        if (name.lower().endswith(".tex")
-                and _tex_key(os.path.splitext(name)[0]) == target):
-            return os.path.join(folder, name)
-    return ""
-
-
-def compile_plan(issue: str, only: str = "") -> list[CompileTarget]:
-    """复刻 `Engine/compileall.py` 的扫描规则（numbered_entries → 跳 000 → 前缀过滤
-    → article_name → find_tex 精确/宽松），只用于运行前显示「计划编译 m 篇」。"""
-    root = os.path.abspath(os.path.expanduser(str(issue or "")))
-    if not root or not os.path.isdir(root):
-        return []
-    wanted = {x.strip() for x in str(only or "").split(",") if x.strip()}
-    plans: list[CompileTarget] = []
-    try:
-        names = sorted(name for name in os.listdir(root)
-                       if _NUMBERED.match(name)
-                       and os.path.isdir(os.path.join(root, name)))
-    except OSError:
-        return []
-    for name in names:
-        if name.startswith("000"):
-            continue
-        if wanted and not any(name.startswith(prefix) for prefix in wanted):
-            continue
-        parts = name.split()
-        art = parts[-1] if parts else name
-        sub = os.path.join(root, name)
-        tex = os.path.join(sub, f"{art}.tex")
-        if not os.path.exists(tex):
-            tex = _find_tex(sub, art)
-        if not tex or not os.path.exists(tex):
-            continue
-        stem = os.path.splitext(os.path.basename(tex))[0]
-        plans.append(CompileTarget(
-            prefix=parts[0] if parts else name,
-            dir_name=name, stem=stem, tex=tex,
-            pdf=os.path.join(sub, f"{stem}.pdf"),
-        ))
-    return plans
-
-
-def compile_event(line: str) -> tuple[str, dict] | None:
-    """编译日志 → 事件（详情页拿真实篇数/当前篇，不造百分比）。"""
-    text = str(line or "")
-    match = re.search(r'第一步：Xelatex "(.+?)\.tex"', text)
-    if match:
-        return "start", {"stem": match.group(1)}
-    match = re.search(r"✅\s+(.+?)（(\d+)\s*秒）", text)
-    if match:
-        return "ok", {"stem": match.group(1), "seconds": int(match.group(2))}
-    match = re.search(r"❌\s+(.+?)（(\d+)\s*秒）(.*)", text)
-    if match:
-        return "fail", {"stem": match.group(1), "seconds": int(match.group(2)),
-                        "message": (match.group(3) or "").strip()}
-    match = re.search(r"打开路径：(.+)", text)
-    if match:
-        return "discover", {"path": match.group(1).strip()}
-    match = re.search(r"没有找到(.+?)文件！", text)
-    if match:
-        return "skip", {"name": match.group(1).strip()}
-    match = re.search(r"完成。编译 (\d+) 篇（成功 (\d+) / 失败 (\d+)）", text)
-    if match:
-        return "summary", {"targets": int(match.group(1)),
-                           "ok": int(match.group(2)), "fail": int(match.group(3))}
-    return None
 
 
 async def _detect_task(page, call: EB.EngineCall) -> None:

@@ -52,16 +52,18 @@ def test_no_rail_progress_band_or_pipeline_copy_left():
     assert "_sync_log_reserve" in src
 
 
-# ── 2. 四个 chip：存在 / 28 高 / 点击切换功能页 ────────────────────────
-def test_four_nav_chips_exist_and_switch_views():
+# ── 2. 六个 chip：存在 / 28 高 / 点击切换功能页 ────────────────────────
+def test_six_nav_chips_exist_and_switch_views():
     page = _issue_page()
-    assert set(page._nav_chips) == {"catalog", "produce", "clean", "push"}
+    assert set(page._nav_chips) == {"catalog", "order", "refresh", "merge",
+                                    "clean", "push"}
     assert {chip.height for chip in page._nav_chips.values()} == {page.t.px(28)}
     labels = [chip.content.controls[0].value for chip in page._nav_chips.values()]
-    assert labels == ["生成目录", "编译并合并", "清理临时文件", "生成推送文案"]
-    page._nav_chips["produce"].on_click(SimpleNamespace())
-    assert page._view_of_step(page.selected) == "produce"
-    assert page.expanded_step("produce") in ("compileall", "merge")
+    assert labels == ["生成目录", "排序与改名", "刷新页码", "合并",
+                      "清理临时文件", "生成推送文案"]
+    page._nav_chips["refresh"].on_click(SimpleNamespace())
+    assert page._view_of_step(page.selected) == "refresh"
+    assert page.expanded_step("refresh") == "refresh"
 
 
 # ── 3. 四页顶部都有内嵌「期目录」行（同一值）──────────────────────────
@@ -96,8 +98,8 @@ def test_empty_state_is_shared_across_four_pages():
         assert len(cta) == 1, "每页空态都要有同一个 CTA"
 
 
-# ── 5. ⌘1–4 功能页；⌘5/6 清理/推送页并展开该区块 ─────────────────────
-def test_keyboard_maps_four_views_and_five_six():
+# ── 5. ⌘1–6 = 六个功能页并展开该页区块 ────────────────────────────────
+def test_keyboard_maps_six_views():
     page = _issue_page()
     for index, view in enumerate(page.VIEWS, start=1):
         page._on_key(SimpleNamespace(key=str(index), ctrl=True, meta=False))
@@ -134,10 +136,9 @@ def test_issue_change_resets_state_and_keeps_current_page(tmp_path):
     page.set_field("issue_dir", str(old))
     page._on_issue_changed(None)
     page.activate("toc")
-    page._status["compileall"] = ASM.StepStatus("done", exit_code=0,
-                                                duration_ms=21000)
+    page._status["refresh"] = ASM.StepStatus("done", exit_code=0,
+                                             duration_ms=21000)
     page._merge_info = {"pages": 47, "path": "/tmp/old.pdf"}
-    page._compile_rows = {"x": "ok"}
     page._toc_payload = {"ok": True}
     page._ct_preview = {"ok": True, "count": 3}
     page._log.add_line("上一期的日志")
@@ -147,9 +148,9 @@ def test_issue_change_resets_state_and_keeps_current_page(tmp_path):
 
     saved = page.app.store.get("issue_state", {}).get(str(old), {})
     assert saved.get("schema") == 1
-    assert saved.get("statuses", {}).get("compileall", {}).get("state") == "done"
-    assert page._state_of("compileall") == "idle"
-    assert page._merge_info == {} and page._compile_rows == {}
+    assert saved.get("statuses", {}).get("refresh", {}).get("state") == "done"
+    assert page._state_of("refresh") == "idle"
+    assert page._merge_info == {}
     assert page._toc_payload == {} and page._ct_preview == {}
     assert page.selected == "toc", "换期必须停留在当前功能页"
     assert page._view_of_step(page.selected) == "catalog"
@@ -161,10 +162,10 @@ def test_issue_change_resets_state_and_keeps_current_page(tmp_path):
 # ── 8. 清空期目录：留在当前页并显示统一空态 ────────────────────────────
 def test_clear_issue_shows_empty_state_without_leaving_page():
     page = _issue_page()
-    page.activate("compileall")
+    page.activate("refresh")
     page._clear_issue()
-    assert page.selected == "compileall", "清空目录不跳走"
-    assert page._view_of_step(page.selected) == "produce"
+    assert page.selected == "refresh", "清空目录不跳走"
+    assert page._view_of_step(page.selected) == "refresh"
     assert "还没有选择期目录" in \
         _texts(page._content_box)
 
@@ -282,11 +283,10 @@ def test_dirpush_failure_without_artifact_shows_reason():
     assert "还没有推送记录" not in labels
 
 
-# ── 15. 31 路由 + 6 条 alias：落到对应功能页并展开该区块 ─────────────
+# ── 15. 32 路由 + 现行步骤 alias：落到对应功能页并展开该区块 ──────────
 def test_routes_and_issue_aliases_stay_intact():
-    assert len(IA.all_routes()) == 31
-    assert IA.issue_step_keys() == ["infocheck", "toc", "compileall",
-                                    "merge", "cleantemp", "dirpush"]
+    assert len(IA.all_routes()) == 32
+    assert IA.issue_step_keys() == ["infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush"]
     page = _issue_page()
     for step in IA.issue_step_keys():
         page.activate(step)

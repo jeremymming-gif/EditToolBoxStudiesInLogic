@@ -177,7 +177,7 @@ def test_bib_leaf_stays_visible_when_other_page_collapsed() -> None:
 
 # ── 3. 路由口径不变 ────────────────────────────────────────────────────────
 def test_all_routes_and_issue_alias_unchanged() -> None:
-    assert len(IA.all_routes()) == 31
+    assert len(IA.all_routes()) == 32
     assert "single:convert" in IA.all_routes()
     assert "single:proofcheck" in IA.all_routes()
     assert "issue:overview" in IA.all_routes()

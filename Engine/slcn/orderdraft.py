@@ -146,20 +146,32 @@ def collect_order_rows(issue_dir: Path) -> list[OrderRow]:
 
 
 def order_docx_path(issue_dir: Path, out_root: Path) -> Path:
-    """Resolve the output and reject paths that would write into the current issue."""
-    root = out_root.resolve()
-    issue = issue_dir.stat()
-    if root.is_relative_to(issue_dir):
-        raise CollectError(f"排序稿输出根不能放在期目录内：{root}")
+    """Resolve the output in any writable directory, including inside the issue.
+
+    D6: the sorting draft is the sole output allowed anywhere writable — the
+    issue root, a normal in-issue subdirectory, the parent, or an external root.
+    Every existing path segment must still be a real directory, the nearest
+    existing directory must be writable, and the target must be replaceable.
+    """
+    try:
+        root = out_root.resolve()
+    except OSError as exc:
+        raise CollectError(f"排序稿输出根须为目录：{out_root}（{exc}）")
+    existing: Path | None = None
     for path in (root, *root.parents):
         try:
             info = path.lstat()
         except FileNotFoundError:
             continue
-        if os.path.samestat(issue, info):
-            raise CollectError(f"排序稿输出根不能放在期目录内：{root}")
+        except NotADirectoryError:
+            # 路径中间段是普通文件（如 <期目录>/plain-file.txt/nested）。
+            raise CollectError(f"排序稿输出根须为目录：{root}")
         if is_link(info) or not stat.S_ISDIR(info.st_mode):
             raise CollectError(f"排序稿输出根须为目录：{root}")
+        if existing is None:
+            existing = path
+    if existing is not None and not os.access(existing, os.W_OK | os.X_OK):
+        raise CollectError(f"排序稿输出根不可写：{root}")
 
     target = root / f"{issue_dir.name}排序决策稿.docx"
     try:

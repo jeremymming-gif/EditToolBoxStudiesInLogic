@@ -57,6 +57,29 @@ SINGLE_CHIPS = [(301.3, 96.7), (391.3, 96.7)]  # 两 flow：初排转换 / 一�
 # 跳转按钮「去引用库 → 规范化」：胶囊行右侧（busy_bar 不可见时贴右缘）。**估位**：
 # 内容右缘≈1201、按钮宽≈195 → 中心≈1103.5；Windows 复核按实测校正。
 JUMP_BTN = (1103.5, 96.7)
+# 整期装配页内六页签（页内顶部横排 chip，非左侧 nav accordion 子行）。
+# 顺序 = IA.ISSUE_VIEWS：catalog/order/refresh/merge/clean/push；
+# nav_change 记录的是归一后的底层步骤 key（见 ISSUE_TAB_ROUTES 注）。
+# 坐标是 150% DPI 估位（每行 chip 宽≈90 DIP、间距 4；内容左≈259.7），
+# **未在 Windows 实测**：断言以 issue_activate / nav_change 事件为准。
+ISSUE_TAB_CHIPS = [
+    (301.3, 96.7), (395.3, 96.7), (489.3, 96.7),
+    (583.3, 96.7), (677.3, 96.7), (771.3, 96.7),
+]
+ISSUE_TAB_KEYS = ("catalog", "order", "refresh", "merge", "clean", "push")
+ISSUE_TAB_ROUTES = {
+    "catalog": "issue:infocheck",   # 也可为 issue:toc（view=infocheck|toc）
+    "order": "issue:order",
+    "refresh": "issue:refresh",
+    "merge": "issue:merge",
+    "clean": "issue:cleantemp",     # 别名 issue:clean 归一后
+    "push": "issue:dirpush",        # 别名 issue:push 归一后
+}
+ISSUE_TAB_VIEWS = {
+    "catalog": ("infocheck", "toc"), "order": ("order",),
+    "refresh": ("refresh",), "merge": ("merge",),
+    "clean": ("cleantemp",), "push": ("dirpush",),
+}
 RUN_BTN = (1155.0, 41.0)
 STOP_BTN = (1051.3, 42.0)
 # 引用库两级导航（10 视图 / 4 组）：组条在上一行、胶囊在下一行。
@@ -119,9 +142,17 @@ def nav_route_clicks(page: str, view: str = "") -> list[tuple[float, float]]:
         offset = {"convert": 24, "proofcheck": 52}[view]
         return [(NAV_X, NAV_Y["single"]), (NAV_CHILD_X, NAV_Y["single"] + offset)]
     if page == "issue":
-        steps = ("infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush")
-        offset = 24 + 28 * steps.index(view)
-        return [(NAV_X, NAV_Y["issue"]), (NAV_CHILD_X, NAV_Y["issue"] + offset)]
+        # 整期六页签在页内顶部横排 chip（不是左侧 nav accordion 子行）。
+        # view 可传页签 key（catalog/order/refresh/merge/clean/push），
+        # 也兼容归一后的底层步骤 key（infocheck/toc/order/refresh/merge/cleantemp/dirpush）。
+        if view in ISSUE_TAB_KEYS:
+            idx = ISSUE_TAB_KEYS.index(view)
+        else:
+            tab = next((k for k, views in ISSUE_TAB_VIEWS.items() if view in views), None)
+            if tab is None:
+                return [(NAV_X, NAV_Y["issue"])]
+            idx = ISSUE_TAB_KEYS.index(tab)
+        return [(NAV_X, NAV_Y["issue"]), ISSUE_TAB_CHIPS[idx]]
     if page == "bib":
         group = next(g for g, views in _BIB_GROUP_VIEWS.items() if view in views)
         gidx = _BIB_GROUPS_ORDER.index(group)
@@ -177,6 +208,9 @@ user32.SetForegroundWindow.restype = wt.BOOL
 user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 user32.SetCursorPos.restype = wt.BOOL
 user32.mouse_event.argtypes = [wt.DWORD, wt.DWORD, wt.DWORD, wt.DWORD, ctypes.c_size_t]
+# 键盘注入（整期快捷键 / 搜索框 ASCII 输入证据用；无新依赖）。
+user32.keybd_event.argtypes = [wt.BYTE, wt.BYTE, wt.DWORD, ctypes.c_size_t]
+user32.keybd_event.restype = None
 user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 user32.PostMessageW.restype = wt.BOOL
 user32.GetWindowDC.argtypes = [wt.HWND]
@@ -455,6 +489,43 @@ def click_screen(x: float, y: float) -> None:
 def move_away() -> None:
     user32.SetCursorPos(5, 5)
     time.sleep(0.08)
+
+
+# 虚拟键码（Win32）：数字 1–6、Ctrl / Alt(Ctrl 在 macOS 也走 Ctrl 通道的等价处理，
+# 这里由 app 侧 issue_hotkey 处理；GUI 走查只在 Windows 实机跑）。
+_VK = {"CTRL": 0x11, "MENU": 0x12, "ESC": 0x1B, "RETURN": 0x0D}
+_VK.update({str(i): 0x30 + i for i in range(10)})
+
+
+def press_key(vk: int) -> None:
+    """按下并松开一个虚拟键（keybd_event，无新依赖）。"""
+    user32.keybd_event(wt.BYTE(vk), 0, 0, 0)
+    time.sleep(0.04)
+    user32.keybd_event(wt.BYTE(vk), 0, 0x0002, 0)  # KEYEVENTF_KEYUP
+    time.sleep(0.08)
+
+
+def press_hotkey(*vks: int) -> None:
+    """组合键：依次按下，逆序松开（如 Ctrl+3 → press_hotkey(CTRL, '3')）。"""
+    codes = [v if isinstance(v, int) else _VK[str(v)] for v in vks]
+    for code in codes:
+        user32.keybd_event(wt.BYTE(code), 0, 0, 0)
+        time.sleep(0.03)
+    for code in reversed(codes):
+        user32.keybd_event(wt.BYTE(code), 0, 0x0002, 0)
+        time.sleep(0.04)
+    time.sleep(0.25)
+
+
+def type_ascii(text: str) -> None:
+    """逐字输入 ASCII（搜索框用）；只覆盖小写字母 / 数字 / 空格，不碰中文输入法。"""
+    for ch in text:
+        vk = ord(ch.upper()) if ("a" <= ch <= "z") else (
+            0x30 + int(ch) if ch.isdigit() else (0x20 if ch == " " else None))
+        if vk is None:
+            continue
+        press_key(int(vk))
+    time.sleep(0.2)
 
 
 def markers(path: Path) -> list[dict]:
@@ -986,6 +1057,20 @@ class AppSession:
 
     def dip_to_image(self, dx: float, dy: float) -> tuple[float, float]:
         return self.border[0] + dx * self.scale, self.border[1] + dy * self.scale
+
+    def press_hotkey(self, *vks) -> None:
+        """把被测窗口置前后注入组合键（整期 ⌘/Ctrl+1–6 快捷键证据用）。"""
+        assert self.window is not None
+        user32.SetForegroundWindow(self.window.hwnd)
+        time.sleep(0.15)
+        press_hotkey(*vks)
+
+    def type_ascii(self, text: str) -> None:
+        """置前后逐字输入 ASCII（搜索关键词，无输入法依赖）。"""
+        assert self.window is not None
+        user32.SetForegroundWindow(self.window.hwnd)
+        time.sleep(0.1)
+        type_ascii(text)
 
     # -- 关闭 / 清理 -------------------------------------------------------
     def close(self, *, native: bool = False, timeout: float = 25.0) -> int:

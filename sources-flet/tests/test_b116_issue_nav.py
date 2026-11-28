@@ -4,7 +4,7 @@
 1. 侧栏「整期装配」是叶子：`NAV_TREE` 无 views，6 步在页内步骤栏；
 2. `issue` / `issue:overview` 是兼容别名，运行期落到 issue_state.last_step（无记录 → 第 1 步）；
 3. 显式 `issue:<step>` 与 `P2_ISSUE_STEP` 不被历史记忆覆盖；
-4. 设置新增九个详情后共 31 条路由；搜索/命令面板仍保留 6 个步骤入口；
+4. 设置新增九个详情后共 32 条路由；搜索/命令面板仍保留 7 个步骤入口；
 5. 标题/面包屑永远是「整期装配 · <步骤名>」，没有任何「流水线总览」入口。
 """
 from __future__ import annotations
@@ -118,10 +118,9 @@ def test_issue_nav_entry_is_leaf_with_static_default() -> None:
 
 
 def test_issue_steps_are_route_only_not_sidebar_children() -> None:
-    assert [step["key"] for step in IA.ISSUE_ROUTE_STEPS] == [
-        "infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
+    assert [step["key"] for step in IA.ISSUE_ROUTE_STEPS] == ["infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush"]
     assert [step["label"] for step in IA.ISSUE_ROUTE_STEPS] == [
-        "检查tex信息", "生成目录", "编译全部", "合并文件", "删除临时文件", "目录摘要推送"]
+        "检查tex信息", "生成目录", "排序与改名", "刷新页码", "合并文件", "删除临时文件", "目录摘要推送"]
     assert [step["key"] for step in IA.route_views("issue")] == IA.issue_step_keys()
     assert IA.issue_step_label("toc") == "生成目录"
     assert IA.issue_step_label("overview") == ""
@@ -140,12 +139,12 @@ def test_issue_landing_routes_and_alias_predicate() -> None:
 
 def test_route_count_is_31_and_keeps_alias() -> None:
     routes = IA.all_routes()
-    assert len(routes) == 31
+    assert len(routes) == 32
     assert len(routes) == len(set(routes))
     issue_routes = [route for route in routes if route.startswith("issue:")]
     assert issue_routes == ["issue:overview", "issue:infocheck", "issue:toc",
-                            "issue:compileall", "issue:merge", "issue:cleantemp",
-                            "issue:dirpush"]
+                            "issue:order", "issue:refresh", "issue:merge",
+                            "issue:cleantemp", "issue:dirpush"]
 
 
 def test_main_has_alias_resolution_hooks() -> None:
@@ -273,7 +272,9 @@ def test_restore_route_resolves_legacy_overview_alias() -> None:
     app.store = FakeStore({"last_route": "issue:overview",
                            "issue_state": {"last_step": "compileall"}})
     app.pages = {}
-    assert M.App._restore_route(app) == "issue:compileall"
+    # D7：裸 issue / issue:overview 落到当前工作台默认步，且旧步名经 IA 别名表
+    # 归一（compileall → refresh），重启不会回到已下线的编译页。
+    assert M.App._restore_route(app) == "issue:refresh"
 
 
 def test_nav_default_route_for_issue_uses_landing_step() -> None:

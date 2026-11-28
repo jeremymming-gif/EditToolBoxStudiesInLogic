@@ -138,14 +138,15 @@ def test_cleanup_details_close_button_dismisses():
     assert len(popped) == 1 and C._open_dialogs == []
 
 
-# ── 3. 其它经 dismiss_top_dialog 关闭的框也须入栈（运行整期 / 覆盖确认）──
-def test_runall_dialog_registered_and_cancel_closes():
+# ── 3. 其它经 dismiss_top_dialog 关闭的框也须入栈（停止确认 / 覆盖确认）──
+def test_confirm_stop_dialog_registered_and_cancel_closes():
     _fresh_stack()
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
     shown, popped = _patch_page(page)
 
-    page._open_runall()
+    # D3：运行整期对话框已下线，入栈契约改由仍在用的 C.confirm 覆盖。
+    page._confirm_stop()
     assert len(shown) == 1 and C._open_dialogs[-1] is shown[0]
     cancel = shown[0].actions[0]
     cancel.on_click(None)

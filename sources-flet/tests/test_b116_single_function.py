@@ -2,7 +2,8 @@
 
 锁五组契约（全部离线：不建窗口、不跑真引擎）：
 1. `EB.convert_call(dry_run=...)` 只按需追加 `--dry-run`（引擎 convert_stage.py:1291）。
-2. 第 5 张处理选项「只预演（不写入）」→ store `options.convert_dry_run` → argv。
+2. D1：单篇页不再提供「只预演（不写入）」选项，argv 也永不追加 `--dry-run`；
+   桥接层/引擎侧预演能力保留，由调用方显式传参（测试 3/4 直接构造这样的 call）。
 3. 预演 rc=0：文案「预演完成（只读：未建产物目录、未写产物）」、ok、artifact 清空、
    不写最近记录、目录动作行隐藏。
 4. 真实转换成功：结果卡下方「打开产物目录」行出现，点击打开 artifact 的 dirname；
@@ -89,15 +90,14 @@ def _install_run(monkeypatch, page, code, last_line=""):
     return calls
 
 
-def _dry_run_tile(page):
-    rows = [ctl for ctl in page._option_tiles({}).controls if isinstance(ctl, ft.Row)]
-    for row in rows:
-        for tile in row.controls:
-            for ctl in _walk(tile):
-                if isinstance(ctl, ft.Text) and ctl.value == "只预演（不写入）":
-                    checkbox = next(c for c in _walk(tile) if isinstance(c, ft.Checkbox))
-                    return checkbox
-    raise AssertionError("没有找到「只预演（不写入）」选项卡")
+def _option_labels(page) -> list[str]:
+    """单篇处理选项卡上的全部文案（D1 后应为 4 张卡，无「只预演」）。"""
+    labels: list[str] = []
+    for ctl in page._option_tiles({}).controls:
+        for c in _walk(ctl):
+            if isinstance(c, ft.Text) and c.value:
+                labels.append(str(c.value))
+    return labels
 
 
 # ── 1. argv 拼装 ─────────────────────────────────────────────────────────
@@ -113,19 +113,16 @@ def test_convert_call_dry_run_flag_only_when_requested():
     assert "--compile" in both.argv and "--dry-run" in both.argv
 
 
-# ── 2. 选项卡 → store → argv ─────────────────────────────────────────────
-def test_dry_run_tile_wired_to_store_and_build_call(tmp_path):
-    app = _App()
-    page, _root = _make_page(tmp_path, app)
-    checkbox = _dry_run_tile(page)
-    assert checkbox.value is False, "预演默认关"
-
-    checkbox.value = True
-    checkbox.on_change(SimpleNamespace(control=checkbox))
-    assert app.store.get("options.convert_dry_run") is True
-
-    call = page._build_call()
-    assert "--dry-run" in call.argv
+# ── 2. D1：单篇页没有「只预演」开关，argv 不会被注入 --dry-run ────────────
+def test_dry_run_option_is_gone_from_single_page(tmp_path):
+    page, _root = _make_page(tmp_path)
+    labels = _option_labels(page)
+    assert not any("只预演" in value for value in labels), labels
+    assert len([value for value in labels
+                if value in ("编译 PDF", "清理临时文件", "导出原稿 PDF", "强制覆盖")]) == 4
+    app = page.app
+    assert app.store.get("options.convert_dry_run") is None
+    assert "--dry-run" not in page._build_call().argv
 
 
 def test_dry_run_default_off_keeps_argv_unchanged(tmp_path):
@@ -136,9 +133,9 @@ def test_dry_run_default_off_keeps_argv_unchanged(tmp_path):
 
 # ── 3. 预演结果语义（只读）───────────────────────────────────────────────
 def test_dry_run_result_is_readonly_and_clears_artifact(tmp_path, monkeypatch):
+    """D1 只删了 GUI 开关；显式带 --dry-run 的 call 仍走只读结果分支。"""
     page, _root = _make_page(tmp_path)
-    page.app.store.set("options.convert_dry_run", True)
-    call = page._build_call()
+    call = EB.convert_call(**page._convert_kwargs(""), dry_run=True)
     assert "--dry-run" in call.argv
 
     # 即使磁盘上真有一个看起来像产物的路径，预演也不得把它当产物。
@@ -160,7 +157,6 @@ def test_dry_run_result_is_readonly_and_clears_artifact(tmp_path, monkeypatch):
 def test_dry_run_metadata_preview_keeps_preview_text(tmp_path, monkeypatch):
     """预演 + 元数据预览同时跑：预览文案优先，不出现两套「只读」文案打架。"""
     page, _root = _make_page(tmp_path)
-    page.app.store.set("options.convert_dry_run", True)
     preview = tmp_path / "preview.json"
     preview.write_text('{"title": "测试稿"}', encoding="utf-8")
     seen: list = []
@@ -170,7 +166,7 @@ def test_dry_run_metadata_preview_keeps_preview_text(tmp_path, monkeypatch):
             seen.append(payload)
 
     # 先拼 argv（此时不挂人工元数据面板），再挂预览面板供 _show_metadata_preview。
-    call = page._build_call(preview_path=str(preview))
+    call = EB.convert_call(**page._convert_kwargs(str(preview)), dry_run=True)
     assert "--dry-run" in call.argv and "--metadata-preview-out" in call.argv
     page._meta_panel = _Panel()
     _install_run(monkeypatch, page, 0)

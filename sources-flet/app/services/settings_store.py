@@ -95,9 +95,7 @@ def _defaults() -> dict:
             "proofcheck_fix": False,
             # 批 109 Wave 0 / S4：与旧壳一致，默认「仅生成 tex」（不落位、不编译）。
             "toc_text_only": True,
-            "compileall_dry_run": False,
             "dirpush_with_en_toc": False,
-            "dirpush_dry_run": False,
             "log_summary_only": True,
         },
         "paths": {"engine_dir": "", "notes_repo": ""},

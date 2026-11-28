@@ -111,23 +111,24 @@ def test_danger_button_disabled_style_is_gray_not_red():
     assert btn.style.color[ft.ControlState.DEFAULT] == t.buttons.danger
 
 
-# ── 4. 单篇处理选项：1000 保持 2 列（5 张卡）──────────────────────────
+# ── 4. 单篇处理选项：1000 保持 2 列（4 张卡）──────────────────────────
 def test_single_options_two_columns_at_1000():
+    # D1：单篇页的「只预演（不写入）」开关删除后只剩 4 张卡（两行各 2）。
     page, root = _build_single()
     page.app._design_width = lambda: 1000
     grid = page._option_tiles({})
     assert isinstance(grid, ft.Column)
-    assert [len(row.controls) for row in grid.controls] == [2, 2, 2]
-    assert sum(1 for c in _walk(grid) if isinstance(c, ft.Checkbox)) == 5
+    assert [len(row.controls) for row in grid.controls] == [2, 2]
+    assert sum(1 for c in _walk(grid) if isinstance(c, ft.Checkbox)) == 4
 
     page.app._design_width = lambda: 899
     narrow = page._option_tiles({})
     assert isinstance(narrow, ft.Column)
     assert all(len(row.controls) == 1 for row in narrow.controls)
-    assert len(narrow.controls) == 5
+    assert len(narrow.controls) == 4
 
 
-# ── 5. 文案 / 页头 / 只读步 / 空态 CTA / 运行整期 ─────────────────────
+# ── 5. 文案 / 页头 / 只读步 / 空态 CTA / 运行整期（D3 已下线）─────────
 def test_single_proofcheck_cta_says_readback_check():
     page, _root = _build_single()
     assert _text(page._norm_jump_btn) == "去引用库 → AI 辅助处理 Bib"
@@ -237,23 +238,29 @@ def test_issue_switch_clears_info_completion_state():
     assert page._info.state == "idle", "卡片自身也要回到未运行"
 
 
-def test_runall_dialog_tight_and_no_unchecked_05_warning():
+def test_runall_dialog_is_gone_and_only_step_confirmations_remain():
+    """D3：整期运行对话框下线；页面上只剩 toc 重生成与停止当前步骤两个确认框。"""
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
+    assert not hasattr(page, "_open_runall")
+    assert not hasattr(page, "_run_all")
+    assert not hasattr(page, "_runall_danger")
+    assert not hasattr(page, "_plan_prefixes")
+    assert not hasattr(page, "_done_prefixes")
+    assert not hasattr(P.IssuePage, "_run_all")
+
     shown: list = []
     page.app.page.show_dialog = lambda dialog: shown.append(dialog)
-    page._open_runall()
+    page.app.auto_confirm = False
+    page._confirm_stop()
     assert shown
     dialog = shown[0]
-    assert dialog.content.width == page.t.px(600)
-    assert dialog.content.height == page.t.px(470)
-    assert page._runall_danger.visible is False
+    title_texts = [str(c.value) for c in _walk(dialog.title) if isinstance(c, ft.Text)]
+    assert any("停止当前步骤" in value for value in title_texts), title_texts
     labels = [str(c.value) for ctl in _dialog_controls(dialog)
               for c in _walk(ctl) if isinstance(c, ft.Text)]
+    assert any("当前步标记已取消" in value for value in labels), labels
     assert not any("05 默认只预演" in value for value in labels)
-
     boxes = [c for ctl in _dialog_controls(dialog) for c in _walk(ctl)
              if isinstance(c, ft.Checkbox)]
-    boxes[4].value = True
-    boxes[4].on_change(SimpleNamespace(control=boxes[4]))
-    assert page._runall_danger.visible is True
+    assert boxes == []

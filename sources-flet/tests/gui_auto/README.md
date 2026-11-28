@@ -46,6 +46,19 @@ $env:SLCN_GUI_AUTO="1"; py -3.14 -m pytest sources-flet/tests/gui_auto -v
 - **S5** 引用库 10 视图 / 4 组：概况·查库（查阅）/ 规范化·入藏（采录）/ 待处理·编辑·查重合并·字段归位（治理）/
   库健康·设置（维护），等 `bib_view` 标记后截图，并在 chips 带内断言被点视图高亮（`accent_soft` 连通块=1）。
 - **S10** 规范化宿主：`P2_BIB_VIEW=normalize` 启动即进「引用库 → 规范化」，面板标题与只读提示可见。
+- **S9** 整期装配六页签 / 新 route / 快捷键 / 搜索（本批新增）：
+  - `s9_issue_tabs`：页内顶部六个 chip 逐个真实点击 → 断言 `issue_activate`(view) 与
+    `nav_change`(route)；六页签 = 生成目录/排序与改名/刷新页码/合并 PDF/清理临时文件/生成推送文案，
+    对应底层步骤 infocheck|toc/order/refresh/merge/cleantemp/dirpush。
+  - `s9_issue_routes`：用**正常入口** `P2_ISSUE_STEP=<step>` 启动直达整期新步骤
+    （order/refresh/merge/cleantemp/dirpush），断言 `issue_step_hook` 来源为 env、
+    `nav_change` 落在归一后的 route、且**不自动运行**；旧别名 compileall/produce 由 IA 归一。
+  - `s9_issue_hotkeys`：Win32 注入 Ctrl+1–6 → 断言 `issue_hotkey`(slot, view) 按页签视觉顺序；
+    全局 Ctrl+1–5 仍属 settings_shell（切一级页）；整期装配页内的 Ctrl+1–6 由 settings_shell 转交 IssuePage 切页签，非 issue 页仍走一级页导航。
+  - `s9_search_navigation`：搜索索引含六页签条目；正常入口 Ctrl+K → ASCII 关键词 → 回车 →
+    断言 `nav_change`(source=search) 落到 `issue:order` / `issue:refresh`。
+  - 新场景均可单独触发：`pytest ... -v --run-gui -k s9`；坐标是 150% DPI 估位（见
+    `harness.py` 的 `ISSUE_TAB_CHIPS`），Windows 复核以事件断言为准，偏差再校正常量。
 - **S6** 运行/停止：空表单点「运行」→ `validation_error`，不得出现 `run_start`；
   点「停止」→ 不得出现 `cancel_requested`/`cancel_no_proc`。
 - **S7** 关闭：点原生标题栏 X → `close_requested`/`settings_saved`、exit 0、无残留进程。

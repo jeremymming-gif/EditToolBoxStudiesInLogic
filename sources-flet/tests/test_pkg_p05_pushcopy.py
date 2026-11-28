@@ -467,3 +467,63 @@ def test_bug07_apply_status_keeps_legacy_error_tail(tmp_path, engine):
     card_text = _blob(page._dirpush_result())
     assert "推送失败" in card_text
     assert "旧产物" not in card_text
+
+
+# ── T4 / D1：旧三个 dry-run 设置不得改变推送 argv 与参数区 ──────────────────
+def _panel_with_legacy_true(page, tmp_path, *, annual: bool = False):
+    """夹具：三个旧开关全 true，当期/年度推送输入齐全。"""
+    app = page.app
+    app.store.update_options(compileall_dry_run=True, dirpush_dry_run=True,
+                             convert_dry_run=True)
+    app.store.set("form.dirpush_mode", D.MODE_ANNUAL if annual else D.MODE_ISSUE)
+    app.store.set("form.dirpush_year", "2026")
+    app.store.set("form.dirpush_issues", "1,2,3")
+    page.set_field("issue_dir", str(tmp_path / "期"))
+    page.set_field("dirpush_out", str(tmp_path / "out"))
+    return D.DirPushPanel(page)
+
+
+@pytest.mark.parametrize("annual", [False, True])
+def test_legacy_dry_run_settings_do_not_change_push_argv(tmp_path, engine,
+                                                         monkeypatch, annual):
+    app, page = _build_issue()
+    panel = _panel_with_legacy_true(page, tmp_path, annual=annual)
+    captured: list = []
+    original = D.build_call
+
+    def spy(**kwargs):
+        call = original(**kwargs)
+        captured.append(call)
+        return call
+
+    monkeypatch.setattr(D, "build_call", spy)
+    panel.start()
+    assert len(captured) == 1
+    argv = args_of(captured[0])
+    assert "--dry-run" not in argv
+    assert "--issue" in argv and "--json" in argv
+    if annual:
+        assert "--annual" in argv and "--year" in argv
+        assert _arg_value(argv, "--year") == "2026"
+        assert _arg_value(argv, "--include-issues") == "1,2,3"
+    else:
+        assert "--annual" not in argv
+
+
+def test_push_params_have_no_dry_run_switch_and_single_overwrite_note(tmp_path, engine):
+    app, page = _build_issue()
+    panel = _panel_with_legacy_true(page, tmp_path)
+    rows = panel.params()
+    blob = "\n".join(_blob(row) for row in rows)
+    assert "只预演" not in blob
+    assert "预演：只校验" not in blob
+    assert blob.count("会被覆盖") == 1
+    assert "输出根" in blob
+
+
+def test_build_call_explicit_internal_dry_run_still_supported(tmp_path, engine):
+    """T4↔T3 契约：显式内部 dry_run=True 仍可加 --dry-run（校验调用用）。"""
+    call = D.build_call(issue=str(tmp_path / "期"), dry_run=True)
+    assert "--dry-run" in args_of(call)
+    call2 = D.build_call(issue=str(tmp_path / "期"))
+    assert "--dry-run" not in args_of(call2)

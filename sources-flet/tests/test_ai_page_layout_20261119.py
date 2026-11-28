@@ -82,13 +82,13 @@ def test_output_checks_keep_same_engine_option_keys_and_defaults(monkeypatch):
     page, root = _build(monkeypatch)
     checks = {control._convert_option_key: control
               for control in _walk(root) if hasattr(control, "_convert_option_key")}
+    # D1：单篇页的「只预演（不写入）」开关已删除，处理选项只剩 4 个。
     assert set(checks) == {"convert_compile", "convert_clean", "convert_source_pdf",
-                           "convert_force", "convert_dry_run"}
+                           "convert_force"}
+    assert "convert_dry_run" not in checks
     assert checks["convert_compile"].value is True
     assert all(not checks[key].value for key in checks if key != "convert_compile")
-    checks["convert_dry_run"].on_change(SimpleNamespace(control=SimpleNamespace(value=True)))
     checks["convert_compile"].on_change(SimpleNamespace(control=SimpleNamespace(value=False)))
-    assert page.app.store.get("options.convert_dry_run") is True
     assert page.app.store.get("options.convert_compile") is False
 
 

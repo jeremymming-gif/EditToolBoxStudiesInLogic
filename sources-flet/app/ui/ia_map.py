@@ -7,7 +7,7 @@
 
 新 IA（3 组：工作区 / 引用库 / 系统；侧栏只放目的地，二级视图/步骤进页内）：
   工作区 · 工作台 / 单篇稿件 / 整期装配（三叶平铺；单篇 2 步为页内 chip，
-           整期 4 功能页在页内 chip）
+           整期 6 个页签在页内 chip）
   引用库 · 侧栏一个叶子；页内二级导航 = 3 组（查阅 / 采录 / 治理）+ 9 个 chip
   系统   · 设置 / 帮助与关于
 
@@ -22,8 +22,9 @@
    内部键 `normalize` 保留）：它核实并改写你选定的 .bib，不改中央库；「单篇稿件」页只留
    「去引用库 → AI 辅助处理 Bib」跳转，不再有第三步骤。
 2. 「整期装配」批 114 曾把 6 个步骤全部挂到侧栏；批 115（D1-115-26）起改为一个**单页工作台**：
-   侧栏只留「整期装配」叶子，4 个功能在页内 chip 切换（生成目录 / 编译并合并 /
-   清理临时文件 / 生成推送文案）——它们彼此独立，不要求按顺序执行。
+   侧栏只留「整期装配」叶子；批 118（D7）起页内是 6 个页签（生成目录 / 排序与改名 /
+   刷新页码 / 合并 / 清理临时文件 / 生成推送文案），「刷新页码」是唯一的正文编译动作
+   （生成目录页取消「仅生成 tex」时会另编译目录 PDF）。
    `issue:overview` 仅保留一版兼容别名（落到默认功能页），不再有旧「总览」屏。
 """
 from __future__ import annotations
@@ -31,11 +32,11 @@ from __future__ import annotations
 # ── 批 114 IA 定稿 + 批 115/116 收敛：树是路由/语义唯一来源 ───────────────
 # 批 116 BIB-NAV2（方案 A，用户拍板）：侧栏只渲染「目的地」，全部扁平、无 chevron、无子行：
 #   · 工作区三页一律叶子；单篇的两个 views 只作页内 chip 与路由记忆；
-#   · 整期的 6 个底层操作仍走 ISSUE_ROUTE_STEPS，由页内 4 个功能页承载；
+#   · 整期的 7 个底层操作仍走 ISSUE_ROUTE_STEPS，由页内 6 个页签承载；
 #   · 引用库在侧栏只剩一个叶子（图标保留、右侧待处理徽标）；原来的 3 组视图
 #     与 9 个子行全部移入 Bib 页内的二级导航（BIB_INPAGE_GROUPS），组名由分隔线和首项提示表达；
 #   · 引用库视图在 NAV_TREE 里平铺并带 group，设置 route_only 只服务深链/⌘K；
-#     nav_views() 仍返回 10 项；设置另有 9 个详情视图，路由共 31 条。
+#     nav_views() 仍返回 10 项；设置另有 9 个详情视图，路由共 32 条。
 NAV_TREE: list[dict] = [
     {"group": "工作区", "entries": [
         {"key": "home", "label": "工作台", "icon": "AUTO_AWESOME"},
@@ -45,7 +46,7 @@ NAV_TREE: list[dict] = [
          "views": [{"key": "convert", "label": "初排转换"},
                    {"key": "proofcheck", "label": "一校核查"}]},
         # 批 115 D1-115-26：整期装配 = 单页工作台，侧栏只留叶子父项（无 views/groups）；
-        # 4 个功能页由页内 chip 切换，default 只作无记忆时的静态兜底。
+        # 6 个页签由页内 chip 切换，default 只作无记忆时的静态兜底。
         {"key": "issue", "label": "整期装配", "icon": "VIEW_AGENDA_OUTLINED",
          "default": "infocheck"},
     ]},
@@ -99,19 +100,36 @@ BIB_INPAGE_GROUPS: list[dict] = [
      "views": ["review", "edit", "dupes", "fieldfix", "health"]},
 ]
 # ── 批 115 D1-115-26：整期装配步骤路由（不是侧栏子项）──────────────────────
-# 整期 4 功能页在页内 chip；本表只服务「可深链/可持久化」的路由、标题与 22 条路由计数。
+# 整期 6 个页签在页内 chip；本表只服务「可深链/可持久化」的路由、标题与路由计数
+# （当前 32 条；D7 新增 order / refresh 两条页签路由）。
 # 标签沿用报告口径（页内详情标题由 pages.IssuePage.STEPS 自己维护）。
 ISSUE_ROUTE_STEPS: list[dict[str, str]] = [
     {"key": "infocheck", "label": "检查tex信息"},
     {"key": "toc", "label": "生成目录"},
-    {"key": "compileall", "label": "编译全部"},
+    {"key": "order", "label": "排序与改名"},
+    {"key": "refresh", "label": "刷新页码"},
     {"key": "merge", "label": "合并文件"},
     {"key": "cleantemp", "label": "删除临时文件"},
     {"key": "dirpush", "label": "目录摘要推送"},
 ]
 _ISSUE_STEP_KEYS = frozenset(step["key"] for step in ISSUE_ROUTE_STEPS)
+# 路由归一化的唯一位置（D7）：旧页签/旧步骤别名 → 现行步骤。
+# 别名只用于导航解析，不进操作枚举、不进步骤状态、不进 all_routes()。
+_ISSUE_ROUTE_ALIASES: dict[str, str] = {
+    "catalog": "infocheck",   # 生成目录页签深链归到检查步骤
+    "clean": "cleantemp",
+    "push": "dirpush",
+    "compileall": "refresh",  # 旧「编译全部」→ 刷新页码（只打开页）
+    "produce": "refresh",     # 旧「编译并合并」页签 → 刷新页码
+}
 # 裸 issue / issue:overview 都是「默认步」别名；由 main 结合 last_step 解析。
 _ISSUE_ALIAS_VIEWS = frozenset({"", "overview"})
+
+
+def normalize_issue_step(step: str | None) -> str:
+    """旧步骤/别名 → 现行步骤 key；只映射导航，不迁移任何运行结果或报告。"""
+    text = _ISSUE_ROUTE_ALIASES.get(str(step or "").strip(), str(step or "").strip())
+    return text if text in _ISSUE_STEP_KEYS else ""
 
 
 def issue_step_keys() -> list[str]:
@@ -132,11 +150,11 @@ def is_issue_landing_route(route: str | None) -> bool:
     return page == "issue" and view in _ISSUE_ALIAS_VIEWS
 
 
-# ── 批 116 ISSUE4（用户拍板 I-2：E′ 四步工作台）──────────────────────────
-# 4 个视图把 6 个步骤按**消费关系**折叠：01→02（toc 必读 infocheck 报告）、
-# 03→04（merge 消费 compileall 产物）；05/06 各自独立。
-# 视图只影响「页内呈现」：不进 NAV_TREE、不进 route_views、不新增路由——
-# 6 条 `issue:<step>` 深链仍是唯一入口，22 条路由总数不变。
+# ── 批 118 D7：整期装配 6 页签（承接批 116 ISSUE4 的 I-2 工作台设计）──────────
+# 6 个视图把 7 个步骤按**消费关系**折叠：01→02（toc 必读 infocheck 报告）、
+# 03（排序与改名）独立、04 刷新页码消费排序结果、05 合并消费编译产物；06/07 各自独立。
+# 视图只影响「页内呈现」：不进 NAV_TREE、不进 route_views；
+# 7 条 `issue:<step>` 深链是唯一入口（D7 新增 order / refresh，路由 31→32）。
 # 呈现顺序 = 下列顺序；`steps` 的顺序即详情区块顺序（01 在 02 上、03 在 04 上）。
 # 批 116 ISSUE4-D：rail / 窄窗横条不再显示 `01–02` 这类序号（用户拍板），
 # `range` 字段随之删除，不留没人读的序号数据。
@@ -146,26 +164,32 @@ ISSUE_VIEWS: list[dict] = [
     {"key": "catalog", "title": "生成目录", "short": "生成目录",
      "steps": ["infocheck", "toc"],
      "caption": "检查 tex 信息 · 生成目录"},
-    {"key": "produce", "title": "编译并合并", "short": "编译合并",
-     "steps": ["compileall", "merge"],
-     "caption": "编译全部 · 合并 PDF"},
+    {"key": "order", "title": "排序与改名", "short": "排序改名",
+     "steps": ["order"],
+     "caption": "读取候选 · 预览改名"},
+    {"key": "refresh", "title": "刷新页码", "short": "刷新页码",
+     "steps": ["refresh"],
+     "caption": "预览后确认刷新"},
+    {"key": "merge", "title": "合并", "short": "合并",
+     "steps": ["merge"],
+     "caption": "合并 PDF"},
     {"key": "clean", "title": "清理临时文件", "short": "清理临时",
      "steps": ["cleantemp"],
      "caption": "删除临时文件（移入回收站）"},
     {"key": "push", "title": "生成推送文案", "short": "推送文案",
      "steps": ["dirpush"],
-     "caption": "目录摘要推送（生成 docx）"},
+     "caption": "生成目录摘要 docx"},
 ]
 _ISSUE_VIEW_KEYS = frozenset(view["key"] for view in ISSUE_VIEWS)
 
 
 def is_issue_view(view_key: str) -> bool:
-    """`view_key` 是否是整期装配的 4 个页内视图之一（呈现层判定）。"""
+    """`view_key` 是否是整期装配的 6 个页内视图之一（呈现层判定）。"""
     return str(view_key or "") in _ISSUE_VIEW_KEYS
 
 
 def issue_views() -> list[dict]:
-    """整期装配的 4 个页内视图（顺序即栏内顺序）。"""
+    """整期装配的 6 个页内视图（顺序即栏内顺序）。"""
     return [dict(view, steps=list(view["steps"])) for view in ISSUE_VIEWS]
 
 
@@ -274,7 +298,7 @@ def all_routes() -> list[str]:
     """全部可持久化/可深链的路由（含父项默认视图、父落点與旧别名）。
 
     设置没有默认视图时保留裸父路由作为总览，并枚举全部子路由。
-    `issue:overview` 兼容别名 + 6 个页内步骤路由仍共 7 条。
+    `issue:overview` 兼容别名 + 7 个页内步骤路由仍共 8 条。
     """
     routes: list[str] = []
     for entry in nav_parent_entries():
@@ -304,7 +328,10 @@ def normalize_route(route: str | None) -> tuple[str, str]:
     defaults = page_defaults()
     if page not in defaults:
         return "home", ""
-    # 页面默认视图不一定是侧栏子项（整期装配的 4 功能页在页内 chip），
+    if page == "issue":
+        # D7：旧步骤/页签别名在 IA 单一位置归一，导航/搜索/最近/demo 共用。
+        view = _ISSUE_ROUTE_ALIASES.get(view, view)
+    # 页面默认视图不一定是侧栏子项（整期装配的功能页在页内 chip），
     # 但它是合法页面状态，因此用 route_views 并入允许集合。
     default = defaults[page]
     allowed = {item["key"] for item in route_views(page)} | {default}

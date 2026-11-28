@@ -28,8 +28,8 @@ VIEW_LABELS = {
 
 EXPECTED_ROUTES = {
     "home", "single:convert", "single:proofcheck",
-    "issue:overview", "issue:infocheck", "issue:toc", "issue:compileall",
-    "issue:merge", "issue:cleantemp", "issue:dirpush",
+    "issue:overview", "issue:infocheck", "issue:toc", "issue:order",
+    "issue:refresh", "issue:merge", "issue:cleantemp", "issue:dirpush",
     "bib:overview", "bib:query", "bib:import", "bib:normalize", "bib:review",
     "bib:edit", "bib:dupes", "bib:fieldfix", "bib:health", "bib:settings",
     "settings", "settings:appearance", "settings:engine", "settings:paths",
@@ -161,7 +161,7 @@ def settings_page(monkeypatch):
 def test_settings_routes_groups_labels_and_exact_route_set(settings_page):
     _app_instance, _page, _root = settings_page
     assert set(IA.all_routes()) == EXPECTED_ROUTES
-    assert len(IA.all_routes()) == 31
+    assert len(IA.all_routes()) == 32
     assert IA.normalize_route("settings") == ("settings", "")
 
     for key, label in VIEW_LABELS.items():

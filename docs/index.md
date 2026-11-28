@@ -33,7 +33,7 @@ hero:
 
 <div class="doc-cards doc-cards-2">
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/single"><strong>处理一篇稿件</strong><span>初排转换、一校核查、AI 辅助编译修复：编译失败先本机自修，修不好才需要你逐篇点「确认并发送一次」。</span></a>
-  <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/assembly"><strong>装配一整期</strong><span>整期工作台一页搞定：生成目录、编译并合并、清理临时文件、生成推送文案；转换时把源稿整个文件夹归档到 original/。</span></a>
+  <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/assembly"><strong>装配一整期</strong><span>整期工作台六个页签：生成目录、排序与改名、刷新页码、合并 PDF、清理临时文件、生成推送文案；转换时把源稿整个文件夹归档到 original/。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/bibdb"><strong>治理引用库</strong><span>查库、入藏、AI 辅助处理 Bib、字段归位与字段差异批量套用：全选库值或全选 AI 值，一次改一整列。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/settings"><strong>调整设置</strong><span>设置中心九个页面：外观、引擎与环境、路径、AI 与模型、网络代理、日志与诊断、高级与关于、窗口与托盘、语言与地区。</span></a>
 </div>

@@ -6,11 +6,12 @@ r"""目录摘要推送（B-225）：期目录 → 公众号推送文案 docx。
     python3 Engine/dirpush.py --issue <期目录> [--out <输出根>] [--with-en-toc] [--json] [--dry-run]
     python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] \
         [--include-issues 1,2,3] [--out <根>] [--json] [--dry-run]
-    python3 Engine/dirpush.py --order-draft --issue <期目录> --out <期目录外输出根> [--json] [--dry-run]
+    python3 Engine/dirpush.py --order-draft --issue <期目录> --out <输出根> [--json] [--dry-run]
     python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
 
   · `--issue` 必填：当期模式 = 具体期目录；年度模式 = 该年**任一期**目录（扫其父目录）
-  · `--order-draft` 只读精确同名初排 TeX，输出只有题名和作者的普通 DOCX；必须显式给 `--out`
+  · `--order-draft` 只读精确同名初排 TeX，输出只有题名和作者的普通 DOCX；必须显式给 `--out`；
+    输出根可为任意可写目录（期目录本身、期内子目录、父目录或外部目录）
   · `--check-out-root` 只读预检（供 GUI 复用三仓判据）：不要求 `--issue`、不扫稿件、零写、rc=0；
     `--json` 时 stdout 给 `{"schema":1,"ok":true,"warnings":[...]}`，否则 warning 走 stderr
   · `--out` 省略（单期）= `<期目录>/000 Table of Contents`，docx/设置直接落该目录；
@@ -411,7 +412,7 @@ def _run_order_draft(args) -> int:
     result["issue"] = args.issue or ""
     try:
         if not args.issue or not args.out:
-            raise _collect.CollectError("--order-draft 需要 --issue 和期目录外的 --out")
+            raise _collect.CollectError("--order-draft 需要 --issue 和 --out")
         if (args.annual or args.with_en_toc or args.year is not None
                 or args.include_issues is not None or args.check_out_root is not None):
             raise _collect.CollectError("--order-draft 不能与当期或年度推送设置、输出预检同用")
@@ -472,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--with-en-toc", action="store_true",
                         help="当期模式：显式覆盖语言判定，生成中英文对照目录")
     parser.add_argument("--order-draft", action="store_true",
-                        help="生成排序决策稿（须给期目录外的 --out）")
+                        help="生成排序决策稿（须给可写目录 --out）")
     parser.add_argument("--annual", action="store_true", help="年度模式：逐期拼接目录")
     parser.add_argument("--year", type=int, default=None, help="年度模式：年份")
     parser.add_argument("--include-issues", default=None, help="年度模式：只纳入这些期号，逗号分隔")

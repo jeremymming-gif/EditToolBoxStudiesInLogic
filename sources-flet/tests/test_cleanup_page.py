@@ -320,7 +320,7 @@ def test_cleanup_restore_uses_exact_batch_and_handles_conflicts(tmp_path, monkey
                and "可重试" in toast for toast in page.app.toasts), page.app.toasts
 
 
-def test_cleanup_runall_is_opt_in_daily(tmp_path, engine, monkeypatch):
+def test_cleanup_runs_as_explicit_single_step_daily(tmp_path, engine, monkeypatch):
     (tmp_path / "期A").mkdir()
     page = make_page(tmp_path / "期A", report=True)
     panel = _panel(page)
@@ -339,17 +339,14 @@ def test_cleanup_runall_is_opt_in_daily(tmp_path, engine, monkeypatch):
 
     monkeypatch.setattr(EB, "run_call", fake_run_call)
 
-    assert inspect.signature(ASM.run_all).parameters["keys"].default is None
-    assert "cleantemp" not in ASM.DEFAULT_RUN_ALL_KEYS
+    # D3：整期 run_all 已下线（没有默认步集合、没有自动编译）——清理必须是
+    # 用户显式点「清理临时文件」的单一动作，绝不随任何串行流程自动发生。
+    assert not hasattr(ASM, "run_all")
+    assert not hasattr(ASM, "DEFAULT_RUN_ALL_KEYS")
 
-    ASM.run_all(page)  # 默认整期：不清理
-    assert [call.entry for call in calls] == [
-        "infocheck.py", "toc.py", "compileall.py", "mergepdf.py",
-    ]
     assert panel.record() == {}
 
-    calls.clear()
-    ASM.run_all(page, ["cleantemp"])  # 显式选择才走 daily
+    ASM.run_step(page, "cleantemp")  # 唯一入口：显式单步，走 daily
     assert [call.entry for call in calls] == ["cleantemp.py"]
     assert _args(calls[0]) == ["--folder", str(tmp_path / "期A"), "--mode", "daily", "--json"]
     rec = panel.record()
@@ -818,7 +815,7 @@ def test_cleanup_cancel_without_json_never_claims_old_batch(tmp_path, monkeypatc
     assert "上次" in str(undo.content)
 
 
-def test_cleanup_runall_late_result_writes_original_root_only(tmp_path, monkeypatch):
+def test_cleanup_late_result_writes_original_root_only(tmp_path, monkeypatch):
     """R12：整期串行跑完后切期，A 期结果只能写 A，不能污染 B。"""
     root_a = tmp_path / "期A"
     root_b = tmp_path / "期B"
@@ -843,7 +840,7 @@ def test_cleanup_runall_late_result_writes_original_root_only(tmp_path, monkeypa
 
     monkeypatch.setattr(EB, "run_call", fake_run_call)
 
-    ASM.run_all(page, ["cleantemp"])
+    ASM.run_step(page, "cleantemp")
 
     assert panel.record(str(root_a))["operationId"] == "actual-A"
     assert panel.record(str(root_a))["root"] == str(root_a)

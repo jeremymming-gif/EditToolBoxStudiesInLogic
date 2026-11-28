@@ -576,6 +576,12 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 > **批 117（additive）**：`toc.py --result-json` 增 `outputs{zhTex,enTex,zhPdf,enPdf}`——`--place` 时指 `000 Table of Contents` 下固定名，text-only 时指期目录根下实际生成的时间戳文件（PDF 未编译为空串）；卷/期解析不到时 `warnings` 增一条「卷/期无法确定…」（退出码不变）。
 | `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；**B-259 增补** `query-advanced` 高级检索（11 字段 × contains/prefix/exact/fuzzy、年份表达式、排序/分页/why-hit；**只读**，旧三模式零改动）；`stats` 概况；`lint` 体检；`rehash` 规范化规则升级后重算 `content_sha256`（B-126；默认 dry-run、`--apply` 才写）；`conflicts` 列冲突条目（B-127；只读，GUI 待裁决页数据源）；`resolve` 记录冲突裁决（keep / defer / adopt / **replace**；写前可选 `--expect-db-sha256` + `--backup DIR`；`--adopt-all-pending` 一键全部采用）；`restore --backup` 从备份整库恢复（不 reopen；**CLI 保留向后兼容，B-190 起 GUI 不再调用/不再有备份入口**）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup`）；**B-188 增补**：`edit`（通用条目编辑，可 `--new-key`，旧 key 自动进 aliases）、`merge-records`（合并 2+ 条重复记录）、`suggest-field-fixes`（只读：缺字段归位候选）；**B-190 起 `edit`/`merge-records` 的 `--backup` 改可选**（不传 = 不写备份文件；GUI 改用 git 版本层，最后写库仍是同一套 sha 闸 + 原子写 + 写后复核）；`lint --with-records` 给全量受影响 key。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定。**新子命令/新参数全部是加法：不传时老行为与老 `--json` 键不变** | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
+### `compileall.py` 的编译报告契约（仅 CLI）
+
+`compileall.py --folder "<期目录>" [--only 01,03]` 逐篇编译（`xelatex → biber -l=zh_pinyin → xelatex → xelatex`，跳过 `000` 目录），**只有命令行入口会生成 `<期目录>/编译报告.md`**：内容为一句结论 + 成功/失败计数 + 每篇失败的首条 `!` 行与对应 `.log` 路径；退出码 `0` 全成功、`1` 有失败、`2` 用法/目录错误；人读末行为 `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）`。
+
+本期 GUI 不使用编译报告：整期装配页的「刷新页码」走 `refreshpages.py` 的预览/确认契约，不创建 `编译报告.md`，也不删除历史上已生成的报告文件。旧版「编译后自动刷新页码」的勾选与报告展示/重试入口已移除；老用户配置里残留的开关值按原样忽略，不影响现有行为。
+
 ### `cleantemp.py --mode daily` 的 JSON / 批次契约（B-3xx，2026-11-07）
 
 `--json` 时 stdout 只有最后一行 JSON（人类日志走 stderr），外壳读 JSON、不解析文本。
@@ -987,7 +993,8 @@ python3 Engine/diagnose.py --entry compileall.py --exit-code 1 --log "…" --jso
 | `<stem>_回读校验报告.md` / `合并后回读校验报告.md` | 就地插在最前，旧正文不动 |
 | `信息检查<时间戳>.txt` | **逐字节不变**（旧产物契约） |
 | `信息检查<时间戳>_摘要.md` | 新增文件：摘要头 + 逐篇明细 |
-| `<期目录>/编译报告.md` | 新增文件：结论 + 成功/失败计数 + 每篇失败首条 `!` 行与 `.log` 路径 |
+
+> `<期目录>/编译报告.md` **不在此通用摘要头表内**：它由 `compileall.py` 命令行入口单独生成，契约见下文「`compileall.py` 的编译报告契约（仅 CLI）」。本期 GUI 不创建该报告，也不删除历史报告文件。
 
 `engine_main.py` 的 ENTRIES（11→12）已于 B-285b 完成：`diagnose.py` 追加在 `envcheck.py` 之后，
 前 11 项顺序不动；Flet 桥 `sources-flet/app/services/engine_bridge.py`、`Engine/tools/build_win_sidecar.ps1` 与 `Engine/tests/test_platform.py` (g) 逐项同表（旧壳已删，历史）。
@@ -1102,7 +1109,7 @@ python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --dry-run 
 python3 Engine/dirpush.py --order-draft --issue "$ISSUE" --out "$OUT" --json
 ```
 
-`ISSUE` 指整期根目录，`OUT` 指期目录外的输出根。预览列出 `docx` 和 `rows`，并检查真实输出位置。每条 `rows` 含 `folder`、`title`、`authors`、`state`。引擎读取直属稿件目录下精确同名的常规 TeX：「精确同名」指去掉文件夹名开头的「数字+空白」排序前缀后的名字（如 `01 San_Zhang` 对应 `San_Zhang.tex`），兼容旧式带前缀的 `01 San_Zhang.tex`；非数字前缀（如 `W1_`）不剥离，按实际拼写匹配。能读取的稿件在 Word 表格里各占一行，显示题名和作者。`state` 区分可用、字段缺失、主 TeX 缺失、无法读取和不安全的目录项。写稿只生成排序稿 DOCX。
+`ISSUE` 指整期根目录；`OUT` 是排序稿 DOCX 的输出根，可为**任意可写目录**：期根目录、期内子目录、父目录或期目录外的其他目录均可（不再限制必须在期目录外）。预览列出 `docx` 和 `rows`，并检查真实输出位置。每条 `rows` 含 `folder`、`title`、`authors`、`state`。引擎读取直属稿件目录下精确同名的常规 TeX：「精确同名」指去掉文件夹名开头的「数字+空白」排序前缀后的名字（如 `01 San_Zhang` 对应 `San_Zhang.tex`），兼容旧式带前缀的 `01 San_Zhang.tex`；非数字前缀（如 `W1_`）不剥离，按实际拼写匹配。能读取的稿件在 Word 表格里各占一行，显示题名和作者。`state` 区分可用、字段缺失、主 TeX 缺失、无法读取和不安全的目录项。写稿只生成排序稿 DOCX。
 
 ### 篇序和目录改名
 
@@ -1115,6 +1122,16 @@ python3 Engine/renamefolders.py --issue "$ISSUE" --recover "$RECOVERY_ID" --json
 `ORDER` 是顺序清单路径，也可写 `-` 从标准输入读取 UTF-8 JSON。对象包含 `schema: 1`、`ordered`（按新篇序排列的现有直属目录名）和 `excluded`（显式排除的直属目录名）。预览列出改名和冲突，`PLAN_ID` 取对应预览的 `plan_id`。应用时在同一期写锁内复核位置、身份和目标占用，把目录改为 `NN 原主体`，序号为 01–99。只改同一父目录内的目录名。结果 `renames` 提供 `old`、`new` 和 `main_tex`。需恢复时，`RECOVERY_ID` 取该期执行结果的 `recovery_id`。
 
 ### 编译并刷新页码
+
+刷新页可在只读摘要模式下取得当前选择范围，不读 TeX/PDF 内容、不编译、不建写事务：
+
+```bash
+python3 Engine/refreshpages.py --issue "$ISSUE" --selection-summary --json
+# 可选：带上改名操作的成功结果（文件，或 - 从 stdin 读取）
+python3 Engine/refreshpages.py --issue "$ISSUE" --selection-summary --order-result "$ORDER_RESULT" --json
+```
+
+`--selection-summary` 与 `--apply`、`--plan-id`、`--recover`、`--on-change`、`--only`、`--regenerate-toc` 互斥。成功的标准输出为**单个 JSON 对象**，至少含 `schema: 1`、`operation: "refreshpages"`、`status: "selection_summary"`、`issue`、`order_source`、`numbered_count`、`excluded_numbered_count`、`article_count`，且满足 `article_count = numbered_count - excluded_numbered_count`。`numbered_count` 统计编号目录（排除 `000` 与非编号目录），`excluded_numbered_count` 为其中被有效编号排除项排除的数量，`order_source` 标明顺序来自哪一来源。模式沿用引擎 `_root` 与状态目录检查、`pending_issue_write` 检查；存在未完成写入或前置条件拒绝时，沿用本节的 JSON 错误/恢复形态返回。程序启动进入刷新页时只取此摘要，不启动编译。
 
 ```bash
 python3 Engine/refreshpages.py --issue "$ISSUE" --json
@@ -1133,7 +1150,7 @@ python3 Engine/refreshpages.py --issue "$ISSUE" --recover "$RECOVERY_ID" --json
 
 页码声明只额外允许两个精确动态形式：`\mylastpage` 的 `\pageref*{LastPage}`、`\mypages` 的 `\getpagerefnumber{LastPage}`。引擎仅在暂存副本中将其整数化并强制整期刷新，其他非整数宏仍拒绝。
 
-CLI 受控编译通过 `--on-change` 启用；`--only <序号列表>` 仅能与它合用，不指定时检查全期。预览和应用须保持 `--on-change`、`--only`、改名结果及目录选项一致，计划 ID 会绑定这些输入。引擎比较所选篇新编 PDF 的物理页数与现有页码声明：两者均可信且未变时只发布所选 PDF，目录不变；页数变化、旧 PDF 不可信或页码声明不一致时转为整期刷新并更新目录。Flet 为本期明确启用「编译后自动刷新页码」后，编译步骤依次运行该模式的预览与应用，不先执行旧编译入口。自动刷新失败会停止后续装配步骤。发布中断时按结果提供的 `recovery_id` 恢复。
+CLI 受控编译通过 `--on-change` 启用；`--only <序号列表>` 仅能与它合用，不指定时检查全期。预览和应用须保持 `--on-change`、`--only`、改名结果及目录选项一致，计划 ID 会绑定这些输入。引擎比较所选篇新编 PDF 的物理页数与现有页码声明：两者均可信且未变时只发布所选 PDF，目录不变；页数变化、旧 PDF 不可信或页码声明不一致时转为整期刷新并更新目录。发布中断时按结果提供的 `recovery_id` 恢复。
 
 ---
 

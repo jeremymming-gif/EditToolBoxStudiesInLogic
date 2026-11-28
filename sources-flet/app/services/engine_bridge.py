@@ -1477,10 +1477,18 @@ def renamefolders_call(*, issue: str, order: dict | None = None,
 def refreshpages_call(*, issue: str, plan_id: str = "", recovery_id: str = "",
                       regenerate_toc: bool = False, order_result: str = "",
                       order_json: str = "", on_change: bool = False,
-                      only: str = "") -> EngineCall:
+                      only: str = "", selection_summary: bool = False) -> EngineCall:
     args = ["--issue", issue, "--json"]
     if recovery_id:
         return _call("refreshpages.py", [*args, "--recover", recovery_id], "恢复本期页码")
+    if selection_summary:
+        _append_flag(args, "--selection-summary", True)
+        if order_result or order_json:
+            args.extend(["--order-result", order_result or "-"])
+        call = _call("refreshpages.py", args, "读取编号目录")
+        if not order_result and order_json:
+            call.stdin_text = order_json
+        return call
     if plan_id:
         args.extend(["--apply", "--plan-id", plan_id])
     _append_flag(args, "--on-change", on_change)
@@ -1488,10 +1496,7 @@ def refreshpages_call(*, issue: str, plan_id: str = "", recovery_id: str = "",
     _append_flag(args, "--regenerate-toc", regenerate_toc)
     if order_result or order_json:
         args.extend(["--order-result", order_result or "-"])
-    if on_change:
-        label = "编译并按需刷新页码" if plan_id else "预览自动页码刷新"
-    else:
-        label = "编译并刷新页码" if plan_id else "预览刷新页码"
+    label = "编译并刷新页码" if plan_id else "预览刷新页码"
     call = _call("refreshpages.py", args, label)
     if not order_result and order_json:
         call.stdin_text = order_json

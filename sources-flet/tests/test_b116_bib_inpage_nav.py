@@ -6,7 +6,7 @@
 - chip 点击走 `navigate("bib:<key>")`，选中色 = 侧栏 nav_sel 灰 tint；
 - bib:settings 仍显示导航条，但无 chip 选中；
 - <1100 设计宽自动两行分组换行，9 项全部可见可点；
-- 31 条路由（设置新增九条）/ 10 个引用库视图 / 搜索索引 / P2_BIB_VIEW 语义不变。
+- 32 条路由（设置新增九条）/ 10 个引用库视图 / 搜索索引 / P2_BIB_VIEW 语义不变。
 
 批 116 BIB-NAV3：删掉 3 个可见组标题（查阅/采录/治理），组语义改用 1×16 发丝线；
 组名放到每组第一个 chip 的 tooltip，不新增可见文字。
@@ -427,8 +427,8 @@ def test_chip_colors_follow_theme_rebuild(monkeypatch) -> None:
                for chip in _chips(nav) if chip is not active[0])
 
 
-def test_ia_routes_views_and_inpage_catalog_stay_ten_views_thirty_one_routes() -> None:
-    assert len(IA.all_routes()) == 31
+def test_ia_routes_views_and_inpage_catalog_stay_ten_views_thirty_two_routes() -> None:
+    assert len(IA.all_routes()) == 32
     assert [view["key"] for view in IA.nav_views("bib")] == [
         key for key, _ in BIB_LEAVES] + ["settings"]
     assert IA.nav_views("bib")[-1]["route_only"] is True

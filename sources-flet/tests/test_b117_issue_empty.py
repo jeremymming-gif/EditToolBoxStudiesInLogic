@@ -95,7 +95,7 @@ def test_clear_issue_stays_on_current_view_with_empty_state():
 def test_after_clear_switching_views_keeps_empty_state():
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
-    page.activate("compileall")
+    page.activate("refresh")
     page._clear_issue()
     for view in page.VIEWS:
         page.activate(view["steps"][0])
@@ -127,4 +127,4 @@ def test_issue_overview_alias_lands_on_last_or_default_step():
     assert page.selected == "merge"
     page.activate("overview")
     assert page.selected == "merge", "有记忆时别名落上次步骤，不再有总览屏"
-    assert page._view_of_step(page.selected) == "produce"
+    assert page._view_of_step(page.selected) == "merge"

@@ -276,6 +276,138 @@ def test_recovery_diagnostics_stay_visible_and_use_recovery_only_argv(flow, tmp_
     assert flow.calls[-1].stdin_text is None
 
 
+def test_browse_output_reuses_picker_and_guards_cancel_switch_late(flow, tmp_path):
+    """§5：复用目录 picker；取消不改值、换期不回填、迟到来访不改新期输出值。"""
+    load_candidates(flow)
+    panel = flow.page._issue_order_panel
+    field = panel._output
+    clicks, guards, on_results = [], [], []
+
+    def fake_browse(*args, **kwargs):
+        clicks.append(kwargs)
+        guards.append(kwargs["result_guard"])
+        on_results.append(kwargs["on_result"])
+        assert kwargs["ref"] == [field]
+        assert kwargs["kind"] == "dir"
+        # 模拟真实 picker：确认写值前先查 guard，写后调 on_result。
+        if guards[-1]():
+            field.value = str(tmp_path / "chosen")
+        on_results[-1](str(tmp_path / "chosen"))
+
+    flow.page.app.browse_field = fake_browse
+    click(panel._root, "浏览…")
+    assert len(clicks) == 1 and field.value == str(tmp_path / "chosen")
+
+    # 取消不改值：on_result(None) 不写字段（真实 picker 取消路径）。
+    field.value = str(tmp_path / "manual")
+    before = field.value
+    on_results[-1](None)
+    assert field.value == before
+
+    # 从 A 切 B 后不回填：模拟 panel 已换期，旧 guard 必失效。
+    panel.issue = str(tmp_path / "issue B")
+    panel.binding = panel.binding + 1
+    assert not guards[-1]()
+    old_value = field.value
+    on_results[-1](str(tmp_path / "late"))
+    assert field.value == old_value
+
+    # 手填与实际保存一致：生成排序决策稿用字段现值。
+    panel.issue = str(flow.issue)
+    panel.binding = flow.page.current_artifact_binding()
+    field.value = str(tmp_path / "typed")
+    flow.replies.append((0, draft(flow.issue, status="completed", docx=tmp_path / "d.docx")))
+    click(panel._root, "生成排序决策稿")
+    flow.drain()
+    assert flow.calls[-1].argv[-2] == str(tmp_path / "typed")
+
+
+def test_receipt_only_on_success_confirm_and_move_exclude_keep_last(flow):
+    """§2：只有成功确认产出原始回执；上移/排除不清除上次有效回执。"""
+    load_candidates(flow)
+    panel = flow.page._issue_order_panel
+    # 先预览（viable），再上移/排除 → 应清除预览但不动回执。
+    flow.replies.append((0, rename(flow.issue)))
+    click(flow.root, "预览改名")
+    flow.drain()
+    click(flow.root, "上移", index=1)
+    click(flow.root, "排除", index=2)
+    assert panel.refresh_order_result is None  # 尚无成功确认
+    # 重新预览并确认成功
+    flow.replies.append((0, rename(flow.issue)))
+    click(flow.root, "预览改名")
+    flow.drain()
+    click(flow.root, "应用改名")
+    confirm = next(c for c in flow.dialogs[-1].actions if c.content == "应用改名")
+    flow.replies.append((0, rename(flow.issue, status="completed", viable=False)))
+    confirm.on_click(None)
+    flow.drain()
+    receipt = panel.refresh_order_result
+    assert receipt and receipt["status"] == "completed"
+    assert "已应用改名" in flow.page.app.toasts
+    assert "已应用改名" in flow.page._log_buffer
+    # 读候选 + 上移/排除不清除回执
+    flow.replies.append((0, draft(flow.issue)))
+    click(flow.root, "读取排序候选")
+    flow.drain()
+    click(flow.root, "上移", index=1)
+    assert panel.refresh_order_result == receipt
+    # 未提交编辑标记待确认，但有效回执保留（D2 优先级：显式 JSON > 有效回执 > 编辑）。
+    assert panel.refresh_order_needs_confirmation
+
+
+def test_rename_unchanged_neutral_and_no_reexpanded_mapping(flow):
+    """§5：unchanged 中性状态，不重复展开同名映射，不发成功 Toast。"""
+    load_candidates(flow)
+    preview = rename(flow.issue)
+    preview["renames"] = [{"old": "Alpha", "new": "Alpha"}]
+    flow.replies.append((0, preview))
+    click(flow.root, "预览改名")
+    flow.drain()
+    assert "Alpha → Alpha" in text_values(flow.root)
+    click(flow.root, "应用改名")
+    confirm = next(c for c in flow.dialogs[-1].actions if c.content == "应用改名")
+    result = rename(flow.issue, status="unchanged", viable=False)
+    result["renames"] = [{"old": "Alpha", "new": "Alpha"}]
+    flow.replies.append((0, result))
+    confirm.on_click(None)
+    flow.drain()
+    assert "顺序已确认，目录无需改名" in text_values(flow.root)
+    assert "Alpha → Alpha" not in text_values(flow.root)
+    assert "已应用改名" not in flow.page.app.toasts
+    panel = flow.page._issue_order_panel
+    assert panel.refresh_order_result["status"] == "unchanged"
+
+
+def test_recovery_success_clears_old_receipt_first(flow):
+    """§2：改名恢复成功先清旧回执，并发一次失效通知。"""
+    load_candidates(flow)
+    flow.replies.append((0, rename(flow.issue)))
+    click(flow.root, "预览改名")
+    flow.drain()
+    # 先进入恢复态（recovery_required 不清除候选），保留候选供后续。
+    flow.replies.append((1, rename(flow.issue, status="recovery_required", viable=False,
+                                   recovery_id="rec-1")))
+    click(flow.root, "预览改名")
+    flow.drain()
+    assert button(flow.root, "恢复本期改名").disabled is False
+    # 造一个旧回执（模拟此前成功确认留下的回执）。
+    panel = flow.page._issue_order_panel
+    panel.refresh_order_result = {"status": "completed", "issue": {"path": str(flow.issue)}}
+    panel.refresh_order_needs_confirmation = False
+    invalidations = []
+    flow.page._issue_paging_panel = SimpleNamespace(
+        invalidate_order=lambda: invalidations.append(1), refresh_running=lambda: None)
+    click(flow.root, "恢复本期改名")
+    confirm = next(c for c in flow.dialogs[-1].actions if c.content == "恢复本期改名")
+    flow.replies.append((0, rename(flow.issue, status="rolled_back", viable=False)))
+    confirm.on_click(None)
+    flow.drain()
+    assert panel.refresh_order_result is None
+    assert panel.refresh_order_needs_confirmation
+    assert len(invalidations) == 1
+
+
 def test_json_engine_transport_keeps_stdin_and_separates_diagnostics():
     script = ("import json, sys; "
               "print(json.dumps({'schema': 1, 'received': sys.stdin.read()})); "

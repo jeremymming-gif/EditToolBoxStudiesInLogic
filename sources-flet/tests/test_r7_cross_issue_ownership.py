@@ -460,14 +460,6 @@ def _dirpush_card(page, issue: Path):
     return page._dirpush_result(), [str(artifact), str(artifact.parent)]
 
 
-def _compile_card(page, issue: Path):
-    report = issue / "编译报告.md"
-    report.write_text("report", encoding="utf-8")
-    page._compile_rows = {"01a": {"status": "done", "pdf": ""}}
-    page._compile_order = ["01a"]
-    return page._compile_result(), [str(report)]
-
-
 def _merge_card(page, issue: Path):
     product = issue / "合并.pdf"
     product.write_bytes(b"%PDF-1.4\n")
@@ -491,7 +483,9 @@ def _info_card(page, issue: Path):
     return page._info.root, [str(report)]
 
 
-C_CARDS = [_dirpush_card, _compile_card, _merge_card, _prep_card, _info_card]
+# D3 下线并行编译卡（独立 compilation 卡片与逐篇进度表全部删除），
+# 因此 C-1 的「同机制旧期正文 Open」只需覆盖仍存在的四类卡。
+C_CARDS = [_dirpush_card, _merge_card, _prep_card, _info_card]
 
 
 def _c_page_at(issue: Path, report: Path):
@@ -510,6 +504,21 @@ def _c_page_at(issue: Path, report: Path):
     page.set_field("toc_report", str(report))
     page.on_toc_report_changed(str(report))
     return page, opened
+
+
+def test_c_compile_card_is_gone_after_d3():
+    """D3：独立编译卡与编译报告展示已下线，其 Open 入口随之消失。
+
+    编译/刷新页码改由「刷新页码」页签里的 PagingPanel 承担（产物 Open 由
+    PagingPanel._open_button 的代次判定守卫），不再有 `_compile_result()` 卡。
+    """
+    from ui import pages as P
+
+    for name in ("_compile_result", "_compile_rows", "_compile_order",
+                 "_compile_summary", "_compile_plan"):
+        assert not hasattr(P.IssuePage, name), f"D3：IssuePage.{name} 应已删除"
+    for name in ("compile_plan", "compile_event", "CompileTarget"):
+        assert not hasattr(ASM, name), f"D3：ASM.{name} 应已删除"
 
 
 @pytest.mark.parametrize("builder", C_CARDS, ids=[b.__name__ for b in C_CARDS])

@@ -187,14 +187,14 @@ def test_single_breakpoint_at_1000_and_1240():
     narrow, _ = _build(P.SinglePage, width=1000)
     assert narrow._design_w() == 1000
     assert _adv_group_rows(narrow)[0] == [2, 2], "高级参数首组应 4→2 列"
-    # 批 116 P1-10：1000 内容宽仍 ≥900，处理选项保持 2 列（5 张卡 → 2+2+占位）。
-    assert _tile_rows(narrow) == [2, 2, 2], "1000 宽处理选项应保持 2 列"
+    # 批 118 D1：删掉「只预演」开关后单篇只剩 4 张卡 → 2+2 两行。
+    assert _tile_rows(narrow) == [2, 2], "1000 宽处理选项应保持 2 列"
 
     wide, _ = _build(P.SinglePage, width=1240)
     assert wide._design_w() == 1240
     assert _adv_group_rows(wide)[0] == [4], "1240 宽应恢复 4 列"
-    # 5 张卡两两成行，末行 = 1 张卡 + 占位 Container（仍算 2 个控件）。
-    assert _tile_rows(wide) == [2, 2, 2], "1240 宽应恢复 2 列网格"
+    # 4 张卡两两成行。
+    assert _tile_rows(wide) == [2, 2], "1240 宽应恢复 2 列网格"
 
 
 def test_issue_narrow_breakpoint_uses_logical_width():

@@ -226,25 +226,91 @@ class TestIssueOrderDraft(unittest.TestCase):
         if (self.issue / "SourceLink/SourceLink.tex").is_symlink():
             self.assertEqual(states["SourceLink"], "unsafe_entry")
 
-    def test_rejects_inside_output_and_output_alias_even_in_preview(self):
+    def _assert_docx_at_root(self, out: Path, *, preview_docx: Path | None = None):
+        """D6: the draft lands directly in the chosen root with correct content."""
+        before = set(out.iterdir())
+        rc, preview, _ = _run("--issue", self.issue, "--out", out, "--dry-run")
+        self.assertEqual(rc, 0, preview)
+        self.assertEqual(preview["status"], "preview")
+        expected = out / f"{self.issue.name}排序决策稿.docx"
+        self.assertEqual(Path(preview["docx"]), expected)
+        if preview_docx is not None:
+            self.assertEqual(preview_docx, expected)
+        self.assertFalse(expected.exists(), "预演不得写任何文件")
+        rc, completed, _ = _run("--issue", self.issue, "--out", out)
+        self.assertEqual(rc, 0, completed)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(Path(completed["docx"]), expected)
+        self.assertEqual(_text_cells(expected), [
+            ["题名", "作者"],
+            ["合成 - 题名", "测试甲，Author Two"],
+        ])
+        # 不额外建子目录：所选根相对预演前只多出这一份 DOCX。
+        self.assertEqual(set(out.iterdir()) - before, {expected})
+
+    def test_output_root_can_be_issue_root_in_issue_subdir_parent_or_external(self):
+        """D6：排序稿可落期根、期内普通子目录、父目录或外部可写根。"""
         self._make_alpha()
-        protected = self.issue / "000 Table of Contents"
-        protected.mkdir()
-        alias = self.root / "alias"
-        if os.name == "nt":
-            junction = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(protected)],
-                                      capture_output=True)
-            self.assertEqual(junction.returncode, 0, junction.stderr)
-        else:
-            alias.symlink_to(protected, target_is_directory=True)
-        for path in (self.issue, protected, alias / "nested"):
+        in_issue = self.issue / "drafts"
+        in_issue.mkdir()
+        roots = [
+            self.issue,                         # 期目录本身
+            in_issue,                           # 期内普通子目录
+            self.root,                          # 父目录
+            self.out,                           # 外部目录（预检需已存在，见下）
+        ]
+        for out in roots:
+            with self.subTest(root=out):
+                out.mkdir(parents=True, exist_ok=True)
+                self._assert_docx_at_root(out)
+
+    def test_rejects_non_directory_path_segment_and_illegal_target_type(self):
+        """保留非目录段与非法目标类型检查；期内位置本身不再禁止。"""
+        self._make_alpha()
+        # 路径段为普通文件：即使在期目录内也必须拒绝，且不写任何东西。
+        file_segment = self.issue / "plain-file.txt"
+        file_segment.write_text("not a directory", encoding="utf-8")
+        for out in (file_segment, file_segment / "nested"):
             for mode in ([], ["--dry-run"]):
-                with self.subTest(path=path, mode=mode):
-                    rc, result, _ = _run("--issue", self.issue, "--out", path, *mode)
+                with self.subTest(out=out, mode=mode):
+                    rc, result, _ = _run("--issue", self.issue, "--out", out, *mode)
                     self.assertEqual(rc, 2, result)
                     self.assertEqual(result["status"], "blocked")
                     self.assertIsNone(result["docx"])
-                    self.assertEqual(list(protected.iterdir()), [])
+                    self.assertIn("目录", result["error"])
+        # 目标 DOCX 已存在但不是普通文件（目录）→ 非法目标类型。
+        illegal = self.issue / "target-is-dir"
+        illegal.mkdir()
+        target = illegal / f"{self.issue.name}排序决策稿.docx"
+        target.mkdir()
+        before = {p: p.read_bytes() for p in self.issue.rglob("*") if p.is_file()}
+        rc, result, _ = _run("--issue", self.issue, "--out", illegal)
+        self.assertEqual(rc, 2, result)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIsNone(result["docx"])
+        self.assertIn("普通文件", result["error"])
+        self.assertEqual({p: p.read_bytes() for p in self.issue.rglob("*") if p.is_file()}, before)
+
+    def test_rejects_unwritable_output_root(self):
+        """不可写路径照旧拒绝，预演与实际写入都不放过。"""
+        self._make_alpha()
+        unwritable = self.out
+        unwritable.mkdir()
+        original = unwritable.stat().st_mode
+        try:
+            os.chmod(unwritable, 0o500)  # r-x，无写权限
+            if os.access(unwritable, os.W_OK):
+                self.skipTest("本平台/用户绕过 DAC 写权限检查")
+            for mode in ([], ["--dry-run"]):
+                with self.subTest(mode=mode):
+                    rc, result, _ = _run("--issue", self.issue, "--out", unwritable, *mode)
+                    self.assertEqual(rc, 2, result)
+                    self.assertEqual(result["status"], "blocked")
+                    self.assertIsNone(result["docx"])
+                    self.assertIn("不可写", result["error"])
+                    self.assertEqual(list(unwritable.iterdir()), [])
+        finally:
+            os.chmod(unwritable, original)
 
     def test_blocked_inputs_return_diagnostics_without_writes(self):
         _write_tex(self.issue / "Beta/BETA.tex", "wrong spelling")

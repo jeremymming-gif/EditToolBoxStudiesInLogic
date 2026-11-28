@@ -217,7 +217,7 @@ def test_blocked_primary_action_does_not_dispatch(tmp_path, monkeypatch):
     assert _marked(page.app, "toc_column_invalid"), "要留明确标记"
 
 
-def test_run_step_and_run_all_block_without_engine_call(tmp_path, monkeypatch):
+def test_run_step_and_sequence_block_without_engine_call(tmp_path, monkeypatch):
     page, issue, _report = _build_page(tmp_path, settings={**COLUMN, "columnNameEN": "  "})
     engine_calls: list = []
     tasks: list = []
@@ -229,8 +229,13 @@ def test_run_step_and_run_all_block_without_engine_call(tmp_path, monkeypatch):
     assert any("栏目英文名" in message for message in page.app.toasts)
     assert _marked(page.app, "validation_error")
 
-    ASM.run_all(page, ["infocheck", "toc"])
-    assert tasks == [], "整期串行含 toc 且栏目无效时派发前就阻断"
+    # D3：整期一键 run_all 已下线；串行执行器每步懒构建调用，toc 仍在构建阶段
+    # 被同一共享门挡住（`_run_sequence` 会把它落成 error + run_start_error）。
+    assert not hasattr(ASM, "run_all")
+    with pytest.raises(ValueError) as caught:
+        ASM.build_step_call(page, "toc")
+    assert "栏目英文名" in str(caught.value)
+    assert tasks == [], "构建阶段就阻断，不派发任务"
     assert not (issue / TOC.TMP_DIR).exists(), "阻断时不得创建结果目录/写产物"
 
 
@@ -249,7 +254,7 @@ def test_text_only_path_uses_same_shared_gate(tmp_path, monkeypatch):
     assert any("栏目名称" in message for message in page.app.toasts)
 
 
-def test_no_column_generation_allowed_and_serial_run_dispatches(tmp_path, monkeypatch):
+def test_no_column_generation_allowed_and_run_step_dispatches(tmp_path, monkeypatch):
     page, _issue, report = _build_page(tmp_path)  # 默认设置 = 无栏目
     assert page._primary_disabled("toc") is False
     call = ASM.build_step_call(page, "toc")
@@ -259,8 +264,8 @@ def test_no_column_generation_allowed_and_serial_run_dispatches(tmp_path, monkey
 
     tasks: list = []
     monkeypatch.setattr(page.page, "run_task", lambda *a, **k: tasks.append(a))
-    ASM.run_all(page, ["toc"])
-    assert len(tasks) == 1, "无栏目串行应正常派发"
+    ASM.run_step(page, "toc")
+    assert len(tasks) == 1, "无栏目时单步入口应正常派发"
 
 
 # ── 3. OBS-2：结果区在 toc 步结束后立即刷新（含 selected != toc）──────────

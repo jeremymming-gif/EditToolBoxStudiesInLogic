@@ -547,6 +547,150 @@ def s8_tray_close(ctx: H.RunContext) -> dict:
         session._shutdown(force=True)
 
 
+# ── S9 整期六页签枚举 + 新 route + 快捷键（D7 / T3 对齐）────────────────
+ISSUE_TABS = ["catalog", "order", "refresh", "merge", "clean", "push"]
+ISSUE_TAB_LABELS = ["生成目录", "排序与改名", "刷新页码", "合并 PDF",
+                    "清理临时文件", "生成推送文案"]
+# 归一后的底层步骤 key（nav_change 记录的是这个，不是页签 key）；catalog 默认落 infocheck。
+ISSUE_TAB_STEP = {
+    "catalog": "infocheck", "order": "order", "refresh": "refresh",
+    "merge": "merge", "clean": "cleantemp", "push": "dirpush",
+}
+
+
+def s9_issue_tabs(ctx: H.RunContext) -> dict:
+    """整期六页签逐个点击 + 断言 issue_activate/nav_change；验证新 route 归一。
+
+    坐标是估位（见 H.ISSUE_TAB_CHIPS），断言以事件为准；Windows 实机复核时
+    若 chip 位置偏差，按 H.ISSUE_TAB_CHIPS 校正后再跑。
+    """
+    rows: list[dict] = []
+    # 正常入口：P2_PAGE=issue 落整期页；P2_ISSUE_STEP 指定落哪个底层步骤。
+    with ctx.session("s9_tabs", page="issue") as session:
+        for idx, tab in enumerate(ISSUE_TABS):
+            dip = H.ISSUE_TAB_CHIPS[idx]
+            act = _click_until_event(
+                session, dip, "issue_activate",
+                lambda e, t=tab: e.get("view") == t, timeout=4.0,
+                offsets=((0, 0), (0, 6), (0, -6), (12, 0), (-12, 0)))
+            step = ISSUE_TAB_STEP[tab]
+            if tab == "catalog":
+                nav = session.wait_event(
+                    "nav_change",
+                    lambda e: e.get("route") in ("issue:infocheck", "issue:toc"),
+                    timeout=6.0)
+            else:
+                nav = session.wait_event(
+                    "nav_change",
+                    lambda e, r=H.ISSUE_TAB_ROUTES[tab]: e.get("route") == r,
+                    timeout=6.0)
+            session.settle(0.4)
+            img = session.screenshot(f"s9_issue_tab_{tab}")
+            rows.append({"tab": tab, "label": ISSUE_TAB_LABELS[idx],
+                         "activate": act, "route": nav.get("route"),
+                         "step": step})
+    ctx.record("S9_issue_tabs", tabs=rows)
+    return {"tabs": rows}
+
+
+def s9_issue_routes(ctx: H.RunContext) -> dict:
+    """新 route / 旧别名：用正常入口 P2_ISSUE_STEP 直达，断言只打开页不自动运行。
+
+    对齐 T3：order/refresh/merge 为新步骤；compileall/produce 旧别名归一到 refresh。
+    alias 归一由 IA.normalize_route 完成，nav_change 记录归一后的 route/view。
+    """
+    rows: list[dict] = []
+    direct = {
+        "order": "issue:order", "refresh": "issue:refresh", "merge": "issue:merge",
+        "cleantemp": "issue:cleantemp", "dirpush": "issue:dirpush",
+    }
+    for step, route in direct.items():
+        with ctx.session(f"s9_route_{step}", page="issue",
+                         extra_env={"P2_ISSUE_STEP": step}) as session:
+            hook = session.wait_event(
+                "issue_step_hook", lambda e, s=step: e.get("step") == s, timeout=10.0)
+            H.expect(hook.get("source") == "env",
+                     f"S9 {step} 未走 P2_ISSUE_STEP 入口: {hook}")
+            nav = session.wait_event(
+                "nav_change", lambda e, r=route: e.get("route") == r, timeout=8.0)
+            H.expect(nav.get("page") == "issue",
+                     f"S9 {step} 未落在整期页: {nav}")
+            H.expect(not session.has_event("run_started"),
+                     f"S9 {step} 进入页面即自动运行: {session.last_event('run_started')}")
+            session.settle(0.4)
+            session.screenshot(f"s9_issue_route_{step}")
+            rows.append({"step": step, "route": nav.get("route"),
+                         "hook_source": hook.get("source")})
+    ctx.record("S9_issue_routes", routes=rows)
+    return {"routes": rows}
+
+
+def s9_issue_hotkeys(ctx: H.RunContext) -> dict:
+    """Ctrl+1–6 按视觉顺序切整期六页签；断言 issue_hotkey slot/view 与 nav_change。
+
+    依赖 T3 定稿的 IssuePage._on_key()（mark issue_hotkey slot/view）；
+    在定稿前本场景可能红，属预期（见 report TODO）。
+    """
+    rows: list[dict] = []
+    with ctx.session("s9_hotkeys", page="issue") as session:
+        session.settle(0.6)
+        for slot, tab in enumerate(ISSUE_TABS, start=1):
+            before = len(session.events())
+            session.press_hotkey("CTRL", str(slot))
+            mark = session.wait_event(
+                "issue_hotkey",
+                lambda e, s=slot: e.get("slot") == s, timeout=6.0)
+            H.expect(mark.get("view") == tab,
+                     f"S9 Ctrl+{slot} 未映射页签 {tab}: {mark}")
+            # TODO(s9): 全局 Ctrl+1..5 仍被 settings_shell 映射为 page:N（切一级页，
+            # 不在 T3 写域）。若 T3 定稿前未处理事件传播，这里 nav_change 可能落到
+            # 一级页而冲突；用 has_event 记录事实、不硬断 route，交 lead 裁决。
+            nav = session.last_event("nav_change")
+            rows.append({"slot": slot, "view": mark.get("view"),
+                         "route": nav.get("route") if nav else None,
+                         "mark_count": len(session.events()) - before})
+    ctx.record("S9_issue_hotkeys", hotkeys=rows)
+    return {"hotkeys": rows}
+
+
+def s9_search_navigation(ctx: H.RunContext) -> dict:
+    """搜索/导航证据：正常入口（顶栏搜索点击进入）新页签/新 route。
+
+    用 ASCII 关键词（如 order / refresh）避免输入法依赖；断言 goto:issue:<step>
+    落到对应 route，且搜索索引里存在新页签。
+    """
+    from ui import ia_map as IA
+    from ui import search_index as SI
+
+    # 索引是纯数据：新页签应可经 issue_steps 进入命令条目（存在性断言不依赖窗口）。
+    index = SI.build_index(
+        nav_tree=IA.NAV_TREE,
+        issue_steps=[(t, l) for t, l in zip(ISSUE_TABS, ISSUE_TAB_LABELS)])
+    keys = {entry.key for entry in index}
+    H.expect(all(f"issue.{tab}" in keys for tab in ISSUE_TABS),
+             "S9 搜索索引缺少整期新页签条目")
+    rows: list[dict] = []
+    for step, route in (("order", "issue:order"), ("refresh", "issue:refresh")):
+        with ctx.session(f"s9_search_{step}", page="home") as session:
+            # 正常入口：Ctrl+K 开搜索面板（hotkey mark 辅证），ASCII 关键词 + 回车。
+            session.press_hotkey("CTRL", "K")
+            hk = session.wait_event(
+                "hotkey", lambda e: e.get("action") == "search", timeout=6.0)
+            H.expect(hk.get("key", "").lower() == "k",
+                     f"S9 Ctrl+K 未命中搜索: {hk}")
+            H.type_ascii(step)
+            session.press_hotkey("RETURN")
+            nav = session.wait_event(
+                "nav_change", lambda e, r=route: e.get("route") == r, timeout=8.0)
+            H.expect(nav.get("source") == "search",
+                     f"S9 搜索 {step} 未走 search 导航: {nav}")
+            rows.append({"query": step, "route": nav.get("route"),
+                         "source": nav.get("source"), "hotkey": hk})
+    ctx.record("S9_search_navigation", searches=rows,
+               indexed_tabs=[t for t in ISSUE_TABS if f"issue.{t}" in keys])
+    return {"searches": rows}
+
+
 SCENARIOS = {
     "s1": s1_launch,
     "s2": s2_navigation,
@@ -556,5 +700,9 @@ SCENARIOS = {
     "s6": s6_buttons,
     "s7": s7_close,
     "s8": s8_tray_close,
+    "s9": s9_issue_tabs,
+    "s9_routes": s9_issue_routes,
+    "s9_hotkeys": s9_issue_hotkeys,
+    "s9_search": s9_search_navigation,
     "s10": s10_bib_normalize_env,
 }

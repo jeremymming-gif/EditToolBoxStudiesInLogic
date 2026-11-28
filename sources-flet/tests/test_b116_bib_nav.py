@@ -231,7 +231,7 @@ def test_toolbar_title_names_bib_leaf_even_for_default_overview() -> None:
 def test_all_bib_routes_stay_deep_linkable_and_navigate() -> None:
     routes = [f"bib:{key}" for key, _ in BIB_LEAVES] + ["bib:settings"]
     assert set(routes) <= set(IA.all_routes())
-    assert len(IA.all_routes()) == 31  # 设置详情新增九条；其余深链不可因侧栏改版减少
+    assert len(IA.all_routes()) == 32  # 设置详情新增九条；其余深链不可因侧栏改版减少
 
     for route in routes:
         app, page = _route_app()

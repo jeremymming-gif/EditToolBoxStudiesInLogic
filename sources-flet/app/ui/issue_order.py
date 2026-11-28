@@ -35,11 +35,13 @@ class IssueOrderPanel:
         self.result: dict = {}
         self.refresh_order_result: dict | None = None
         self.refresh_order_needs_confirmation = False
+        self._hide_renames = False
         self.preview_order: dict | None = None
         self.docx = ""
         self.status = ""
         self.warnings: list[str] = []
         self.pending = False
+        self._picker_seq = 0
         self._output = C.text_field(self.t, value=str(Path(self.issue).expanduser().absolute().parent),
                                     expand=True)
         self._output_field = C.form_field(self.t, "排序稿输出文件夹", self._output, expand=True)
@@ -65,7 +67,10 @@ class IssueOrderPanel:
                 self._read_button,
                 C.secondary_button("打开期目录", self._open_issue, t, icon="FOLDER_OPEN"),
             ]),
-            self._output_field,
+            ft.Row(spacing=t.sp("1"), controls=[
+                self._output_field,
+                C.secondary_button("浏览…", self._browse_output, t, icon="FOLDER_OPEN"),
+            ]),
             ft.Row(spacing=t.sp("1"), wrap=True, controls=[
                 self._generate_button, self._docx_action,
             ]),
@@ -142,8 +147,8 @@ class IssueOrderPanel:
         messages = dict.fromkeys(message for message in details if message)
         self._feedback.controls = [
             *[C.text(str(message), t, "small", t.palette.text_muted) for message in messages],
-            *[C.text(f"{item['old']} → {item['new']}", t, "small")
-              for item in self.result.get("renames") or []],
+            *([C.text(f"{item['old']} → {item['new']}", t, "small")
+               for item in self.result.get("renames") or []] if not self._hide_renames else []),
         ]
         self.refresh_running()
         self.page._safe_update(self._docx_action, self._feedback)
@@ -186,8 +191,45 @@ class IssueOrderPanel:
         if self.docx:
             self.page.open_artifact(self.docx, binding=self.binding)
 
+    def _browse_output(self, e=None) -> None:
+        """复用现有目录 picker；取消不改值，换期/迟到来访不写回新期字段。"""
+        if not self._is_current():
+            return
+        self._picker_seq += 1
+        seq = self._picker_seq
+        before = str(self._output.value or "").strip()
+        issue, binding = self.issue, self.binding
+
+        def guard() -> bool:
+            return (seq == self._picker_seq and issue == self.issue
+                    and binding == self.binding and self._is_current()
+                    and before == str(self._output.value or "").strip())
+
+        browse = getattr(self.page.app, "browse_field", None)
+        if browse is None:
+            return
+        browse(ref=[self._output], dialog_title="选择排序稿输出文件夹", kind="dir",
+               key="issue_order_out", result_guard=guard, on_result=lambda selected: None)
+
+    def _invalidate_order_panel(self) -> None:
+        """成功确认或改名恢复后让期分页重取排序结果（未挂载则进入刷新页重取）。"""
+        panel = getattr(self.page, "_issue_paging_panel", None)
+        invalidate = getattr(panel, "invalidate_order", None)
+        if callable(invalidate):
+            invalidate()
+
+    def _toast_rename_applied(self) -> None:
+        """仅成功应用改名时发一次「已应用改名」Toast + 日志。"""
+        toast = getattr(self.page.app, "toast", None)
+        if callable(toast):
+            toast("已应用改名")
+        log = getattr(self.page, "_on_line", None)
+        if callable(log):
+            log("已应用改名")
+
     def _read(self, e=None) -> None:
-        out_root = str(self._output.value or "").strip() or str(Path(self.issue).expanduser().absolute().parent)
+        # 读候选只做预演；用与决策稿输出字段无关的安全默认路径，绝不写盘。
+        out_root = str(Path(self.issue).expanduser().absolute().parent)
         self._queue("draft", EB.orderdraft_call, issue=self.issue, out_root=out_root, dry_run=True)
 
     def _generate(self, e=None) -> None:
@@ -268,7 +310,8 @@ class IssueOrderPanel:
         self.page.page.run_task(self._run, call, kind, kwargs.get("order"))
 
     def _invalidate_refresh_order(self) -> None:
-        self.refresh_order_result = None
+        # 草稿读取/上移/排除等未提交编辑只标记待确认，不清除上一次有效回执（§2 T2↔T1/T3）。
+        # 真正清除回执只发生在改名恢复成功时（见 _consume）。
         self.refresh_order_needs_confirmation = True
 
     async def _run(self, call: EB.EngineCall, kind: str, order: dict | None) -> None:
@@ -321,12 +364,28 @@ class IssueOrderPanel:
             self.status = (payload.get("error") or ("已读取候选" if code == 0
                            else f"引擎未返回排序结果（退出码 {code}）"))
             return
+        if kind == "recover" and code == 0 and state in {"completed", "unchanged", "rolled_back"}:
+            # 改名恢复成功先清旧回执，避免旧排序结果被分页再次消费。
+            self.refresh_order_result = None
+            self.refresh_order_needs_confirmation = True
+            self._invalidate_order_panel()
+        if kind == "preview":
+            self._hide_renames = False
         self.result = payload
         self.preview_order = order if kind == "preview" else None
-        if code == 0 and state in {"completed", "unchanged"}:
-            self.refresh_order_result = payload
+        # 只有「应用改名」的成功确认才产出跨任务回执；读候选/移动/排除/预览均不清除旧回执。
+        # _run 调用方已验证 _is_current()；此处再核对期代次与确认时的预览绑定。
+        if kind == "apply" and code == 0 and state in {"completed", "unchanged"} \
+                and self._is_current() and self.result is payload:
+            self.refresh_order_result = dict(payload)  # 引擎原始成功 JSON
             self.refresh_order_needs_confirmation = False
-        self.status = (payload.get("error") or _RENAME_STATES.get(state)
+            self._invalidate_order_panel()
+            if state == "completed":
+                self._toast_rename_applied()
+        # 无变更（unchanged）不重复展开同名映射，也不报「已应用改名」成功态。
+        self._hide_renames = state == "unchanged"
+        self.status = ("顺序已确认，目录无需改名" if state == "unchanged" else
+                       payload.get("error") or _RENAME_STATES.get(state)
                        or f"改名计划未能执行（退出码 {code}）")
         if state == "completed":
             self.candidates.clear()

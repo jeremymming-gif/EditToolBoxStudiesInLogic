@@ -45,25 +45,17 @@ def test_narrow_content_nav_wraps_two_rows():
     assert all(view["title"] in texts for view in page.VIEWS)
 
 
-# ── 2. 运行整期对话框：默认 1–4、05 danger 行、跳过已完成 ──────────────
-def test_runall_dialog_defaults_and_danger_row():
+# ── 2. D3：整期串跑入口已下线（只保留单步 + 「刷新页码并编译」）────────
+def test_runall_dialog_is_gone_after_d3():
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
-    shown: list = []
-    page.app.page.show_dialog = lambda dialog: shown.append(dialog)
-    page._open_runall()
-    assert len(shown) == 1
-    dialog = shown[0]
-    assert dialog.modal is True
-    boxes = [ctl for ctl in _walk(dialog.content) if isinstance(ctl, ft.Checkbox)]
-    assert len(boxes) == 7, "01–06 + 跳过已完成"
-    assert [box.value for box in boxes[:4]] == [True] * 4
-    assert boxes[4].value is False and boxes[5].value is False
-    assert boxes[6].value is True, "跳过已完成默认勾选"
-    assert page._runall_danger.visible is False
-    boxes[4].value = True
-    boxes[4].on_change(SimpleNamespace(control=boxes[4]))
-    assert page._runall_danger.visible is True, "勾 05 必须出现真实删除 danger 行"
+    # D3：GUI 不再有「运行整期」对话框——批量串跑由 CLI/引擎侧负责，
+    # 界面单动作只留「刷新页码并编译」（refresh 页签的预览+确认）。
+    assert not hasattr(page, "_open_runall")
+    assert not hasattr(page, "_run_all")
+    assert not hasattr(page, "_runall_danger")
+    assert not hasattr(page, "_plan_prefixes")
+    assert not hasattr(page, "_done_prefixes")
 
 
 def test_runall_without_issue_dir_has_no_header_buttons():
@@ -84,7 +76,7 @@ def test_header_stop_visible_only_when_running():
     page._sync_stop_action()
     assert page._stop_btn.visible is True
     page.app.running = False
-    page._status["compileall"] = ASM.StepStatus("error", exit_code=2)
+    page._status["refresh"] = ASM.StepStatus("error", exit_code=2)
     page._sync_stop_action()
     assert page._stop_btn.visible is False
     assert not hasattr(page, ("_continue_" + "btn"))
@@ -96,9 +88,9 @@ def test_keyboard_digit_jumps_and_escape_stops():
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("infocheck")
-    # 批 117：⌘3 = 「清理临时文件」功能页（不再是第 3 个 step）。
+    # D7：⌘1–6 = 六页签（catalog/order/refresh/merge/clean/push），⌘3 落「刷新页码」。
     page._on_key(SimpleNamespace(key="3", ctrl=True, meta=False))
-    assert page.selected == "cleantemp"
+    assert page.selected == "refresh"
     page.activate("infocheck")
     page._on_key(SimpleNamespace(key="ArrowDown", ctrl=False, meta=False))
     assert page.selected == "toc"
@@ -117,22 +109,22 @@ def test_issue_state_persisted_and_restored():
     page.selected = "toc"
     page._status["toc"] = ASM.StepStatus("done", exit_code=0, duration_ms=1200,
                                          artifact="/tmp/报告.txt")
-    page._status["compileall"] = ASM.StepStatus("error", exit_code=2,
-                                                error="引擎失败")
+    page._status["refresh"] = ASM.StepStatus("error", exit_code=2,
+                                             error="引擎失败")
     page._persist_issue_state()
     data = page.app.store.get("issue_state")
     entry = data["/tmp/期目录"]
     assert entry["schema"] == 1
     assert entry["last_step"] == "toc"
     assert entry["statuses"]["toc"]["state"] == "done"
-    assert entry["statuses"]["compileall"]["exit_code"] == 2
+    assert entry["statuses"]["refresh"]["exit_code"] == 2
 
     page2 = P.IssuePage(page.app)  # 同一 store，模拟切换页面后重进
     page2.build()
     page2.set_field("issue_dir", "/tmp/期目录")
     page2._restore_issue_state()
     assert page2._state_of("toc") == "done"
-    assert page2._state_of("compileall") == "error"
+    assert page2._state_of("refresh") == "error"
     assert page2.selected == "toc"
 
 
@@ -157,7 +149,7 @@ def test_log_keeps_history_and_filters_by_step():
     page._on_line("▶ 02/06 生成目录 · toc · 10:00:03")
     page._on_line("目录生成中")
     assert len(page._log._lines) == shown + 2, "切段后本步日志继续累积，不 per-step 清空"
-    page._on_line("▶ 03/06 编译全部 · compileall · 10:00:05")
+    page._on_line("▶ 03/07 排序与改名 · order · 10:00:05")
     before = len(page._log._lines)
     page._on_line("xelatex 第一篇")  # 当前步是 toc → 本步过滤隐藏
     assert len(page._log._lines) == before

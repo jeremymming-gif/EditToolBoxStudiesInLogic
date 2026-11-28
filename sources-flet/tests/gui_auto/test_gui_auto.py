@@ -46,6 +46,36 @@ def test_gui_s4_single_page_flows(gui_ctx):
     assert [row["flow"] for row in info["flows"]] == S.FLOW_LABELS
 
 
+def test_gui_s9_issue_six_tabs(gui_ctx):
+    """S9：整期六页签逐个点击，issue_activate/nav_change 枚举与新 route 归一。"""
+    info = S.s9_issue_tabs(gui_ctx)
+    assert [row["tab"] for row in info["tabs"]] == S.ISSUE_TABS
+    assert [row["step"] for row in info["tabs"]] == [
+        S.ISSUE_TAB_STEP[t] for t in S.ISSUE_TABS]
+
+
+def test_gui_s9_issue_routes(gui_ctx):
+    """S9：P2_ISSUE_STEP 正常入口直达新步骤，只打开页不自动运行。"""
+    info = S.s9_issue_routes(gui_ctx)
+    assert {row["route"] for row in info["routes"]} == {
+        "issue:order", "issue:refresh", "issue:merge",
+        "issue:cleantemp", "issue:dirpush"}
+
+
+def test_gui_s9_issue_hotkeys(gui_ctx):
+    """S9：Ctrl+1–6 逐槽映射 issue_hotkey(slot, view)；全局冲突另记 TODO。"""
+    info = S.s9_issue_hotkeys(gui_ctx)
+    assert [row["view"] for row in info["hotkeys"]] == S.ISSUE_TABS
+
+
+def test_gui_s9_search_navigation(gui_ctx):
+    """S9：搜索索引含六页签；Ctrl+K + ASCII 搜索落到新 route。"""
+    info = S.s9_search_navigation(gui_ctx)
+    assert info["indexed_tabs"] == S.ISSUE_TABS
+    assert [row["route"] for row in info["searches"]] == [
+        "issue:order", "issue:refresh"]
+
+
 def test_gui_s5_bib_five_views(gui_ctx):
     """S5：引用库五视图（概况/查库/入藏/待处理/设置）。"""
     info = S.s5_bib_views(gui_ctx)

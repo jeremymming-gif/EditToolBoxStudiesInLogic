@@ -1,6 +1,13 @@
-"""批 116 整期装配运行语义（D1-115-26）：默认步、rc 门、日志、状态、取消。
+"""批 116 运行语义（D3 改版后：无整期 run_all，只有单步 run_step + 串行 _run_sequence）。
 
 不启动 GUI、不跑真引擎：run_call 用桩，引擎目录用临时桩目录（同 test_b109_w3）。
+
+D3 语义变更（本文件同步）：
+- `ASM.run_all` / `DEFAULT_RUN_ALL_KEYS` / `_automatic_compile` / `compile_plan`
+  全部下线：GUI 只留「刷新页码并编译」单动作，不再有一键整期入口；
+- 唯一执行器是 `ASM._run_sequence(page, keys, calls)`：不清日志、每步段头/段尾、
+  rc>=2 停后续、rc1 警告继续、取消标 cancelled；
+- 用户点击走 `ASM.run_step(page, key)`：校验 → dirpush 仓库根确认 → `_start`。
 """
 from __future__ import annotations
 
@@ -14,9 +21,10 @@ import pytest
 from services import engine_bridge as EB
 from ui import assembly as ASM
 from ui import cleanup as CLEANUP
+from ui import components as C
 from ui.tokens import Tokens
 
-STEP_KEYS = ("infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush")
+STEP_KEYS = ("infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush")
 
 
 @pytest.fixture()
@@ -119,10 +127,17 @@ class _Result:
 class _FletPage:
     def __init__(self):
         self.tasks: list[tuple] = []
+        self.dialogs: list = []
 
     def run_task(self, handler, *args):
         self.tasks.append((handler, args))
         asyncio.run(handler(*args))
+
+    def show_dialog(self, dialog):
+        self.dialogs.append(dialog)
+
+    def pop_dialog(self):
+        return self.dialogs.pop() if self.dialogs else None
 
     def update(self):
         pass
@@ -192,25 +207,40 @@ def states(page):
     return [item["state"] for item in page._run_results]
 
 
-def test_run_all_default_is_first_four_steps(tmp_path, engine, monkeypatch):
-    page = make_page(tmp_path)
-    calls = install_run(monkeypatch, page, [0, 0, 0, 0])
-    assert inspect.signature(ASM.run_all).parameters["keys"].default is None
+def run(page, keys, calls=None):
+    return asyncio.run(ASM._run_sequence(page, list(keys), calls))
 
-    ASM.run_all(page)  # 旧调用形式：run_all(page)
+
+# ── D3：一键整期入口已下线 ───────────────────────────────────────────────
+def test_run_all_entry_is_gone_after_d3():
+    assert not hasattr(ASM, "run_all")
+    assert not hasattr(ASM, "run_all_demo")
+    assert not hasattr(ASM, "DEFAULT_RUN_ALL_KEYS")
+    assert not hasattr(ASM, "_run_all_keys")
+    assert not hasattr(ASM, "_automatic_compile")
+    assert not hasattr(ASM, "compile_plan")
+    assert not hasattr(ASM, "compile_event")
+    # 唯一执行器是 async 的 _run_sequence（不是 run_all 的同步外壳）。
+    assert inspect.iscoroutinefunction(ASM._run_sequence)
+
+
+def test_sequence_runs_given_keys_in_order(tmp_path, engine, monkeypatch):
+    page = make_page(tmp_path)
+    calls = install_run(monkeypatch, page, [0, 0, 0])
+
+    run(page, ["infocheck", "toc", "merge"])
 
     assert [call.entry for call in calls] == [
-        "infocheck.py", "toc.py", "compileall.py", "mergepdf.py",
+        "infocheck.py", "toc.py", "mergepdf.py",
     ]
     assert [item["key"] for item in page._run_results] == [
-        "infocheck", "toc", "compileall", "merge",
+        "infocheck", "toc", "merge",
     ]
-    assert states(page) == ["done"] * 4
+    assert states(page) == ["done"] * 3
     assert page._status["cleantemp"] == "idle" and page._status["dirpush"] == "idle"
-    assert ("run_all_submit", {"steps": ["infocheck", "toc", "compileall", "merge"]}) in page.app.marks
 
 
-def test_run_all_explicit_keys_keep_normal_step_semantics(tmp_path, engine, monkeypatch):
+def test_sequence_explicit_steps_keep_normal_step_semantics(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path, report=False)
     page._cleanup = CLEANUP.CleanupPanel(page)
     page.set_field("dirpush_out", str(tmp_path / "out"))
@@ -218,7 +248,7 @@ def test_run_all_explicit_keys_keep_normal_step_semantics(tmp_path, engine, monk
     page.app.store.update_options(cleantemp_dry_run=False, dirpush_dry_run=True)
     calls = install_run(monkeypatch, page, [0, 0])
 
-    ASM.run_all(page, ["cleantemp", "dirpush"])
+    run(page, ["cleantemp", "dirpush"])
 
     # T3/C14：显式勾选 cleantemp 也只走一次 --mode daily；不再串 tocwork、
     # 不带旧档位，也不被旧 dry_run 设置改成只预演。
@@ -226,40 +256,41 @@ def test_run_all_explicit_keys_keep_normal_step_semantics(tmp_path, engine, monk
     clean = calls[0].argv
     assert "--mode" in clean and "daily" in clean
     assert "--dry-run" not in clean and "--trash" not in clean
+    # D1 删掉三个只预演开关后，旧 options.dirpush_dry_run 也不再影响 argv。
+    assert "--dry-run" not in calls[1].argv
     assert page._status["cleantemp"] == "done"
     assert page._status["dirpush"] == "done"
 
-    # 单字符串也当作单步（方便确认框单传）；顺序保留。
+    # 单步走 run_step（唯一 GUI 入口）：同样保留单步语义。
     page2 = make_page(tmp_path)
     only_merge = install_run(monkeypatch, page2, [0])
-    ASM.run_all(page2, "merge")
+    ASM.run_step(page2, "merge")
     assert [call.entry for call in only_merge] == ["mergepdf.py"]
     assert states(page2) == ["done"]
 
 
-def test_run_all_stops_on_rc2_and_marks_rest_skipped(tmp_path, engine, monkeypatch):
+def test_run_sequence_stops_on_rc2_and_marks_rest_skipped(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     calls = install_run(monkeypatch, page, [0, 2])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
-    assert len(calls) == 2  # compileall 失败后不再启动 merge
+    assert len(calls) == 2  # toc 失败后不再启动 merge
     assert page._status["toc"].exit_code == 2
     assert page._status["toc"] == "error"
-    assert page._status["compileall"] == "skipped"
     assert page._status["merge"] == "skipped"
-    assert states(page) == ["done", "error", "skipped", "skipped"]
-    assert [item["rc"] for item in page._run_results] == [0, 2, None, None]
+    assert states(page) == ["done", "error", "skipped"]
+    assert [item["rc"] for item in page._run_results] == [0, 2, None]
 
 
-def test_run_all_rc1_warns_and_continues(tmp_path, engine, monkeypatch):
+def test_run_sequence_rc1_warns_and_continues(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
-    calls = install_run(monkeypatch, page, [1, 0, 0, 0])
+    calls = install_run(monkeypatch, page, [1, 0, 0])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
-    assert len(calls) == 4
-    assert states(page) == ["warn", "done", "done", "done"]
+    assert len(calls) == 3
+    assert states(page) == ["warn", "done", "done"]
     assert page._status["infocheck"] == "warn" and page._status["infocheck"].exit_code == 1
     assert page._result.level == "ok"  # 最后一步的结果条
 
@@ -267,17 +298,18 @@ def test_run_all_rc1_warns_and_continues(tmp_path, engine, monkeypatch):
 def test_log_is_never_cleared_and_gets_section_headers(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     page._log.add_line("旧日志", "info")
-    install_run(monkeypatch, page, [0, 1, 0, 0])
+    install_run(monkeypatch, page, [0, 1, 0])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
     assert page._log.clear_calls == 0
     assert page._log.lines[0] == ("旧日志", "info")
     texts = [text for text, _ in page._log.lines]
-    assert any(text.startswith("▶ 01/06") and "infocheck" in text for text in texts)
-    assert any(text.startswith("▶ 04/06") and "merge" in text for text in texts)
-    assert any(text.startswith("■ 02/06") and "rc=1" in text for text in texts)
-    assert len([text for text in texts if text.startswith("▶")]) == 4
+    # D7：7 个底层步骤 → 段头分母是 07（不是旧的 06）。
+    assert any(text.startswith("▶ 01/07") and "infocheck" in text for text in texts)
+    assert any(text.startswith("▶ 05/07") and "merge" in text for text in texts)
+    assert any(text.startswith("■ 02/07") and "rc=1" in text for text in texts)
+    assert len([text for text in texts if text.startswith("▶")]) == 3
 
 
 def test_status_metadata_and_hooks_written_back(tmp_path, engine, monkeypatch):
@@ -301,7 +333,7 @@ def test_status_metadata_and_hooks_written_back(tmp_path, engine, monkeypatch):
 
     monkeypatch.setattr(ASM, "after_step", spy)
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
     status = page._status["merge"]
     assert isinstance(status, ASM.StepStatus) and status == "done"
@@ -311,102 +343,113 @@ def test_status_metadata_and_hooks_written_back(tmp_path, engine, monkeypatch):
     assert status.artifact == str(artifact)
     assert status.as_dict()["state"] == "done"
     assert json.loads(json.dumps(status.as_dict()))["exit_code"] == 0
-    assert seen == ["infocheck", "toc", "compileall", "merge"]
-    assert page._refresh_count >= 8
-    assert page._engine_lines == ["引擎输出"] * 4
+    assert seen == ["infocheck", "toc", "merge"]
+    assert page._refresh_count >= 7  # 3 步 × (开始+结束) + 收尾一次
+    assert page._engine_lines == ["引擎输出"] * 3
 
 
 def test_cancel_marks_current_and_remaining_cancelled(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
-    calls = install_run(monkeypatch, page, [0, "cancel", 0, 0])
+    calls = install_run(monkeypatch, page, [0, "cancel", 0])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
-    assert len(calls) == 2  # 取消后不启动 compileall/merge
+    assert len(calls) == 2  # 取消后不启动 merge
     assert page._status["infocheck"] == "done"
     assert page._status["toc"] == "cancelled"
-    assert page._status["compileall"] == "cancelled"
     assert page._status["merge"] == "cancelled"
-    assert states(page) == ["done", "cancelled", "cancelled", "cancelled"]
+    assert states(page) == ["done", "cancelled", "cancelled"]
     assert page.app.running is False
 
 
 def test_cancel_before_start_launches_nothing(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     page.app.cancel_requested = True
-    calls = install_run(monkeypatch, page, [0, 0, 0, 0])
+    calls = install_run(monkeypatch, page, [0, 0, 0])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
-    assert calls == [] and page.page.tasks
-    assert states(page) == ["cancelled"] * 4
-    assert all(page._status[key] == "cancelled" for key in STEP_KEYS[:4])
+    assert calls == []
+    assert states(page) == ["cancelled"] * 3
+    assert all(page._status[key] == "cancelled" for key in ("infocheck", "toc", "merge"))
 
 
-def test_run_all_requires_issue_dir(tmp_path, engine, monkeypatch):
+# ── 单步入口 run_step ────────────────────────────────────────────────────
+def test_run_step_requires_issue_dir(tmp_path, engine, monkeypatch):
     page = _Page()
-    calls = install_run(monkeypatch, page, [0])
+    install_run(monkeypatch, page, [0])
 
-    ASM.run_all(page)
+    ASM.run_step(page, "merge")
 
-    assert calls == [] and page.page.tasks == []
+    assert page.page.tasks == []
     assert page.app.toasts == ["请先选择期目录"]
     assert page.app.marks[-1] == ("validation_error",
-                                  {"step": "all", "reason": "missing issue dir"})
+                                  {"step": "merge", "reason": "请先选择期目录"})
 
 
-def test_run_all_rejects_unknown_or_empty_keys(tmp_path, engine, monkeypatch):
+def test_run_step_rejects_unknown_step(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     install_run(monkeypatch, page, [0])
 
-    ASM.run_all(page, ["nope"])
+    ASM.run_step(page, "nope")
+
     assert page.app.toasts[-1] == "未知步骤：nope"
     assert page.app.marks[-1][0] == "validation_error"
-
-    ASM.run_all(page, [])
-    assert page.app.toasts[-1] == "请至少选择一个步骤"
     assert page.page.tasks == []
 
 
-def test_run_all_ignored_while_running(tmp_path, engine, monkeypatch):
+def test_run_step_ignored_while_running(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     page.app.running = True
-    calls = install_run(monkeypatch, page, [0, 0, 0, 0])
+    calls = install_run(monkeypatch, page, [0])
 
-    ASM.run_all(page)
     ASM.run_step(page, "merge")
 
     assert calls == [] and page.page.tasks == []
 
 
-def test_dirpush_repo_guard_only_when_selected(tmp_path, engine, monkeypatch):
+def test_dirpush_repo_guard_asks_for_confirmation(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     page.set_field("dirpush_out", str(tmp_path / "out"))
-    install_run(monkeypatch, page, [0, 0, 0, 0])
+    calls = install_run(monkeypatch, page, [0])
     monkeypatch.setattr(ASM.DIRPUSH, "repo_warning", lambda *a, **k: "输出根在代码仓内")
+    C._open_dialogs.clear()
 
-    # 默认 1–4 不含 dirpush：不受输出根影响。
-    ASM.run_all(page)
-    assert len(page._run_results) == 4
+    # 默认（auto_confirm）直接启动，不再有整期级别的「已停止」toast。
+    page.app.auto_confirm = True
+    ASM.run_step(page, "dirpush")
+    assert [call.entry for call in calls] == ["dirpush.py"]
 
-    # 显式勾选 dirpush 且非 dry-run：整期拒绝启动（由 pages.py 确认框负责例外）。
-    marker = len(page.page.tasks)
-    ASM.run_all(page, ["dirpush"])
-    assert len(page.page.tasks) == marker
-    assert page.app.toasts[-1] == "输出根在代码仓内，整期运行已停止；请改输出根或勾选只预演"
-    assert page.app.marks[-1] == ("validation_error", {"step": "all", "reason": "repo out root"})
+    # 交互模式：仓库内输出根必须走确认框，确认前不启动。
+    page2 = make_page(tmp_path)
+    page2.set_field("dirpush_out", str(tmp_path / "out"))
+    page2.app.auto_confirm = False
+    calls2 = install_run(monkeypatch, page2, [0])
+    C._open_dialogs.clear()
+    ASM.run_step(page2, "dirpush")
+    assert calls2 == [] and page2.page.tasks == []
+    assert len(C._open_dialogs) == 1
+    dialog = C._open_dialogs[-1]
+    assert "输出根在代码仓内" in str(dialog.title.value)
+    assert [action.content for action in dialog.actions] == ["取消", "继续生成"]
+
+    # 点「继续生成」→ 记 confirm_repo_out 并真正派发。
+    dialog.actions[1].on_click(None)
+    assert ("confirm_repo_out", {"path": str(tmp_path / "out")}) in page2.app.marks
+    assert [call.entry for call in calls2] == ["dirpush.py"]
+    C._open_dialogs.clear()
 
 
 def test_exception_stops_remaining_and_records_error(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path)
     calls = install_run(monkeypatch, page, [RuntimeError("boom")])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
     assert len(calls) == 1
     status = page._status["infocheck"]
     assert status == "error" and status.exit_code == -1 and "boom" in status.error
-    assert states(page) == ["error", "skipped", "skipped", "skipped"]
+    assert states(page) == ["error", "skipped", "skipped"]
     assert "任务启动失败：boom" in page.app.toasts[-1]
     assert ("run_start_error", {"step": "infocheck", "error": "boom"}) in page.app.marks
 
@@ -415,12 +458,12 @@ def test_build_failure_after_infocheck_skips_downstream(tmp_path, engine, monkey
     page = make_page(tmp_path, report=False)  # 没有报告：toc 构建失败
     calls = install_run(monkeypatch, page, [0])
 
-    ASM.run_all(page)
+    run(page, ["infocheck", "toc", "merge"])
 
     assert [call.entry for call in calls] == ["infocheck.py"]
     assert page._status["toc"] == "error" and page._status["toc"].exit_code is None
     assert "信息检查报告" in page._status["toc"].error
-    assert states(page) == ["done", "error", "skipped", "skipped"]
+    assert states(page) == ["done", "error", "skipped"]
     assert "信息检查报告" in page.app.toasts[-1]
 
 

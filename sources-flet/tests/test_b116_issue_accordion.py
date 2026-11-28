@@ -1,15 +1,16 @@
-"""批 116 ISSUE4-C/D：rail 打磨 + 视图内手风琴（替代 flet 1.0.5 无效的 scroll_to）。
+"""批 116 ISSUE4-C/D + 批 118（D7）：rail 打磨 + 视图内手风琴（替代 flet 1.0.5 无效的 scroll_to）。
 
 锁住的不变量（纯壳层，不建窗口、不跑引擎）：
-1. rail 不再画 `01–02` 序号列（ISSUE4-D 用户拍板）；四行同高 64，
+1. rail 不再画 `01–02` 序号列（ISSUE4-D 用户拍板）；行同高 64，
    标题 + 状态点同行、状态点右对齐；
 2. 去掉序号列后 caption 放大可用宽、完整显示：不设 max_lines、不用省略号，
    也不以序号开头/复述标题；
-3. 同一视图同一时刻只展开一个区块，默认首块（01/03/05/06），chevron ▸/▾；
+3. 同一视图同一时刻只展开一个区块，默认首块（catalog 01 / order 03 / refresh 04 /
+   merge 05 / clean 06 / push 07），chevron ▸/▾；
 4. 点区块头切换、点主按钮不切换；展开主按钮 Filled、收起 Outlined，头部状态/主按钮仍刷新；
-5. 深链 4 条展开目标区块；切视图保留各视图最近展开的区块；
-6. 03 编译成功 → 04 展开、03 收起（不自动运行 04）；其他步骤完成不切换；
-7. 窄窗 54 横条 4 段都用短标题显示，同样不显示序号。
+5. 深链展开目标区块；切视图保留各视图最近展开的区块；
+6. 批 118（D3）：任何步骤完成都**不自动切换视图、不自动展开别的区块、不自动运行下一步**；
+7. 窄窗 54 横条 6 段都用短标题显示，同样不显示序号。
 """
 from __future__ import annotations
 
@@ -104,7 +105,8 @@ def test_nav_selected_tint_and_hover_surface():
 def test_accordion_default_expands_first_section_of_each_view():
     page = _issue_page()
     page.activate("infocheck")
-    for view_key, first in (("catalog", "infocheck"), ("produce", "compileall"),
+    for view_key, first in (("catalog", "infocheck"), ("order", "order"),
+                            ("refresh", "refresh"), ("merge", "merge"),
                             ("clean", "cleantemp"), ("push", "dirpush")):
         assert page.expanded_step(view_key) == first
     # 当前视图（catalog）两个区块都建好，但只有首块可见。
@@ -145,31 +147,32 @@ def test_accordion_click_header_toggles_and_keeps_one_open():
 
 def test_accordion_primary_button_does_not_toggle():
     page = _issue_page()
-    page.activate("compileall")
+    page.activate("toc")     # catalog 有两块：01 / 02
     ran: list = []
     page._primary_action = lambda key: ran.append(key)
-    _click(page._primary_btns["compileall"])
-    assert ran == ["compileall"], "主按钮仍运行该步"
-    assert page.expanded_step("produce") == "compileall", "点主按钮不切换展开"
-    _click(page._primary_btns["merge"])
-    assert ran == ["compileall", "merge"]
-    assert page.expanded_step("produce") == "compileall", "收起区块的按钮也不展开它"
+    _click(page._primary_btns["toc"])
+    assert ran == ["toc"], "主按钮仍运行该步"
+    assert page.expanded_step("catalog") == "toc", "点主按钮不切换展开"
+    _click(page._primary_btns["infocheck"])
+    assert ran == ["toc", "infocheck"]
+    assert page.expanded_step("catalog") == "toc", "收起区块的按钮也不展开它"
 
-    _click(page._section_heads["merge"])
-    assert isinstance(page._primary_btns["compileall"], ft.OutlinedButton)
-    assert isinstance(page._primary_btns["merge"], ft.FilledButton)
-    assert page._step_run_btns["compileall"] is page._primary_btns["compileall"]
-    assert page._step_run_primary is page._primary_btns["compileall"]
-    _click(page._primary_btns["compileall"])
-    _click(page._primary_btns["merge"])
-    assert ran == ["compileall", "merge", "compileall", "merge"]
-    assert page.expanded_step("produce") == "merge", "重建后的按钮也只运行原区块"
+    _click(page._section_heads["infocheck"])
+    assert isinstance(page._primary_btns["toc"], ft.OutlinedButton)
+    assert isinstance(page._primary_btns["infocheck"], ft.FilledButton)
+    assert page._step_run_btns["infocheck"] is page._primary_btns["infocheck"]
+    # selected 仍是 02（点区块头不改选中步）→ _step_run_primary 指 02 的按钮
+    assert page._step_run_primary is page._primary_btns["toc"]
+    _click(page._primary_btns["toc"])
+    _click(page._primary_btns["infocheck"])
+    assert ran == ["toc", "infocheck", "toc", "infocheck"]
+    assert page.expanded_step("catalog") == "infocheck", "重建后的按钮也只运行原区块"
 
-    _click(page._section_heads["merge"])
-    _click(page._primary_btns["compileall"])
-    _click(page._primary_btns["merge"])
-    assert ran == ["compileall", "merge", "compileall", "merge", "compileall", "merge"]
-    assert page.expanded_step("produce") == "", "全收起时按钮仍不切换展开"
+    _click(page._section_heads["infocheck"])
+    _click(page._primary_btns["toc"])
+    _click(page._primary_btns["infocheck"])
+    assert ran == ["toc", "infocheck", "toc", "infocheck", "toc", "infocheck"]
+    assert page.expanded_step("catalog") == "", "全收起时按钮仍不切换展开"
 
 
 def test_single_section_button_follows_expansion(tmp_path):
@@ -189,23 +192,21 @@ def test_single_section_button_follows_expansion(tmp_path):
 
 def test_collapsed_section_head_status_and_button_still_refresh():
     page = _issue_page()
-    page.activate("merge")
-    assert page._section_bodies["compileall"].visible is False
-    page._status["compileall"] = ASM.StepStatus("done")
+    page.activate("toc")     # catalog：02 展开，01 收起
+    assert page._section_bodies["infocheck"].visible is False
+    page._status["infocheck"] = ASM.StepStatus("done")
     page._sync_detail_status()
-    assert page._detail_statuses["merge"].value == page._status_text("merge")
-    assert page._detail_statuses["compileall"].value == page._status_text("compileall")
-    assert str(page._primary_btns["compileall"].content) == page._primary_label("compileall")
+    assert page._detail_statuses["toc"].value == page._status_text("toc")
+    assert page._detail_statuses["infocheck"].value == page._status_text("infocheck")
+    assert str(page._primary_btns["infocheck"].content) == page._primary_label("infocheck")
 
 
 # ── 3. 深链 / 视图切换记忆 ────────────────────────────────────────────
-def test_four_view_deep_links_expand_target_section():
+def test_deep_links_expand_target_section():
     page = _issue_page()
     cases = {
         "infocheck": ("catalog", "toc"),
         "toc": ("catalog", "infocheck"),
-        "compileall": ("produce", "merge"),
-        "merge": ("produce", "compileall"),
     }
     for step, (view_key, sibling) in cases.items():
         page.activate(step)
@@ -218,52 +219,38 @@ def test_four_view_deep_links_expand_target_section():
 
 def test_view_switch_remembers_expanded_section_per_view():
     page = _issue_page()
-    page.activate("merge")
+    page.activate("toc")            # catalog 最近展开 02
+    page._select_view("merge")
+    assert page.selected == "merge"
     page._select_view("catalog")
-    assert page.selected == "infocheck", "catalog 还没展开过 → 默认首块 01"
-    page._select_view("produce")
-    assert page.selected == "merge", "回到视图 → 最近展开的 04，不是默认 03"
-    assert page.expanded_step("produce") == "merge"
-    page.activate("toc")
-    page._select_view("produce")
-    assert page.selected == "merge", "catalog 的展开不影响 produce 的记忆"
+    assert page.selected == "toc", "回到视图 → 最近展开的 02，不是默认 01"
+    assert page.expanded_step("catalog") == "toc"
+    page.activate("infocheck")      # catalog 改成 01 展开
+    page._select_view("merge")
+    assert page.selected == "merge", "catalog 的展开不影响 merge 的记忆"
     page._select_view("catalog")
-    assert page.selected == "toc"
+    assert page.selected == "infocheck"
 
 
-# ── 4. 03 成功自动切 04（不运行 04）──────────────────────────────────
-def test_compile_success_switches_to_merge_without_running_it():
+# ── 4. D3：步骤完成不自动切页签（单动作，各自确认）───────────────────
+def test_step_finish_does_not_switch_view_or_run_next():
     page = _issue_page()
-    page.activate("compileall")
+    page.activate("refresh")
     ran: list = []
     page._primary_action = lambda key: ran.append(key)
-    page.on_step_finished("compileall", 0)
-    assert page.selected == "merge"
-    assert page.expanded_step("produce") == "merge"
-    assert page._section_bodies["merge"].visible is True
-    assert page._section_bodies["compileall"].visible is False
-    assert page._chevrons["merge"].value == "▾"
-    assert page._chevrons["compileall"].value == "▸"
-    assert ran == [], "04 不自动运行（保留独立确认点）"
+    page.on_step_finished("refresh", 0)
+    assert page.selected == "refresh", "成功后停在原页签"
+    assert page.expanded_step("refresh") == "refresh"
+    assert ran == [], "任何步骤都不自动运行下一步"
+
+    page.on_step_finished("toc", 0)          # 别的步骤完成也不切
+    assert page.selected == "refresh"
+    page.on_step_finished("refresh", 2)      # 失败同样不切
+    assert page.selected == "refresh"
     assert page._state_of("merge") == "idle"
 
-    page.on_step_finished("toc", 0)       # 其他区块完成不自动切换
-    assert page.selected == "merge"
-    page.on_step_finished("compileall", 2)  # 失败不切换
-    assert page.selected == "merge"
 
-
-def test_compile_success_remembered_even_when_other_view_active():
-    page = _issue_page()
-    page.activate("toc")
-    page.on_step_finished("compileall", 0)
-    assert page.selected == "toc", "不在编译视图时不被强行拉走"
-    assert page.expanded_step("produce") == "merge"
-    page._select_view("produce")
-    assert page.selected == "merge", "下次进「编译并合并」直接见 04"
-
-
-# ── 5. 窄窗：导航折两行，仍是 4 个完整标题 ───────────────────────────
+# ── 5. 窄窗：导航折两行，仍是 6 个完整标题 ───────────────────────────
 def test_narrow_nav_two_rows_full_titles():
     page = _issue_page()
     page.app._design_width = lambda: 1000  # <1100 → 两行
@@ -271,7 +258,7 @@ def test_narrow_nav_two_rows_full_titles():
     assert page._nav_box.content.height == page.t.px(72)
     labels = _texts(page._nav_box)
     assert labels == [view["title"] for view in page.VIEWS], \
-        "两行导航仍显示 4 个完整标题（无序号、不截断）"
+        "两行导航仍显示 6 个完整标题（无序号、不截断）"
     for view in page.VIEWS:
         assert view["title"] in labels
     assert not any(re.fullmatch(r"\d{2}(–\d{2})?", value) for value in labels), \
@@ -282,8 +269,6 @@ def test_narrow_nav_two_rows_full_titles():
 
 
 def test_rail_does_not_regress_routes_or_tree():
-    assert len(IA.all_routes()) == 31
-    assert IA.issue_step_keys() == ["infocheck", "toc", "compileall",
-                                    "merge", "cleantemp", "dirpush"]
-    assert [view["key"] for view in IA.issue_views()] == ["catalog", "produce",
-                                                          "clean", "push"]
+    assert len(IA.all_routes()) == 32
+    assert IA.issue_step_keys() == ["infocheck", "toc", "order", "refresh", "merge", "cleantemp", "dirpush"]
+    assert [view["key"] for view in IA.issue_views()] == ["catalog", "order", "refresh", "merge", "clean", "push"]
