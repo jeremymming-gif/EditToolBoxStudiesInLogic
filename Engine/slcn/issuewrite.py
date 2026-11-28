@@ -47,9 +47,14 @@ def _canonical_path(path: Path) -> Path:
                     continue
                 if os.path.samestat(info, target_info):
                     matches.append(entry.name)
-        if len(matches) != 1:
+        # On Windows, junction/8.3 alias entries can share a stat with the
+        # real component; prefer the exact spelling when one is present.
+        if part in matches:
+            current = current / part
+        elif len(matches) == 1:
+            current = current / matches[0]
+        else:
             raise OSError(f"无法唯一确认期目录的实际路径：{target}")
-        current = current / matches[0]
     return current
 
 
